@@ -6,8 +6,11 @@ import { buildApp } from './app.js'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = path.resolve(process.env.DATA_DIR ?? path.join(here, '..', '..', 'data'))
 const jwtSecret = process.env.JWT_SECRET ?? 'dev-secret-change-me'
-if (process.env.NODE_ENV === 'production' && jwtSecret === 'dev-secret-change-me')
-  throw new Error('Set JWT_SECRET in production')
+if (process.env.NODE_ENV === 'production') {
+  const weak = ['dev-secret-change-me', 'change-me', 'changeme']
+  if (!process.env.JWT_SECRET || weak.includes(jwtSecret) || jwtSecret.length < 32)
+    throw new Error('JWT_SECRET must be set to a random value of at least 32 characters in production (openssl rand -hex 32)')
+}
 
 const db = await openDb(process.env.DATABASE_URL || undefined, dataDir)
 await migrate(db)

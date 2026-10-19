@@ -30,7 +30,19 @@ export interface AppOptions {
 
 export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) {
   mkdirSync(filesDir, { recursive: true })
-  const app = Fastify({ logger: false })
+  const app = Fastify({
+    logger: false,
+    trustProxy: true, // behind Cloudflare Tunnel / cloudflared
+    bodyLimit: 10 * 1024 * 1024, // JSON bodies; file uploads stream via multipart (200MB cap below)
+  })
+  app.get('/api/health', async (_req, reply) => {
+    try {
+      await db.query('SELECT 1')
+      return { status: 'ok', db: 'ok' }
+    } catch {
+      return reply.code(503).send({ status: 'error', db: 'error' })
+    }
+  })
   await app.register(cors)
   await app.register(jwt, { secret: jwtSecret })
   await app.register(websocket)

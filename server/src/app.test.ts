@@ -395,3 +395,11 @@ describe('document revisions', () => {
     expect((await app.inject({ url: `/api/documents/${doc}/file?token=${admin}&revision=99999999-9999-4999-8999-999999999999` })).statusCode).toBe(404)
   })
 })
+
+describe('health', () => {
+  it('reports db ok without auth', async () => {
+    const res = await app.inject('/api/health')
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ status: 'ok', db: 'ok' })
+  })
+})
