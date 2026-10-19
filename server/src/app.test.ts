@@ -493,3 +493,130 @@ describe('user prefs', () => {
     expect((await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: h, payload: big })).statusCode).toBe(413)
   })
 })
+
+describe('milestone 12 revision snapshots and page tools', () => {
+  const boundary = 'M12'
+  const field = (name: string, value: string) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`
+  const filePart = (bytes: Uint8Array) => Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="x.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--\r\n`)])
+  const multipart = (fields: Record<string, string>, bytes: Uint8Array) =>
+    Buffer.concat([...Object.entries(fields).map(([k, v]) => Buffer.from(field(k, v))), filePart(bytes)])
+  const send = (url: string, token: string, payload: Buffer) => app.inject({ method: 'POST', url,
+    headers: { authorization: `Bearer ${token}`, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload })
+  async function pdfOf(sizes: number[]) {
+    const { PDFDocument } = await import('pdf-lib')
+    const d = await PDFDocument.create()
+    for (const w of sizes) d.addPage([w, 100])
+    return d.save()
+  }
+  let admin = '', viewer = '', h: Record<string, string> = {}, doc = '', rev1 = ''
+  const mid = (n: number) => `${String(n).repeat(8)}-0000-4000-8000-000000000000`
+  const put = (id: string, page: number, extra: object = {}) => app.inject({ method: 'PUT', url: `/api/documents/${doc}/markups/${id}`, headers: h,
+    payload: { page, type: 'rect', geometry: { x: 10, y: 20, width: 30, height: 40, rotation: 0 }, ...extra } })
+  const live = async () => (await app.inject({ url: `/api/documents/${doc}/markups`, headers: h })).json() as any[]
+  const pageOf = async () => Object.fromEntries((await live()).map(m => [m.id, m.page]))
+
+  it('issues a revision that freezes markups, and an upload freezes the superseded one', async () => {
+    admin = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'boss@x.com', password: 'password1' } })).json().token
+    viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    h = { authorization: `Bearer ${admin}` }
+    const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: h, payload: { name: 'M12' } })).json().id
+    await app.inject({ method: 'PUT', url: `/api/projects/${project}/members`, headers: h, payload: { email: 'tech@x.com', role: 'viewer' } })
+    const created = (await send(`/api/projects/${project}/documents`, admin, multipart({ pageCount: '3' }, await pdfOf([100, 200, 300])))).json()
+    doc = created.id; rev1 = created.revision_id
+    expect((await put(mid(1), 1)).statusCode).toBe(200)
+    expect((await put(mid(2), 2)).statusCode).toBe(200)
+    expect((await put(mid(3), 3)).statusCode).toBe(200)
+
+    const issue = (p: object, token = admin) => app.inject({ method: 'POST', url: `/api/documents/${doc}/revisions/issue`, headers: { authorization: `Bearer ${token}` }, payload: p })
+    expect((await issue({ label: '' })).statusCode).toBe(400)
+    expect((await issue({ label: 'Rev A', note: 'x' }, viewer)).statusCode).toBe(403)
+    const issued = await issue({ label: 'Rev 1 - Issued', note: 'for permit' })
+    expect(issued.statusCode, issued.body).toBe(200)
+    expect(issued.json()).toMatchObject({ kind: 'issued', label: 'Rev 1 - Issued', note: 'for permit', revision: 2 })
+
+    // edit after the issue; the issued snapshot must not change
+    await put(mid(1), 1, { geometry: { x: 999, y: 20, width: 30, height: 40, rotation: 0 } })
+    const snap = (await app.inject({ url: `/api/documents/${doc}/revisions/${issued.json().id}`, headers: { authorization: `Bearer ${viewer}` } })).json()
+    expect(snap.live).toBe(false)
+    expect(snap.markups).toHaveLength(3)
+    expect(snap.markups.find((m: any) => m.id === mid(1)).geometry.x).toBe(10)
+    // the revision it was issued from was frozen too
+    const first = (await app.inject({ url: `/api/documents/${doc}/revisions/${rev1}`, headers: h })).json()
+    expect(first.live).toBe(false)
+    expect(first.markups).toHaveLength(3)
+
+    // the issued revision is frozen, so an upload leaves its snapshot alone; the new current one stays live
+    const up = await send(`/api/documents/${doc}/revisions`, admin, multipart({ pageCount: '3' }, await pdfOf([100, 200, 300])))
+    expect(up.json()).toMatchObject({ revision: 3, kind: 'upload' })
+    const latest = (await app.inject({ url: `/api/documents/${doc}/revisions/${up.json().id}`, headers: h })).json()
+    expect(latest.live).toBe(true)
+    expect(latest.markups.find((m: any) => m.id === mid(1)).geometry.x).toBe(999)
+    // a following upload freezes revision 3 with the edit
+    await send(`/api/documents/${doc}/revisions`, admin, multipart({ pageCount: '3' }, await pdfOf([100, 200, 300])))
+    const frozen = (await app.inject({ url: `/api/documents/${doc}/revisions/${up.json().id}`, headers: h })).json()
+    expect(frozen.live).toBe(false)
+    expect(frozen.markups.find((m: any) => m.id === mid(1)).geometry.x).toBe(999)
+
+    const list = (await app.inject({ url: `/api/documents/${doc}/revisions`, headers: h })).json()
+    expect(list.map((r: any) => [r.revision, r.kind])).toEqual([[4, 'upload'], [3, 'upload'], [2, 'issued'], [1, 'upload']])
+    expect(list[2]).toMatchObject({ label: 'Rev 1 - Issued', has_snapshot: true })
+    expect(list[0].has_snapshot).toBe(false)
+    // file per revision
+    const f = await app.inject({ url: `/api/documents/${doc}/revisions/${issued.json().id}/file?token=${admin}` })
+    expect(f.statusCode).toBe(200)
+    expect(f.headers['content-type']).toBe('application/pdf')
+    expect((await app.inject({ url: `/api/documents/${doc}/revisions/nope`, headers: h })).statusCode).toBe(404)
+  })
+
+  it('deletes a page: later markups and scales move up, the deleted page stays in the snapshot only', async () => {
+    const del = (pages: number[], token = admin) => app.inject({ method: 'POST', url: `/api/documents/${doc}/pages/delete`, headers: { authorization: `Bearer ${token}` }, payload: { pages } })
+    await app.inject({ method: 'PUT', url: `/api/documents/${doc}/scales/3`, headers: h, payload: { points_per_foot: 12, label: '1/8' } })
+    expect((await del([2], viewer)).statusCode).toBe(403)
+    expect((await del([1, 2, 3])).statusCode).toBe(400)
+    const res = await del([2])
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toMatchObject({ kind: 'upload', page_count: 2, deleted_markups: 1, mapping: [1, null, 2] })
+    expect(await pageOf()).toEqual({ [mid(1)]: 1, [mid(3)]: 2 })
+    const scales = (await app.inject({ url: `/api/documents/${doc}/scales`, headers: h })).json()
+    expect(scales).toMatchObject([{ page: 2, points_per_foot: 12 }])
+    const list = (await app.inject({ url: `/api/documents/${doc}/revisions`, headers: h })).json()
+    const before = (await app.inject({ url: `/api/documents/${doc}/revisions/${list[1].id}`, headers: h })).json()
+    expect(before.live).toBe(false)
+    expect(before.markups.map((m: any) => m.page).sort()).toEqual([1, 2, 3])
+    const file = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}` })
+    const { PDFDocument } = await import('pdf-lib')
+    expect((await PDFDocument.load(file.rawPayload)).getPageCount()).toBe(2)
+  })
+
+  it('inserts, reorders and replaces pages with markups following', async () => {
+    const ins = await send(`/api/documents/${doc}/pages/insert`, admin, multipart({ at: '1' }, await pdfOf([50])))
+    expect(ins.statusCode, ins.body).toBe(200)
+    expect(ins.json()).toMatchObject({ page_count: 3, mapping: [2, 3] })
+    expect(await pageOf()).toEqual({ [mid(1)]: 2, [mid(3)]: 3 })
+    expect((await send(`/api/documents/${doc}/pages/insert`, admin, multipart({ at: '9' }, await pdfOf([50])))).statusCode).toBe(400)
+
+    const re = await app.inject({ method: 'POST', url: `/api/documents/${doc}/pages/reorder`, headers: h, payload: { order: [3, 1, 2] } })
+    expect(re.json().mapping).toEqual([2, 3, 1])
+    expect(await pageOf()).toEqual({ [mid(1)]: 3, [mid(3)]: 1 })
+    expect((await app.inject({ method: 'POST', url: `/api/documents/${doc}/pages/reorder`, headers: h, payload: { order: [1, 1, 2] } })).statusCode).toBe(400)
+
+    const rep = await send(`/api/documents/${doc}/pages/replace`, admin, multipart({ pages: '1' }, await pdfOf([77])))
+    expect(rep.statusCode, rep.body).toBe(200)
+    expect(await pageOf()).toEqual({ [mid(1)]: 3, [mid(3)]: 1 })
+    const { PDFDocument } = await import('pdf-lib')
+    const file = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}` })
+    expect((await PDFDocument.load(file.rawPayload)).getPages().map(p => p.getWidth())).toEqual([77, 50, 100])
+  })
+
+  it('rotates a page and turns its markups with it', async () => {
+    const res = await app.inject({ method: 'POST', url: `/api/documents/${doc}/pages/rotate`, headers: h, payload: { pages: [3], degrees: 90 } })
+    expect(res.statusCode, res.body).toBe(200)
+    const m = (await live()).find(x => x.id === mid(1))
+    expect(m.geometry).toMatchObject({ x: 80, y: 999, rotation: 90 }) // page 3 is 100x100 and the markup sits at (999,20) after the earlier edit
+    const { PDFDocument } = await import('pdf-lib')
+    const file = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}` })
+    expect((await PDFDocument.load(file.rawPayload)).getPage(2).getRotation().angle).toBe(90)
+  })
+})

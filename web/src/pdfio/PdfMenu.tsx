@@ -14,12 +14,15 @@ interface Props {
   scales: Map<number, PageScale>
   readOnly: boolean
   commit: (change: Change) => void
+  /** Opens the print dialog. */
+  onPrint?: () => void
+  printHint?: string
 }
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
 /** Viewer toolbar menu: annotated / flattened PDF export and import from an annotated PDF. */
-export function PdfMenu({ documentId, documentName, markups, symbolSets, scales, readOnly, commit }: Props) {
+export function PdfMenu({ documentId, documentName, markups, symbolSets, scales, readOnly, commit, onPrint, printHint }: Props) {
   const catalog = useCatalogContext()
   const menu = useRef<HTMLDetailsElement>(null)
   const file = useRef<HTMLInputElement>(null)
@@ -57,6 +60,7 @@ export function PdfMenu({ documentId, documentName, markups, symbolSets, scales,
         <div className="menu" role="menu">
           <button role="menuitem" onClick={() => run('annotated')} disabled={!!busy}>Export annotated PDF</button>
           <button role="menuitem" onClick={() => run('flattened')} disabled={!!busy}>Export flattened PDF</button>
+          {onPrint && <button role="menuitem" onClick={() => { close(); onPrint() }}>Print…{printHint ? ` (${printHint})` : ""}</button>}
           {!readOnly && <button role="menuitem" onClick={() => file.current?.click()} disabled={!!busy}>Import markups from PDF…</button>}
         </div>
       </details>

@@ -54,6 +54,8 @@ export const COMMANDS: Command[] = [
   { id: 'panel.tools', label: 'Toggle Tool chest', group: 'Panels', combo: 'Shift+T' },
   { id: 'panel.props', label: 'Toggle Properties', group: 'Panels', combo: 'Shift+I' },
   { id: 'panel.pages', label: 'Toggle Pages', group: 'Panels', combo: 'Shift+G' },
+  { id: 'panel.compare', label: 'Toggle Compare revisions', group: 'Panels', combo: 'Shift+C' },
+  { id: 'file.print', label: 'Print', group: 'File', combo: 'Ctrl+P' },
 ]
 
 export const DEFAULT_HOTKEYS: Record<string, string> = Object.fromEntries(COMMANDS.map(c => [c.id, c.combo]))

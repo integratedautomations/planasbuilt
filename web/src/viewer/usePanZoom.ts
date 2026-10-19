@@ -163,5 +163,5 @@ export function usePanZoom(
 
   useEffect(() => () => window.clearTimeout(settleTimer.current), [])
 
-  return { zoom, settledZoom, fit, zoomBy, centerOn, view }
+  return { zoom, settledZoom, fit, zoomBy, centerOn, view, setView: apply }
 }

@@ -1,10 +1,10 @@
 // Docking layout: which panel sits in which dock zone, which are open, and how big each zone is.
 
-export type PanelId = 'tools' | 'pages' | 'props' | 'markups'
+export type PanelId = 'tools' | 'pages' | 'props' | 'markups' | 'compare'
 export type Dock = 'left' | 'right' | 'bottom'
 
-export const PANEL_IDS: PanelId[] = ['tools', 'pages', 'props', 'markups']
-export const PANEL_TITLES: Record<PanelId, string> = { tools: 'Tool chest', pages: 'Pages', props: 'Properties', markups: 'Markups list' }
+export const PANEL_IDS: PanelId[] = ['tools', 'pages', 'props', 'markups', 'compare']
+export const PANEL_TITLES: Record<PanelId, string> = { tools: 'Tool chest', pages: 'Pages', props: 'Properties', markups: 'Markups list', compare: 'Compare' }
 export const DOCKS: Dock[] = ['left', 'right', 'bottom']
 
 export interface PanelState { dock: Dock; open: boolean }
@@ -20,6 +20,7 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
     pages: { dock: 'left', open: true },
     props: { dock: 'right', open: true },
     markups: { dock: 'bottom', open: false },
+    compare: { dock: 'right', open: false },
   },
   sizes: { left: 220, right: 290, bottom: 300 },
 }

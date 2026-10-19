@@ -57,6 +57,11 @@ export const documentFileUrl = (id: string, revisionId?: string) =>
 export interface DocumentRevision {
   id: string; revision: number; page_count: number; created_at: string
   uploaded_by?: string | null; uploaded_by_name?: string | null
+  /** 'upload' (a new PDF or page edit) or 'issued' (a named snapshot of the same PDF). */
+  kind?: 'upload' | 'issued'
+  label?: string; note?: string
+  /** False only for the newest revision, whose markups are still the live ones. */
+  has_snapshot?: boolean
 }
 /** Answer to uploading a new revision: markups on pages the new file doesn't have are kept and reported. */
 export type RevisionUpload = DocumentRevision & { orphaned_markups: number; orphaned_pages: number[] }

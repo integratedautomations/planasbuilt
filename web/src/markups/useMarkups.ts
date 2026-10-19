@@ -169,8 +169,18 @@ export function useMarkups(documentId: string) {
     return change
   }, [applyLocal, persist, warnIfOverwritingRemote])
 
+  /** Re-reads the document's markups from the server (after page edits moved them) and forgets undo history. */
+  const reload = useCallback(async () => {
+    const { data, fromCache } = await loadMarkups(documentId)
+    setMarkups(new Map(data.map(m => [m.id, m])))
+    setFromCache(fromCache)
+    undoStack.current = []
+    redoStack.current = []
+    bump(n => n + 1)
+  }, [documentId])
+
   return {
-    markups, loaded, loadError, fromCache,
+    markups, loaded, loadError, fromCache, reload,
     commit, undo, redo,
     canUndo: undoStack.current.length > 0,
     canRedo: redoStack.current.length > 0,

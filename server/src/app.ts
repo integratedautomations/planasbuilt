@@ -1,3 +1,4 @@
+import { readFile, writeFile } from 'node:fs/promises'
 import { createReadStream, createWriteStream, existsSync, mkdirSync, unlink } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { randomUUID } from 'node:crypto'
@@ -11,6 +12,8 @@ import bcrypt from 'bcryptjs'
 import websocket from '@fastify/websocket'
 import { Db } from './db.js'
 import { Realtime } from './realtime.js'
+import { countPages, editPdf, isIdentity, pageSizes, PageOpError, parsePageList, remapPages, rotateGeometry } from './pages.js'
+import type { PageMapping, PageOp } from './pages.js'
 
 export type Role = 'admin' | 'editor' | 'viewer'
 const ROLE_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 }
@@ -278,7 +281,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const doc = await documentWithAccess(req, reply, 'viewer')
     if (!doc) return
     const revisions = await db.query(
-      'SELECT id, revision, page_count, created_at FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC', [doc.id])
+      'SELECT id, revision, page_count, created_at, kind, label FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC', [doc.id])
     return { ...doc, revisions }
   })
 
@@ -315,7 +318,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return reply.send(createReadStream(filePath))
   })
 
-  const REVISION_SQL = `SELECT r.id, r.revision, r.page_count, r.created_at, r.uploaded_by, u.name AS uploaded_by_name
+  const REVISION_SQL = `SELECT r.id, r.revision, r.page_count, r.created_at, r.uploaded_by, u.name AS uploaded_by_name,
+      r.kind, r.label, r.note, (r.markups_snapshot IS NOT NULL) AS has_snapshot
     FROM document_revisions r LEFT JOIN users u ON u.id = r.uploaded_by WHERE r.document_id = $1 ORDER BY r.revision DESC`
 
   app.get('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
@@ -324,8 +328,48 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return db.query(REVISION_SQL, [doc.id])
   })
 
+  type Q = Db['query']
+
+  /** Everything a revision freezes besides the PDF: all live markups (full rows), photo references and page scales. */
+  async function liveSnapshot(q: Q, docId: string) {
+    const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
+    const markups = await q(
+      `SELECT ${cols}, cu.name AS created_by_name, uu.name AS updated_by_name
+       FROM markups m LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
+       WHERE m.document_id = $1 AND NOT m.deleted ORDER BY m.created_at`, [docId])
+    const attachments = await q(
+      `SELECT a.id, a.markup_id, a.file_key, a.annotated_key, a.caption, a.width, a.height, a.created_at
+       FROM attachments a JOIN markups m ON m.id = a.markup_id WHERE m.document_id = $1 AND NOT m.deleted ORDER BY a.created_at, a.id`, [docId])
+    const scales = await q('SELECT page, points_per_foot, label FROM page_scales WHERE document_id = $1 ORDER BY page', [docId])
+    return { markups, attachments, scales }
+  }
+  type Snapshot = Awaited<ReturnType<typeof liveSnapshot>>
+
+  /** The newest revision is "live" (its markups are the document's). Before something supersedes it, freeze them into it. */
+  async function freezeLatest(q: Q, docId: string): Promise<Snapshot | null> {
+    const [latest] = await q('SELECT id, (markups_snapshot IS NULL) AS live FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [docId])
+    if (!latest?.live) return null
+    const s = await liveSnapshot(q, docId)
+    await q('UPDATE document_revisions SET markups_snapshot = $2, attachments_snapshot = $3, scales_snapshot = $4 WHERE id = $1',
+      [latest.id, JSON.stringify(s.markups), JSON.stringify(s.attachments), JSON.stringify(s.scales)])
+    return s
+  }
+
+  interface NewRevision { kind: 'upload' | 'issued'; label: string; note: string; fileKey: string; pageCount: number; userId: string; snapshot?: Snapshot | null }
+  async function insertRevision(q: Q, docId: string, r: NewRevision) {
+    const [rev] = await q(
+      `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by, kind, label, note, markups_snapshot, attachments_snapshot, scales_snapshot)
+       VALUES ($1, (SELECT coalesce(max(revision), 0) + 1 FROM document_revisions WHERE document_id = $1), $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, revision, page_count, created_at, uploaded_by, kind, label, note`,
+      [docId, r.fileKey, r.pageCount, r.userId, r.kind, r.label, r.note,
+        r.snapshot ? JSON.stringify(r.snapshot.markups) : null, r.snapshot ? JSON.stringify(r.snapshot.attachments) : null,
+        r.snapshot ? JSON.stringify(r.snapshot.scales) : null])
+    return rev
+  }
+
   // New revision: becomes current, old ones are kept. Markups stay keyed to document+page, so they carry forward;
-  // those on pages beyond the new page count are kept and reported as orphaned.
+  // those on pages beyond the new page count are kept and reported as orphaned. The markups as they were at this moment
+  // are frozen into the revision being replaced (so it can be viewed and compared later).
   app.post('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'editor')
     if (!doc) return
@@ -337,14 +381,178 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     await pipeline(file.file, createWriteStream(path.join(filesDir, fileKey)))
     if (file.file.truncated) return reply.code(413).send({ error: 'File too large' })
     const pageCount = Math.max(1, Math.floor(Number((file.fields as any).pageCount?.value)) || 1)
-    const [rev] = await db.query(
-      `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by)
-       VALUES ($1, (SELECT coalesce(max(revision), 0) + 1 FROM document_revisions WHERE document_id = $1), $2, $3, $4)
-       RETURNING id, revision, page_count, created_at, uploaded_by`, [doc.id, fileKey, pageCount, req.user.id])
+    const label = String((file.fields as any).label?.value ?? '').slice(0, 200)
+    const note = String((file.fields as any).note?.value ?? '').slice(0, 2000)
+    const rev = await db.transaction(async q => {
+      await freezeLatest(q, doc.id)
+      return insertRevision(q, doc.id, { kind: 'upload', label, note, fileKey, pageCount, userId: req.user.id })
+    })
     const orphans = await db.query<{ id: string; page: number }>(
       'SELECT id, page FROM markups WHERE document_id = $1 AND NOT deleted AND page > $2 ORDER BY page', [doc.id, pageCount])
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
     return { ...rev, orphaned_markups: orphans.length, orphaned_pages: [...new Set(orphans.map(o => o.page))] }
+  })
+
+  // Issue revision: freeze the current PDF + markups + device data under a name, without changing anything live.
+  app.post('/api/documents/:id/revisions/issue', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const b = (req.body ?? {}) as any
+    const label = String(b.label ?? '').trim().slice(0, 200)
+    if (!label) return reply.code(400).send({ error: 'A revision name is required' })
+    const note = String(b.note ?? '').trim().slice(0, 2000)
+    const rev = await db.transaction(async q => {
+      const [latest] = await q('SELECT file_key, page_count FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+      const snapshot = await liveSnapshot(q, doc.id)
+      await freezeLatest(q, doc.id) // the revision being issued from is frozen at the same instant
+      return insertRevision(q, doc.id, { kind: 'issued', label, note, fileKey: latest.file_key, pageCount: latest.page_count, userId: req.user.id, snapshot })
+    })
+    realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
+    return rev
+  })
+
+  // One revision: meta plus the markups (and photo references / scales) as they were. The newest revision, which is
+  // still live, answers with the current markups and `live: true`.
+  app.get('/api/documents/:id/revisions/:rid', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'viewer')
+    if (!doc) return
+    const { rid } = req.params as any
+    const [rev] = UUID_RE.test(String(rid)) ? await db.query(
+      `SELECT r.id, r.revision, r.page_count, r.created_at, r.uploaded_by, u.name AS uploaded_by_name, r.kind, r.label, r.note,
+              r.markups_snapshot, r.attachments_snapshot, r.scales_snapshot
+       FROM document_revisions r LEFT JOIN users u ON u.id = r.uploaded_by WHERE r.document_id = $1 AND r.id = $2`, [doc.id, rid]) : []
+    if (!rev) return reply.code(404).send({ error: 'Revision not found' })
+    const { markups_snapshot, attachments_snapshot, scales_snapshot, ...meta } = rev
+    if (markups_snapshot) return { ...meta, live: false, markups: markups_snapshot, attachments: attachments_snapshot ?? [], scales: scales_snapshot ?? [] }
+    const s = await liveSnapshot(db.query, doc.id)
+    return { ...meta, live: true, ...s }
+  })
+
+  app.get('/api/documents/:id/revisions/:rid/file', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'viewer')
+    if (!doc) return
+    const { rid } = req.params as any
+    const [rev] = UUID_RE.test(String(rid)) ? await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : []
+    if (!rev) return reply.code(404).send({ error: 'Revision not found' })
+    const filePath = path.join(filesDir, rev.file_key)
+    if (!existsSync(filePath)) return reply.code(404).send({ error: 'File missing' })
+    reply.header('Content-Type', 'application/pdf')
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    return reply.send(createReadStream(filePath))
+  })
+
+  // ---- Page tools: every operation writes a new PDF and a new revision; markups, scales and areas follow their pages ----
+  const describePages = (pages: number[]) => (pages.length === 1 ? `page ${pages[0]}` : `pages ${pages.join(', ')}`)
+
+  async function runPageOp(req: FastifyRequest, reply: FastifyReply, doc: any, op: PageOp, label: string, other?: Uint8Array) {
+    const [latest] = await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+    const srcPath = latest && path.join(filesDir, latest.file_key)
+    if (!srcPath || !existsSync(srcPath)) return reply.code(404).send({ error: 'File missing' })
+    const src = new Uint8Array(await readFile(srcPath))
+    let sizes: { width: number; height: number }[], mapping: PageMapping, edited: { bytes: Uint8Array; pageCount: number }
+    try {
+      sizes = await pageSizes(src)
+      mapping = remapPages(op, sizes.length)
+      edited = await editPdf(src, op, other)
+    } catch (e) {
+      if (e instanceof PageOpError) return reply.code(400).send({ error: e.message })
+      return reply.code(400).send({ error: `Could not edit that PDF: ${(e as Error).message}` })
+    }
+    const fileKey = `${randomUUID()}.pdf`
+    await writeFile(path.join(filesDir, fileKey), edited.bytes)
+    let deletedMarkups = 0
+    const rev = await db.transaction(async q => {
+      await freezeLatest(q, doc.id)
+      if (!isIdentity(mapping)) {
+        const from = mapping.map.map((_, i) => i + 1), to = mapping.map.map(n => n ?? 0)
+        const gone = from.filter((_, i) => mapping.map[i] === null)
+        const [{ n }] = await q<{ n: number }>(
+          'SELECT count(*)::int AS n FROM markups m WHERE m.document_id = $1 AND NOT m.deleted AND m.page = ANY($2::int[])', [doc.id, gone])
+        deletedMarkups = n
+        await q(
+          `INSERT INTO markup_events (markup_id, user_id, action, changes)
+           SELECT m.id, $3, 'deleted', '{"reason":"page removed"}'::jsonb FROM markups m
+           WHERE m.document_id = $1 AND NOT m.deleted AND m.page = ANY($2::int[])`, [doc.id, gone, req.user.id])
+        // One statement, so pages that swap or shift never collide with each other.
+        await q(
+          `UPDATE markups m SET page = CASE WHEN t.np > 0 THEN t.np ELSE m.page END, deleted = (t.np = 0),
+             version = m.version + 1, updated_by = $4, updated_at = now()
+           FROM unnest($2::int[], $3::int[]) AS t(op, np)
+           WHERE m.document_id = $1 AND NOT m.deleted AND m.page = t.op AND t.np <> t.op`, [doc.id, from, to, req.user.id])
+        const scales = await q('SELECT page, points_per_foot, label, updated_by FROM page_scales WHERE document_id = $1', [doc.id])
+        await q('DELETE FROM page_scales WHERE document_id = $1', [doc.id])
+        for (const s of scales) {
+          const np = mapping.map[s.page - 1]
+          if (np) await q('INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by) VALUES ($1,$2,$3,$4,$5)',
+            [doc.id, np, s.points_per_foot, s.label, s.updated_by])
+        }
+      }
+      if (op.type === 'rotate') {
+        const rows = await q<{ id: string; page: number; geometry: any }>(
+          'SELECT id, page, geometry FROM markups WHERE document_id = $1 AND NOT deleted AND page = ANY($2::int[])', [doc.id, op.pages])
+        for (const m of rows) {
+          const size = sizes[m.page - 1]
+          if (!size) continue
+          await q('UPDATE markups SET geometry = $2, version = version + 1, updated_by = $3, updated_at = now() WHERE id = $1',
+            [m.id, JSON.stringify(rotateGeometry(m.geometry, op.degrees, size.width, size.height)), req.user.id])
+        }
+      }
+      return insertRevision(q, doc.id, { kind: 'upload', label, note: '', fileKey, pageCount: edited.pageCount, userId: req.user.id })
+    })
+    realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
+    realtime.scalesChanged(doc.id, req.user.id, cid(req))
+    return { ...rev, mapping: mapping.map, deleted_markups: deletedMarkups }
+  }
+
+  /** Reads the uploaded PDF of a multipart page-tool request. Text fields must come before the file part. */
+  async function pageToolUpload(req: FastifyRequest, reply: FastifyReply) {
+    const file = await req.file()
+    if (!file) { reply.code(400).send({ error: 'No file' }); return null }
+    const bytes = new Uint8Array(await file.toBuffer())
+    if (file.file.truncated) { reply.code(413).send({ error: 'File too large' }); return null }
+    return { bytes, fields: file.fields as any }
+  }
+
+  app.post('/api/documents/:id/pages/insert', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const up = await pageToolUpload(req, reply)
+    if (!up) return
+    let count: number
+    try { count = await countPages(up.bytes) } catch { return reply.code(400).send({ error: 'That is not a readable PDF' }) }
+    const at = Number(up.fields.at?.value)
+    return runPageOp(req, reply, doc, { type: 'insert', at, count }, `Inserted ${count} page${count === 1 ? '' : 's'} at ${at}`, up.bytes)
+  })
+
+  app.post('/api/documents/:id/pages/replace', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const up = await pageToolUpload(req, reply)
+    if (!up) return
+    const pages = parsePageList(String(up.fields.pages?.value ?? ''), 1_000_000)
+    if (!pages) return reply.code(400).send({ error: 'Pages must look like 3 or 2-4' })
+    return runPageOp(req, reply, doc, { type: 'replace', pages }, `Replaced ${describePages(pages)}`, up.bytes)
+  })
+
+  app.post('/api/documents/:id/pages/delete', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const pages = (req.body as any)?.pages
+    return runPageOp(req, reply, doc, { type: 'delete', pages }, `Deleted ${Array.isArray(pages) ? describePages(pages) : 'pages'}`)
+  })
+
+  app.post('/api/documents/:id/pages/reorder', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    return runPageOp(req, reply, doc, { type: 'reorder', order: (req.body as any)?.order }, 'Reordered pages')
+  })
+
+  app.post('/api/documents/:id/pages/rotate', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const b = (req.body ?? {}) as any
+    const deg = b.degrees === undefined ? 90 : Number(b.degrees)
+    return runPageOp(req, reply, doc, { type: 'rotate', pages: b.pages, degrees: deg }, `Rotated ${Array.isArray(b.pages) ? describePages(b.pages) : 'pages'} ${deg}°`)
   })
 
   // ---- Page scales ----

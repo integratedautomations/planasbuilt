@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { post } from '../api'
-import type { Project } from '../api'
+import type { DocumentRevision, Project } from '../api'
 import { clampRenderScale, loadPdf } from '../pdf'
 import type { PDFDocumentProxy, PDFPageProxy } from '../pdf'
 import { Thumbnails } from '../viewer/Thumbnails'
+import type { PageAction } from '../viewer/Thumbnails'
 import { usePanZoom } from '../viewer/usePanZoom'
 import type { View } from '../viewer/usePanZoom'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
@@ -41,7 +42,7 @@ import { invalidatePdf, loadDocMeta, loadLayers, loadPdfBytes, loadProject, load
 import { OfflineMissError } from '../offline/classify'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { SyncIndicator } from '../offline/SyncIndicator'
-import { queueScaleDelete, queueScalePut } from '../offline/sync'
+import { flushWrites, queueScaleDelete, queueScalePut } from '../offline/sync'
 import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import { defaultProductId, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
@@ -52,6 +53,23 @@ import { deletedToast } from '../realtime/handlers'
 import { usePeers } from '../realtime/hooks'
 import { joinDocument, on as onSocket, sendPresence } from '../realtime/socket'
 import { PdfMenu } from '../pdfio/PdfMenu'
+import { PrintDialog } from '../pdfio/PrintDialog'
+import { buildPrintPdf, printPdfBytes } from '../pdfio/print'
+import type { PrintSettings } from '../pdfio/print'
+import { buildSubset } from '../pdfio/pageSubset'
+import { loadIcons } from '../pdfio/icons'
+import { downloadBytes } from '../pdfio/download'
+import { exportFileName } from '../pdfio/build'
+import { ComparePanel } from '../revisions/ComparePanel'
+import type { CompareRequest } from '../revisions/ComparePanel'
+import { CompareView } from '../revisions/CompareView'
+import type { CompareMode } from '../revisions/CompareView'
+import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
+import { RevisionMenu } from '../revisions/RevisionMenu'
+import { cloudChange } from '../revisions/clouds'
+import type { CloudInput } from '../revisions/clouds'
+import { deletePages, fetchRevisionPdf, insertPages, listRevisions, loadRevision, moveOrder, replacePages, reorderPages, revisionName, rotatePages } from '../revisions/api'
+import type { PageOpResult, RevisionDetail } from '../revisions/api'
 import { MarkupsList } from '../schedule/MarkupsList'
 import type { JumpTarget } from '../schedule/MarkupsList'
 
@@ -150,6 +168,25 @@ export function ViewerPage() {
   /** Bumped when a new revision of this plan was uploaded: reloads the PDF. */
   const [reloadTick, setReloadTick] = useState(0)
   const loadedRevision = useRef<string | undefined>(undefined)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const revParam = searchParams.get('rev')
+  const compareParam = searchParams.get('compare')
+  const revParamRef = useRef(revParam)
+  revParamRef.current = revParam
+  /** An earlier revision opened read-only (?rev=<id>). While it loads, the plan shows empty rather than the live markups. */
+  const [revDetail, setRevDetail] = useState<RevisionDetail | null>(null)
+  const viewingOld = !!revParam && !(revDetail?.id === revParam && revDetail.live)
+  const [revList, setRevList] = useState<DocumentRevision[]>([])
+  const [issueOpen, setIssueOpen] = useState(false)
+  const [compareReq, setCompareReq] = useState<CompareRequest | null>(null)
+  const [compareMode, setCompareMode] = useState<CompareMode>('side')
+  const [showCompare, setShowCompare] = useState(false)
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const [printError, setPrintError] = useState('')
+  const [pageBusy, setPageBusy] = useState('')
+  const pickFile = useRef<HTMLInputElement>(null)
+  const pendingPick = useRef<((f: File) => void) | null>(null)
   const [notCached, setNotCached] = useState(false)
   const [showThumbs, setShowThumbs] = useState(() => window.innerWidth >= 1025)
   const [showPanel, setShowPanel] = useState(() => window.innerWidth >= 1025)
@@ -203,6 +240,40 @@ export function ViewerPage() {
   const clipboard = useRef<Markup[]>([])
 
   const store = useMarkups(documentId)
+  const storeRef = useRef(store)
+  storeRef.current = store
+  /** The markups on screen: the live ones, or an earlier revision's frozen set. */
+  const allMarkups = useMemo(() => (viewingOld
+    ? new Map((revDetail && revDetail.id === revParam ? revDetail.markups : []).map(m => [m.id, m] as const))
+    : store.markups), [viewingOld, revDetail, revParam, store.markups])
+
+  const refreshRevs = useCallback(() => { listRevisions(documentId).then(setRevList).catch(() => {}) }, [documentId])
+  useEffect(() => { refreshRevs() }, [refreshRevs, reloadTick])
+  const reloadScales = useCallback(() => {
+    loadScales(documentId).then(({ data: rows }) =>
+      setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {})
+  }, [documentId])
+
+  useEffect(() => {
+    if (!revParam) { setRevDetail(null); return }
+    let cancelled = false
+    loadRevision(documentId, revParam).then(d => {
+      if (cancelled) return
+      if (d.live) { setSearchParams(p => { p.delete('rev'); return p }, { replace: true }); return }
+      setRevDetail(d)
+      setScales(new Map(d.scales.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))
+    }).catch(e => { if (!cancelled) setError(e.message) })
+    return () => { cancelled = true }
+  }, [documentId, revParam]) // eslint-disable-line react-hooks/exhaustive-deps
+  const backToCurrent = useCallback(() => {
+    setSearchParams(p => { p.delete('rev'); return p }, { replace: true })
+    setRevDetail(null)
+    reloadScales()
+  }, [setSearchParams, reloadScales])
+  const viewRevision = useCallback((id: string | null) => {
+    if (!id) { backToCurrent(); return }
+    setSearchParams(p => { p.set('rev', id); return p })
+  }, [backToCurrent, setSearchParams])
 
   // ---- live sync: presence out, remote changes in
   const canHover = useMediaQuery('(hover: hover)')
@@ -232,7 +303,8 @@ export function ViewerPage() {
     const t = setTimeout(() => setToast(''), 4000)
     return () => clearTimeout(t)
   }, [toast])
-  const readOnly = project?.role === 'viewer'
+  const canEditRole = project?.role === 'admin' || project?.role === 'editor'
+  const readOnly = project?.role === 'viewer' || viewingOld
   const activeTool: Tool = spaceHeld ? 'pan' : tool
 
   const syncStage = useCallback((v: View) => {
@@ -260,12 +332,12 @@ export function ViewerPage() {
       setSymbolSetList(sets)
       setActiveSetId(id => id ?? sets[0]?.id ?? null)
     }).catch(() => {})
-    loadScales(documentId).then(({ data: rows }) =>
-      setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {})
+    if (!revParam) reloadScales()
     let cancelled = false
     let task: ReturnType<typeof loadPdf> | null = null
     setNotCached(false)
-    loadDocMeta(documentId).then(r => r.data.revisions[0]?.id, () => undefined).then(revisionId => {
+    ;(revParam ? Promise.resolve(undefined) : loadDocMeta(documentId).then(r => r.data.revisions[0]?.id, () => undefined)).then(revisionId => {
+      if (revParam) return fetchRevisionPdf(documentId, revParam)
       loadedRevision.current = revisionId
       return loadPdfBytes(documentId, revisionId)
     }).then(bytes => {
@@ -282,7 +354,7 @@ export function ViewerPage() {
       else setError(`Could not open PDF: ${e.message}`)
     })
     return () => { cancelled = true; task?.destroy() }
-  }, [documentId, projectId, reloadTick])
+  }, [documentId, projectId, reloadTick, revParam]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Things other people changed (or that we missed while disconnected): refetch the lists we show.
   useEffect(() => {
@@ -291,11 +363,16 @@ export function ViewerPage() {
         setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {}) }),
       // A new revision was uploaded (or we missed one while offline): drop the stored PDF and reload.
       onSocket('revision', () => {
+        refreshRevs()
         loadDocMeta(documentId).then(r => {
           const latest = r.data.revisions[0]
-          if (r.fromCache || !latest || latest.id === loadedRevision.current) return
+          if (r.fromCache || !latest || latest.id === loadedRevision.current || revParamRef.current) return
+          if (latest.kind === 'issued') { // same PDF and markups: only the revision list changed
+            setToast(`Rev ${latest.revision} was issued${latest.label ? `: ${latest.label}` : ''}.`)
+            return
+          }
           setToast(`Revision ${latest.revision} was uploaded; reloading the plan.`)
-          void invalidatePdf(documentId).then(() => setReloadTick(t => t + 1))
+          void invalidatePdf(documentId).then(() => { void storeRef.current.reload(); reloadScales(); setReloadTick(t => t + 1) })
         }).catch(() => {})
       }),
       onSocket('layers', () => { loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {}) }),
@@ -313,7 +390,7 @@ export function ViewerPage() {
       }),
     ]
     return () => offs.forEach(off => off())
-  }, [documentId, projectId])
+  }, [documentId, projectId, refreshRevs, reloadScales])
 
   useEffect(() => {
     if (!pdf) return
@@ -355,28 +432,28 @@ export function ViewerPage() {
   const flagged = (flags: Set<string>, m: Markup) =>
     flags.has(m.layer_id ?? '') || (!!m.symbol_set_id && flags.has(`set:${m.symbol_set_id}`))
   const pageMarkups = useMemo(
-    () => [...store.markups.values()].filter(m => m.page === pageNum && !flagged(hidden, m)),
-    [store.markups, pageNum, hidden]) // eslint-disable-line react-hooks/exhaustive-deps
+    () => [...allMarkups.values()].filter(m => m.page === pageNum && !flagged(hidden, m)),
+    [allMarkups, pageNum, hidden]) // eslint-disable-line react-hooks/exhaustive-deps
   // Area hierarchy is built from every area (even on hidden layers or with outlines hidden) so paths stay reliable.
-  const areaIndex = useMemo(() => buildAreaIndex([...store.markups.values()].filter(isArea)), [store.markups])
+  const areaIndex = useMemo(() => buildAreaIndex([...allMarkups.values()].filter(isArea)), [allMarkups])
   const pageAreas = useMemo(() => [...areaIndex.byId.values()].filter(a => a.page === pageNum), [areaIndex, pageNum])
   const areaPaths = useMemo(() => new Map(pageAreas.map(a => [a.id, areaPathIn(areaIndex, a)])), [areaIndex, pageAreas])
-  const counts = useMemo(() => deviceCounts(areaIndex, store.markups.values()), [areaIndex, store.markups])
+  const counts = useMemo(() => deviceCounts(areaIndex, allMarkups.values()), [areaIndex, allMarkups])
   const canvasMarkups = useMemo(() => showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area'), [pageMarkups, showAreas])
   /** Markups kept from an earlier revision whose pages the current PDF no longer has. */
   const orphaned = useMemo(() => {
     const pages = new Set<number>()
     let count = 0
-    if (pdf) for (const m of store.markups.values()) if (m.page > pdf.numPages) { pages.add(m.page); count++ }
+    if (pdf && !viewingOld) for (const m of allMarkups.values()) if (m.page > pdf.numPages) { pages.add(m.page); count++ }
     return { count, pages: [...pages].sort((a, b) => a - b) }
-  }, [pdf, store.markups])
+  }, [pdf, allMarkups, viewingOld])
   const stackIndex = useMemo(() => detectStacks(pageMarkups), [pageMarkups])
   const lockedIds = useMemo(
     () => new Set(pageMarkups.filter(m => flagged(locked, m)).map(m => m.id)),
     [pageMarkups, locked]) // eslint-disable-line react-hooks/exhaustive-deps
   const selected = useMemo(
-    () => selectedIds.map(id => store.markups.get(id)).filter((m): m is Markup => !!m),
-    [selectedIds, store.markups])
+    () => selectedIds.map(id => allMarkups.get(id)).filter((m): m is Markup => !!m),
+    [selectedIds, allMarkups])
 
   /** Jump to a markup from the list: switch document/page if needed, then select and center it. */
   const jumpTo = useCallback((t: JumpTarget) => {
@@ -389,23 +466,23 @@ export function ViewerPage() {
   useEffect(() => {
     const j = pendingJump.current
     if (!j || !page || !pdf || pageSrc !== pdf || pdfFor !== documentId || pageNum !== j.page || page.pageNumber !== j.page || !store.loaded) return
-    const m = store.markups.get(j.id)
+    const m = allMarkups.get(j.id)
     if (!m || m.document_id !== documentId) return
     pendingJump.current = null
     setSelectedIds([m.id])
     const a = anchorOf(m)
     centerOn(a.x, a.y, Math.max(view.current.zoom, 1))
-  }, [page, pageSrc, pdf, pdfFor, documentId, pageNum, store.loaded, store.markups, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [page, pageSrc, pdf, pdfFor, documentId, pageNum, store.loaded, allMarkups, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Avatar tap: go to that person's page and centre on their cursor or selection. */
   const jumpToPeer = useCallback((p: { page: number | null; cursor: Pt | null; selection: string[] }) => {
-    const sel = p.selection.map(id => store.markups.get(id)).find(m => !!m)
+    const sel = p.selection.map(id => allMarkups.get(id)).find(m => !!m)
     const at = p.cursor ?? (sel ? anchorOf(sel) : null)
     const target = p.page ?? pageNum
     if (at) pendingCenter.current = { page: target, x: at.x, y: at.y }
     if (target !== pageNum) setPageNum(Math.min(Math.max(1, target), pageCount || target))
     setJumpTick(n => n + 1)
-  }, [store.markups, pageNum]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allMarkups, pageNum]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const c = pendingCenter.current
     if (!c || !page || pageSrc !== pdf || page.pageNumber !== c.page) return
@@ -481,7 +558,7 @@ export function ViewerPage() {
     setNaming(null)
     if (!n || readOnly) return
     const text = name.trim()
-    const existing = n.id ? store.markups.get(n.id) : undefined
+    const existing = n.id ? allMarkups.get(n.id) : undefined
     if (existing) {
       if (text !== existing.text) store.commit([{ before: existing, after: { ...existing, text } }])
       return
@@ -564,6 +641,93 @@ export function ViewerPage() {
 
   const cutSelected = useCallback(() => { if (readOnly) return; copySelected(); deleteSelected() }, [readOnly, copySelected, deleteSelected])
 
+  // ---- revisions, page tools, print
+  const scaleMap = useCallback(() => new Map([...scales].map(([p, sc]) => [p, sc.pointsPerFoot] as const)), [scales])
+
+  /** The PDF being shown, as fresh bytes (pdf.js takes ownership of the ones it was given). */
+  const currentPdfBytes = useCallback(
+    () => (revParam ? fetchRevisionPdf(documentId, revParam) : loadPdfBytes(documentId, loadedRevision.current)), [documentId, revParam])
+
+  const jumpToSpot = useCallback((p: number, x: number, y: number) => {
+    pendingCenter.current = { page: p, x, y }
+    setPageNum(Math.min(Math.max(1, p), pageCount || p))
+    setJumpTick(n => n + 1)
+  }, [pageCount])
+
+  const makeClouds = useCallback(async (inputs: CloudInput[], layerName: string) => {
+    if (readOnly) throw new Error('Clouds can only be added to the current plan')
+    let layer = layers.find(l => l.name === layerName)
+    if (!layer) {
+      layer = await post<Layer>(`/projects/${projectId}/layers`, { name: layerName, color: '#e03131' })
+      setLayers(ls => [...ls, layer!])
+    }
+    store.commit(cloudChange(inputs, { documentId, layerId: layer.id, newId: uuid }))
+  }, [readOnly, layers, projectId, documentId, store])
+
+  async function afterPageOp(res: PageOpResult) {
+    await invalidatePdf(documentId)
+    await store.reload()
+    reloadScales()
+    refreshRevs()
+    setSelectedIds([])
+    setPageNum(n => Math.min(Math.max(1, res.mapping[n - 1] ?? Math.min(n, res.page_count)), res.page_count))
+    setReloadTick(t => t + 1)
+    setToast(`Rev ${res.revision}: ${res.label || 'plan updated'}${res.deleted_markups ? ` (${res.deleted_markups} markup${res.deleted_markups === 1 ? '' : 's'} removed; kept in the earlier revision)` : ''}`)
+  }
+  async function runPageTool(fn: () => Promise<PageOpResult>) {
+    if (readOnly || pageBusy) return
+    setPageBusy('Updating pages…')
+    try {
+      await flushWrites() // unsent edits carry the old page numbers
+      await afterPageOp(await fn())
+    } catch (e) { setToast((e as Error).message) } finally { setPageBusy('') }
+  }
+  const choosePdf = (then: (f: File) => void) => { pendingPick.current = then; pickFile.current?.click() }
+  async function extractPages(pages: number[]) {
+    setPageBusy('Extracting pages…')
+    try {
+      const bytes = await buildSubset({
+        pdfBytes: await currentPdfBytes(), pages, markups: [...allMarkups.values()], symbolSets, scales: scaleMap(),
+        icons: await loadIcons(symbolSets.values(), catalog.types.values()), mode: 'annotate', showCones,
+      })
+      downloadBytes(bytes, exportFileName(meta?.name ?? 'plan', `page${pages.length === 1 ? '' : 's'}-${pages.slice(0, 6).join('_')}${pages.length > 6 ? '_etc' : ''}`))
+    } catch (e) { setToast(`Could not extract: ${(e as Error).message}`) } finally { setPageBusy('') }
+  }
+  const pageList = (pages: number[]) => (pages.length === 1 ? `page ${pages[0]}` : `${pages.length} pages`)
+  const onPageAction = (a: PageAction) => {
+    switch (a.type) {
+      case 'extract': void extractPages(a.pages); break
+      case 'rotate': void runPageTool(() => rotatePages(documentId, a.pages)); break
+      case 'delete':
+        if (confirm(`Delete ${pageList(a.pages)}? Their markups leave the plan but stay in the previous revision, which you can still open.`))
+          void runPageTool(() => deletePages(documentId, a.pages))
+        break
+      case 'move': void runPageTool(() => reorderPages(documentId, moveOrder(pageCount, a.from, a.to))); break
+      case 'insert': choosePdf(f => { void runPageTool(() => insertPages(documentId, f, a.at)) }); break
+      case 'replace': choosePdf(f => { void runPageTool(() => replacePages(documentId, f, a.pages.join(','))) }); break
+    }
+  }
+  const pageToolsOn = canEditRole && !viewingOld
+
+  async function doPrint(settings: PrintSettings) {
+    setPrintBusy(true); setPrintError('')
+    try {
+      const bytes = await buildPrintPdf({
+        documentId, markups: allMarkups.values(), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones,
+        pdfBytes: revParam ? await fetchRevisionPdf(documentId, revParam) : undefined,
+      }, settings, pageNum, pageCount)
+      await printPdfBytes(bytes)
+      setPrintOpen(false)
+    } catch (e) { setPrintError((e as Error).message) } finally { setPrintBusy(false) }
+  }
+
+  // Project page links here with ?compare=<older revision>: open the Compare panel against the newest one.
+  useEffect(() => {
+    if (!compareParam || revList.length < 2) return
+    setPanel('compare', true)
+    setSearchParams(p => { p.delete('compare'); return p }, { replace: true })
+  }, [compareParam, revList.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const toolEntries = useMemo(() => buildToolEntries(symbolSetList, catalogData.device_types), [symbolSetList, catalogData.device_types])
   const entryMap = useMemo(() => new Map(toolEntries.map(e => [e.id, e])), [toolEntries])
 
@@ -587,7 +751,7 @@ export function ViewerPage() {
 
   const setPanel = useCallback((id: PanelId, open: boolean) => {
     if (isPhone) {
-      if (id === 'pages') setShowThumbs(open); else if (id === 'props') setShowPanel(open); else if (id === 'markups') setShowList(open)
+      if (id === 'pages') setShowThumbs(open); else if (id === 'props') setShowPanel(open); else if (id === 'markups') setShowList(open); else if (id === 'compare') setShowCompare(open)
       return
     }
     const l = getPrefs().layout
@@ -595,7 +759,7 @@ export function ViewerPage() {
     if (open) setZoneTab(z => ({ ...z, [l.panels[id].dock]: id }))
   }, [isPhone])
   const panelOpen = (id: PanelId) =>
-    isPhone ? (id === 'pages' ? showThumbs : id === 'props' ? showPanel : id === 'markups' ? showList : false) : layout.panels[id].open
+    isPhone ? (id === 'pages' ? showThumbs : id === 'props' ? showPanel : id === 'markups' ? showList : id === 'compare' ? showCompare : false) : layout.panels[id].open
   const openPanel = (id: PanelId) => setPanel(id, true)
   const togglePanel = (id: PanelId) => setPanel(id, !panelOpen(id))
   const closeCtx = useCallback(() => setCtx(null), [])
@@ -631,6 +795,8 @@ export function ViewerPage() {
       case 'panel.tools': togglePanel('tools'); return true
       case 'panel.props': togglePanel('props'); return true
       case 'panel.pages': togglePanel('pages'); return true
+      case 'panel.compare': togglePanel('compare'); return true
+      case 'file.print': setPrintError(''); setPrintOpen(true); return true
       default: return false
     }
   }
@@ -638,7 +804,7 @@ export function ViewerPage() {
   // One key listener for every command in the hotkey registry; ignored while typing or while a menu/dialog is open
   const runRef = useRef(runCommand)
   runRef.current = runCommand
-  const modalOpen = showHotkeys || !!ctx
+  const modalOpen = showHotkeys || !!ctx || printOpen || issueOpen || !!compareReq
   useEffect(() => {
     if (modalOpen) return
     const panKey = parseCombo(hotkeys['view.panHold'])?.key
@@ -782,19 +948,25 @@ export function ViewerPage() {
 
   const markupsListEl = (docked: boolean) => (
     <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
-      pageNum={pageNum} markups={store.markups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
+      pageNum={pageNum} markups={allMarkups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
       selectedIds={selectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone} docked={docked}
       visibleColumns={prefs.listColumns} onVisibleColumns={ids => setPref('listColumns', ids)}
       onJump={jumpTo} onClose={() => (docked ? setPanel('markups', false) : setShowList(false))} />
+  )
+
+  const compareEl = (
+    <ComparePanel documentId={documentId} revisions={revList} canEdit={pageToolsOn} currentPage={pageNum}
+      onJump={(p, x, y) => { if (isPhone) setShowCompare(false); jumpToSpot(p, x, y) }} onOpen={r => { setCompareMode(r.mode); setCompareReq(r) }} onClouds={makeClouds} />
   )
 
   const panelNodes: Record<PanelId, ReactNode> = {
     tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeSetId, activeTypeId)} favorites={prefs.favorites} recent={prefs.recent}
       hotkeys={hotkeys} readOnly={readOnly} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
       onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))} />,
-    pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} /> : <div className="muted small dock-empty">Loading…</div>,
+    pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} canEdit={pageToolsOn} onAction={onPageAction} /> : <div className="muted small dock-empty">Loading…</div>,
     props: sidePanelEl,
     markups: markupsListEl(true),
+    compare: compareEl,
   }
 
   const zone = (d: Dock) => {
@@ -869,8 +1041,10 @@ export function ViewerPage() {
         <button className={'scale-badge hide-sm' + (pageScale ? '' : ' warn')} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
           {pageScale ? pageScale.label : 'No scale'}
         </button>
-        <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={store.markups} symbolSets={symbolSets}
-          scales={scales} readOnly={readOnly} commit={store.commit} />
+        <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
+          scales={scales} readOnly={readOnly} commit={store.commit} onPrint={() => { setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
+        <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
+          onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} />
         <button className="icon-btn hide-sm" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShowHotkeys(true)}>⌨</button>
         <button className={'icon-btn' + (panelOpen('markups') ? ' active' : '')} title={'Markups list (' + (hotkeys['panel.markups'] || 'no key') + ')'} aria-label="List" aria-pressed={panelOpen('markups')}
           onClick={() => togglePanel('markups')}>☷<span className="hide-sm list-btn-label">List</span></button>
@@ -879,6 +1053,13 @@ export function ViewerPage() {
       <OfflineBanner always={notCached}>{notCached
         ? "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page."
         : undefined}</OfflineBanner>
+      {viewingOld && (
+        <div className="rev-banner viewing" role="status">
+          <span>Viewing {revDetail && revDetail.id === revParam ? revisionName(revDetail) : 'earlier revision'} — read only</span>
+          <button onClick={backToCurrent}>Back to current</button>
+        </div>
+      )}
+      {pageBusy && <div className="rev-banner" role="status">{pageBusy}</div>}
       {orphaned.count > 0 && (
         <div className="rev-banner" role="status">
           {orphaned.count} markup{orphaned.count === 1 ? ' is' : 's are'} on page{orphaned.pages.length === 1 ? '' : 's'} {orphaned.pages.join(', ')},
@@ -891,7 +1072,7 @@ export function ViewerPage() {
             {showThumbs && pdf && (
               <>
                 <div className="scrim" onClick={() => setShowThumbs(false)} />
-                <Thumbnails pdf={pdf} current={pageNum}
+                <Thumbnails pdf={pdf} current={pageNum} canEdit={pageToolsOn} onAction={a => { setShowThumbs(false); onPageAction(a) }}
                   onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
               </>
             )}
@@ -902,6 +1083,12 @@ export function ViewerPage() {
           </div>
           {toast && <div className="live-toast" role="status">{toast}</div>}
           {showList && markupsListEl(false)}
+          {showCompare && (
+            <div className="compare-view" role="dialog" aria-label="Compare revisions">
+              <header className="topbar toolbar"><strong>Compare</strong><span className="spacer" /><button className="primary" onClick={() => setShowCompare(false)}>Close</button></header>
+              <div className="compare-body">{compareEl}</div>
+            </div>
+          )}
         </>
       ) : (
         <>
@@ -916,6 +1103,21 @@ export function ViewerPage() {
           </div>
           {toast && <div className="live-toast" role="status">{toast}</div>}
         </>
+      )}
+      <input ref={pickFile} type="file" accept="application/pdf,.pdf" hidden
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; const then = pendingPick.current; pendingPick.current = null; if (f && then) then(f) }} />
+      {issueOpen && (
+        <IssueRevisionDialog documentId={documentId} documentName={meta?.name ?? 'this plan'} nextRevision={(revList[0]?.revision ?? 0) + 1}
+          onClose={() => setIssueOpen(false)}
+          onIssued={rev => { setIssueOpen(false); refreshRevs(); setToast(`Issued ${revisionName(rev)}`) }} />
+      )}
+      {printOpen && (
+        <PrintDialog pageCount={pageCount} currentPage={pageNum} layers={layers} symbolSets={symbolSetList} hidden={hidden}
+          busy={printBusy} error={printError} onPrint={doPrint} onClose={() => setPrintOpen(false)} />
+      )}
+      {compareReq && (
+        <CompareView documentId={documentId} a={compareReq.a} b={compareReq.b} mode={compareMode} onMode={setCompareMode}
+          symbolSets={symbolSets} initialPage={compareReq.page} focus={compareReq.focus} onClose={() => setCompareReq(null)} />
       )}
       {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems(ctx)} onClose={closeCtx} />}
       {showHotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setShowHotkeys(false)} />}

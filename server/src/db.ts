@@ -5,6 +5,8 @@ import { PGlite } from '@electric-sql/pglite'
 
 export interface Db {
   query<T = any>(sql: string, params?: unknown[]): Promise<T[]>
+  /** Runs `fn` in one transaction; `q` runs queries inside it. Rolls back if `fn` throws. */
+  transaction<T>(fn: (q: Db['query']) => Promise<T>): Promise<T>
   close(): Promise<void>
 }
 
@@ -15,6 +17,18 @@ export async function openDb(databaseUrl: string | undefined, dataDir: string | 
     const pool = new pg.Pool({ connectionString: databaseUrl })
     return {
       query: async (sql, params) => (await pool.query(sql, params as any[])).rows,
+      transaction: async fn => {
+        const client = await pool.connect()
+        try {
+          await client.query('BEGIN')
+          const out = await fn(async (sql, params) => (await client.query(sql, params as any[])).rows)
+          await client.query('COMMIT')
+          return out
+        } catch (e) {
+          await client.query('ROLLBACK').catch(() => {})
+          throw e
+        } finally { client.release() }
+      },
       close: () => pool.end(),
     }
   }
@@ -28,6 +42,7 @@ export async function openDb(databaseUrl: string | undefined, dataDir: string | 
   }
   return {
     query: async (sql, params) => (await lite.query<any>(sql, params as any[])).rows,
+    transaction: fn => lite.transaction(tx => fn(async (sql, params) => (await tx.query<any>(sql, params as any[])).rows)),
     close: () => lite.close(),
   }
 }
@@ -179,7 +194,13 @@ CREATE TABLE IF NOT EXISTS products (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL;
-ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL;
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'upload';
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS label text NOT NULL DEFAULT '';
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '';
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS markups_snapshot jsonb;
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS attachments_snapshot jsonb;
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS scales_snapshot jsonb
 `
 
 const svg = (body: string) =>

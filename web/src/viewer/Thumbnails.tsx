@@ -1,20 +1,95 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { ContextMenu } from '../markups/ContextMenu'
+import type { MenuItem } from '../markups/ContextMenu'
 import { PDFDocumentProxy } from '../pdf'
 
 const THUMB_WIDTH = 132
 
-interface Props { pdf: PDFDocumentProxy; current: number; onSelect: (page: number) => void }
+/** What the Pages panel asks the viewer to do. `pages` are 1-based and sorted. */
+export type PageAction =
+  | { type: 'rotate' | 'delete' | 'extract' | 'replace'; pages: number[] }
+  | { type: 'insert'; at: number }
+  | { type: 'move'; from: number; to: number }
 
-export function Thumbnails({ pdf, current, onSelect }: Props) {
+interface Props {
+  pdf: PDFDocumentProxy
+  current: number
+  onSelect: (page: number) => void
+  /** Editors get the page tools; viewers only get Extract. */
+  canEdit?: boolean
+  onAction?: (a: PageAction) => void
+}
+
+export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props) {
   const pages = Array.from({ length: pdf.numPages }, (_, i) => i + 1)
+  const [picked, setPicked] = useState<number[]>([])
+  const [menu, setMenu] = useState<{ x: number; y: number; page: number } | null>(null)
+  const [dragging, setDragging] = useState<number | null>(null)
+  const [over, setOver] = useState<number | null>(null)
+
+  useEffect(() => { setPicked([]) }, [pdf])
+
+  /** Pages an action applies to: the multi-selection when the target is in it, else the target alone. */
+  const targets = (page: number) => (picked.includes(page) ? [...picked].sort((a, b) => a - b) : [page])
+  const act = (a: PageAction) => onAction?.(a)
+  const click = (e: React.MouseEvent, n: number) => {
+    if (canEdit && (e.ctrlKey || e.metaKey)) { setPicked(p => (p.includes(n) ? p.filter(x => x !== n) : [...p, n])); return }
+    if (canEdit && e.shiftKey && picked.length) {
+      const from = picked[picked.length - 1]
+      const [lo, hi] = from < n ? [from, n] : [n, from]
+      setPicked(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i))
+      return
+    }
+    setPicked([])
+    onSelect(n)
+  }
+
+  const items = (page: number): MenuItem[] => {
+    const t = targets(page)
+    const which = t.length === 1 ? `page ${t[0]}` : `${t.length} pages`
+    const extract: MenuItem = { label: `Extract ${which}…`, onClick: () => act({ type: 'extract', pages: t }) }
+    if (!canEdit) return [extract]
+    return [
+      { label: `Rotate ${which} 90° clockwise`, onClick: () => act({ type: 'rotate', pages: t }) },
+      { label: `Delete ${which}`, onClick: () => act({ type: 'delete', pages: t }) },
+      { label: '', separator: true },
+      { label: 'Insert pages before…', onClick: () => act({ type: 'insert', at: t[0] }) },
+      { label: 'Insert pages after…', onClick: () => act({ type: 'insert', at: t[t.length - 1] + 1 }) },
+      { label: `Replace ${which}…`, onClick: () => act({ type: 'replace', pages: t }) },
+      { label: '', separator: true },
+      extract,
+      { label: 'Move to start', disabled: page === 1, onClick: () => act({ type: 'move', from: page, to: 1 }) },
+      { label: 'Move to end', disabled: page === pages.length, onClick: () => act({ type: 'move', from: page, to: pages.length }) },
+    ]
+  }
+
+  const bar = picked.length ? picked : [current]
+  const barLabel = bar.length === 1 ? `page ${bar[0]}` : `${bar.length} pages`
   return (
     <aside className="thumbs" aria-label="Pages">
+      <div className="page-tools" role="toolbar" aria-label="Page tools">
+        {canEdit && <button className="icon-btn small" title={`Rotate ${barLabel} 90° clockwise`} aria-label="Rotate pages" onClick={() => act({ type: 'rotate', pages: bar })}>⟳</button>}
+        {canEdit && <button className="icon-btn small" title={`Delete ${barLabel}`} aria-label="Delete pages" onClick={() => act({ type: 'delete', pages: bar })}>🗑</button>}
+        {canEdit && <button className="icon-btn small" title={`Insert pages after ${bar[bar.length - 1]}`} aria-label="Insert pages" onClick={() => act({ type: 'insert', at: bar[bar.length - 1] + 1 })}>＋</button>}
+        {canEdit && <button className="icon-btn small" title={`Replace ${barLabel}`} aria-label="Replace pages" onClick={() => act({ type: 'replace', pages: bar })}>⇄</button>}
+        <button className="icon-btn small" title={`Extract ${barLabel} to a new PDF`} aria-label="Extract pages" onClick={() => act({ type: 'extract', pages: bar })}>⤓</button>
+      </div>
       {pages.map(n => (
-        <button key={n} className={`thumb${n === current ? ' active' : ''}`} onClick={() => onSelect(n)}>
+        <button key={n}
+          className={`thumb${n === current ? ' active' : ''}${picked.includes(n) ? ' picked' : ''}${over === n && dragging !== n ? ' drop-target' : ''}`}
+          onClick={e => click(e, n)}
+          onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, page: n }) }}
+          draggable={!!canEdit}
+          onDragStart={e => { setDragging(n); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(n)) }}
+          onDragOver={e => { if (dragging !== null) { e.preventDefault(); setOver(n) } }}
+          onDragLeave={() => setOver(o => (o === n ? null : o))}
+          onDrop={e => { e.preventDefault(); const from = dragging; setDragging(null); setOver(null); if (from !== null && from !== n) act({ type: 'move', from, to: n }) }}
+          onDragEnd={() => { setDragging(null); setOver(null) }}>
           <Thumb pdf={pdf} pageNum={n} />
           <span>{n}</span>
         </button>
       ))}
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={items(menu.page)} onClose={() => setMenu(null)} />}
     </aside>
   )
 }

@@ -8,6 +8,7 @@ import { OfflineBanner } from '../offline/OfflineBanner'
 import { loadPdf } from '../pdf'
 import { exportProjectReport } from '../pdfio/actions'
 import { exportProjectSchedule } from '../schedule/exportProject'
+import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 
 export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
@@ -23,6 +24,7 @@ export function ProjectPage({ user }: { user: User }) {
   const [revising, setRevising] = useState('')
   const [revNotice, setRevNotice] = useState('')
   const [openRevs, setOpenRevs] = useState<string | null>(null)
+  const [issuing, setIssuing] = useState<DocumentSummary | null>(null)
   const [revs, setRevs] = useState<DocumentRevision[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
   const [offlineState, setOfflineState] = useState<Map<string, { offline: boolean }>>(new Map())
@@ -193,14 +195,21 @@ export function ProjectPage({ user }: { user: User }) {
                     {revising === d.id ? 'Uploading…' : 'New revision'}
                   </button>
                 )}
+                {canEdit && (
+                  <button title="Freeze this plan's PDF and all markups as a named revision" onClick={() => setIssuing(d)}>Issue revision</button>
+                )}
                 {isAdmin && <button className="danger" onClick={() => remove(d)}>Delete</button>}
                 {openRevs === d.id && (
                   <ul className="rev-list small">
                     {revs.length === 0 && <li className="muted">Loading…</li>}
                     {revs.map(r => (
                       <li key={r.id}>
-                        <strong>Rev {r.revision}</strong>{r.revision === d.revision && ' (current)'} · {new Date(r.created_at).toLocaleDateString()}
+                        <strong>Rev {r.revision}</strong>{r.label && ` · ${r.label}`}{r.kind === 'issued' && <> <span className="rev-kind">issued</span></>}
+                        {r.revision === d.revision && ' (current)'} · {new Date(r.created_at).toLocaleDateString()}
                         {r.uploaded_by_name && ` · ${r.uploaded_by_name}`} · {r.page_count} page{r.page_count === 1 ? '' : 's'}
+                        {r.note && <div className="muted">{r.note}</div>}
+                        {' · '}<Link to={`/projects/${projectId}/documents/${d.id}${r.revision === d.revision ? '' : `?rev=${r.id}`}`}>View</Link>
+                        {r.revision !== d.revision && <>{' · '}<Link to={`/projects/${projectId}/documents/${d.id}?compare=${r.id}`}>Compare with current</Link></>}
                         {' · '}<a href={documentFileUrl(d.id, r.id)} target="_blank" rel="noreferrer">Open PDF</a>
                       </li>
                     ))}
@@ -209,6 +218,17 @@ export function ProjectPage({ user }: { user: User }) {
               </li>
             ))}
           </ul>
+        )}
+        {issuing && (
+          <IssueRevisionDialog documentId={issuing.id} documentName={issuing.name} nextRevision={issuing.revision + 1}
+            onClose={() => setIssuing(null)}
+            onIssued={rev => {
+              const doc = issuing
+              setIssuing(null)
+              setDocs(ds => ds.map(d => d.id === doc.id ? { ...d, revision: rev.revision, revision_id: rev.id } : d))
+              if (openRevs === doc.id) api<DocumentRevision[]>(`/documents/${doc.id}/revisions`).then(setRevs).catch(() => {})
+              setRevNotice(`${doc.name}: issued ${rev.label || `Rev ${rev.revision}`}.`)
+            }} />
         )}
         <MembersSection projectId={projectId!} members={members} setMembers={setMembers} isAdmin={isAdmin} />
       </main>
