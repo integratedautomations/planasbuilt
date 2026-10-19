@@ -25,7 +25,7 @@ export function ProjectsPage({ user, onSignOut }: Props) {
   return (
     <div className="page">
       <header className="topbar">
-        <span className="brand">PlanMark</span>
+        <span className="brand">PlanAsBuilt</span>
         <span className="spacer" />
         <Link to="/symbols" className="btn-link">Symbols</Link>
         {user.is_admin && <button onClick={() => setShowUsers(true)}>Users</button>}

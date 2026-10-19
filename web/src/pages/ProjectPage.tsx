@@ -53,7 +53,7 @@ export function ProjectPage({ user }: { user: User }) {
   return (
     <div className="page">
       <header className="topbar">
-        <Link to="/" className="brand">PlanMark</Link>
+        <Link to="/" className="brand">PlanAsBuilt</Link>
         <span className="muted">/</span>
         <span className="crumb">{project?.name ?? '…'}</span>
         <span className="spacer" />

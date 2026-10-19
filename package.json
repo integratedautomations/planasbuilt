@@ -1,5 +1,5 @@
 {
-  "name": "planmark",
+  "name": "planasbuilt",
   "private": true,
   "workspaces": ["web", "server"],
   "scripts": {

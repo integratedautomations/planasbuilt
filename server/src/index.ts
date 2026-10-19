@@ -19,4 +19,4 @@ const app = await buildApp({
 })
 const port = Number(process.env.PORT ?? 3001)
 await app.listen({ port, host: '0.0.0.0' })
-console.log(`planmark server on http://localhost:${port}`)
+console.log(`PlanAsBuilt server on http://localhost:${port}`)

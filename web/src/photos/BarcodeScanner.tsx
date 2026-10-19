@@ -11,7 +11,7 @@ type NativeCtor = { new (o: { formats: string[] }): NativeDetector }
 function describe(e: unknown): string {
   const name = (e as { name?: string })?.name
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
-    return 'The camera needs a secure connection (HTTPS or localhost). Open PlanMark over HTTPS to scan.'
+    return 'The camera needs a secure connection (HTTPS or localhost). Open PlanAsBuilt over HTTPS to scan.'
   if (name === 'NotAllowedError' || name === 'SecurityError') return 'Camera permission was denied. Allow camera access in your browser settings and try again.'
   if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No camera was found on this device.'
   if (name === 'NotReadableError') return 'The camera is in use by another app.'
