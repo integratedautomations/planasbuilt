@@ -1,5 +1,7 @@
 import { api, attachmentFileUrl } from '../api'
 import type { Attachment, DocumentSummary } from '../api'
+import type { CatalogData, DeviceType } from '../catalog/types'
+import { buildCatalog } from '../catalog/catalog'
 import type { Markup, SymbolSet } from '../markups/types'
 import { loadPdfBytes } from '../offline/cache'
 import { exportAnnotated, exportFileName, exportFlattened } from './build'
@@ -15,13 +17,15 @@ export interface DocExportArgs {
   name: string
   markups: Iterable<Markup>
   symbolSets: Map<string, SymbolSet>
+  /** Device types, so devices export with their type's icon. */
+  deviceTypes?: Iterable<DeviceType>
   /** Points per foot by page. */
   scales: Map<number, number>
 }
 
 /** Downloads `<name>-markups.pdf` (editable annotations) or `<name>-flattened.pdf`. */
 export async function exportDocumentPdf(kind: 'annotated' | 'flattened', a: DocExportArgs) {
-  const [pdfBytes, icons] = await Promise.all([loadPdfBytes(a.documentId), loadIcons(a.symbolSets.values())])
+  const [pdfBytes, icons] = await Promise.all([loadPdfBytes(a.documentId), loadIcons(a.symbolSets.values(), a.deviceTypes)])
   const input = { pdfBytes, markups: [...a.markups], symbolSets: a.symbolSets, scales: a.scales, icons }
   const bytes = kind === 'annotated' ? await exportAnnotated(input) : await exportFlattened(input)
   downloadBytes(bytes, exportFileName(a.name, kind === 'annotated' ? 'markups' : 'flattened'))
@@ -36,15 +40,18 @@ interface ProjectScaleRow { document_id: string; page: number; points_per_foot: 
 
 /** Builds and downloads the as-built report for a whole project. */
 export async function exportProjectReport(projectId: string, projectName: string, onProgress?: (done: number, total: number, label: string) => void) {
-  const [docs, markups, scaleRows, sets] = await Promise.all([
+  const [docs, markups, scaleRows, sets, catData] = await Promise.all([
+    // (catalog is optional: older servers / offline just report without product columns)
     api<DocumentSummary[]>(`/projects/${projectId}/documents`),
     api<Markup[]>(`/projects/${projectId}/markups`),
     api<ProjectScaleRow[]>(`/projects/${projectId}/scales`).catch(() => [] as ProjectScaleRow[]),
     api<SymbolSet[]>('/symbol-sets'),
+    api<CatalogData>('/catalog').catch(() => ({ device_types: [], products: [] }) as CatalogData),
   ])
+  const catalog = buildCatalog(catData)
   const symbolSets = new Map(sets.map(s => [s.id, s]))
   const [icons, sheets] = await Promise.all([
-    loadIcons(sets),
+    loadIcons(sets, catData.device_types),
     Promise.all(docs.map(async d => ({
       documentId: d.id, name: d.name, pdfBytes: await loadPdfBytes(d.id),
       scales: new Map(scaleRows.filter(s => s.document_id === d.id).map(s => [s.page, s.points_per_foot])),
@@ -61,6 +68,6 @@ export async function exportProjectReport(projectId: string, projectName: string
     }
     return out
   }
-  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, icons, photosFor, onProgress })
+  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress })
   downloadBytes(bytes, exportFileName(projectName, 'as-built-report'))
 }

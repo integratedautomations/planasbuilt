@@ -1,3 +1,4 @@
+import type { DeviceType } from '../catalog/types'
 import type { SymbolSet } from '../markups/types'
 
 /** Rasterizes a symbol icon (SVG or image data URL) to PNG bytes; null if the browser can't. */
@@ -18,8 +19,13 @@ export async function iconToPng(src: string, size = 128): Promise<Uint8Array | n
   } catch { return null }
 }
 
-export async function loadIcons(sets: Iterable<SymbolSet>): Promise<Map<string, Uint8Array>> {
+/** Icons keyed by set id, and `type:<id>` for device types that have their own icon. */
+export async function loadIcons(sets: Iterable<SymbolSet>, types: Iterable<DeviceType> = []): Promise<Map<string, Uint8Array>> {
   const out = new Map<string, Uint8Array>()
+  for (const t of types) {
+    const png = t.icon ? await iconToPng(t.icon) : null
+    if (png) out.set(`type:${t.id}`, png)
+  }
   for (const s of sets) {
     const png = await iconToPng(s.icon)
     if (png) out.set(s.id, png)

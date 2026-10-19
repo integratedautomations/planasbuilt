@@ -181,7 +181,7 @@ function afterWrite() {
 export function markupBody(m: Markup) {
   return {
     page: m.page, type: m.type, geometry: m.geometry, style: m.style, text: m.text,
-    layer_id: m.layer_id, symbol_set_id: m.symbol_set_id ?? null, tag: m.tag ?? '',
+    layer_id: m.layer_id, symbol_set_id: m.symbol_set_id ?? null, device_type_id: m.device_type_id ?? null, product_id: m.product_id ?? null, tag: m.tag ?? '',
     status: m.status ?? '', fields: m.fields ?? {},
   }
 }

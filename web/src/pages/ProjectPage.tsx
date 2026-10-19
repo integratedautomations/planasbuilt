@@ -147,6 +147,7 @@ export function ProjectPage({ user }: { user: User }) {
             title="Download every plan, its markups, layers, symbols and scales to this device">
             {allOffline ? 'Refresh offline copy' : 'Make available offline'}
           </button>
+          <Link className="btn-link" to={`/projects/${projectId}/bom`} title="Bill of materials: quantities, cost and labor">BOM</Link>
           <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
             {exporting ? 'Exporting…' : 'Export schedule'}
           </button>

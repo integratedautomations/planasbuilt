@@ -23,12 +23,12 @@ export const deviceRadius = (g: { width: number; height: number }) => Math.min(g
 /** Two devices stack when their centers are within max(2pt, 0.25 x the smaller radius). */
 export const stackThreshold = (r1: number, r2: number) => Math.max(2, 0.25 * Math.min(r1, r2))
 
-/** Cluster devices (same page + same symbol set, centers within the threshold) into stacks of 2 or more. */
+/** Cluster devices (same page + same symbol set + same device type, centers within the threshold) into stacks of 2 or more. */
 export function detectStacks(markups: Iterable<Markup>): StackIndex {
   const groups = new Map<string, Markup[]>()
   for (const m of markups) {
     if (m.type !== 'device' || !('width' in m.geometry) || !m.symbol_set_id) continue
-    const key = `${m.page}|${m.symbol_set_id}`
+    const key = `${m.page}|${m.symbol_set_id}|${m.device_type_id ?? ''}`
     const list = groups.get(key)
     if (list) list.push(m); else groups.set(key, [m])
   }
@@ -68,14 +68,14 @@ export function detectStacks(markups: Iterable<Markup>): StackIndex {
 export const stackTop = (s: Stack) => s.members[s.members.length - 1]
 
 /**
- * Nearest existing device of the same set within `factor` x its radius of the point, or null.
+ * Nearest existing device of the same set (and device type) within `factor` x its radius of the point, or null.
  * Used to snap a newly placed device onto a stack.
  */
-export function findSnapTarget(markups: Iterable<Markup>, p: { x: number; y: number }, setId: string | null | undefined, factor = 1.2): Markup | null {
+export function findSnapTarget(markups: Iterable<Markup>, p: { x: number; y: number }, setId: string | null | undefined, factor = 1.2, typeId: string | null = null): Markup | null {
   if (!setId) return null
   let best: Markup | null = null, bestD = Infinity
   for (const m of markups) {
-    if (m.type !== 'device' || m.symbol_set_id !== setId || !('width' in m.geometry)) continue
+    if (m.type !== 'device' || m.symbol_set_id !== setId || (m.device_type_id ?? null) !== typeId || !('width' in m.geometry)) continue
     const c = deviceCenter(boxOf(m))
     const d = Math.hypot(c.x - p.x, c.y - p.y)
     if (d <= factor * deviceRadius(boxOf(m)) && d < bestD) { best = m; bestD = d }

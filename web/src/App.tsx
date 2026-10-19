@@ -11,6 +11,7 @@ import { AuthPage } from './pages/AuthPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { ViewerPage } from './pages/ViewerPage'
+import { BomPage } from './pages/BomPage'
 import { SymbolSetsPage } from './pages/SymbolSetsPage'
 
 export default function App() {
@@ -51,7 +52,9 @@ export default function App() {
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
       <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
       <Route path="/projects/:projectId/documents/:documentId" element={<ViewerPage />} />
+      <Route path="/projects/:projectId/bom" element={<BomPage user={user} />} />
       <Route path="/symbols" element={<SymbolSetsPage user={user} />} />
+      <Route path="/catalog" element={<SymbolSetsPage user={user} />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
     </>

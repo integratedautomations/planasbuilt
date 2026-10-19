@@ -73,7 +73,9 @@ export function describeEvent(e: HistoryEvent, setFields: FieldDef[] = []): stri
         else if (key === 'tag') out.push(line(describeChange('Tag', ch, 'plain')))
         else if (key === 'text') out.push(line(describeChange('Text', ch, 'plain')))
         else if (key === 'layer_id') out.push(line('changed layer'))
-        else if (key === 'symbol_set_id') out.push(line('changed device type'))
+        else if (key === 'symbol_set_id') out.push(line('changed symbol set'))
+        else if (key === 'device_type_id') out.push(line('changed device type'))
+        else if (key === 'product_id') out.push(line('changed product'))
         else if (key === 'geometry' && ch) out.push(line('moved/resized'))
         else if (key === 'style' && ch) out.push(line('changed style'))
       }

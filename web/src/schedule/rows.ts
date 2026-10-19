@@ -3,6 +3,8 @@ import { detectStacks, naturalCompare } from '../markups/stacks'
 import { feetOf, formatArea, formatFeetInches, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { FieldDef, Markup, SymbolSet } from '../markups/types'
+import { productLabel } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
 
 export const AREA_SEP = ' > '
 export const MEASURE_TYPES = ['measure-length', 'measure-polylength', 'measure-area', 'cable']
@@ -15,6 +17,11 @@ export interface ScheduleRow {
   tag: string
   setId: string
   setName: string
+  typeId: string
+  typeName: string
+  productId: string
+  /** "Manufacturer Model" of the assigned product. */
+  productName: string
   status: string
   statusLabel: string
   areaPath: string[]
@@ -39,6 +46,8 @@ export interface ScheduleRow {
 
 export interface BuildContext {
   symbolSets: Map<string, SymbolSet>
+  /** Device types and products, for the Type and Product columns. */
+  catalog?: Catalog
   /** Fallback names for documents (a markup's own document_name wins). */
   docNames?: Map<string, string>
   /** Photo counts by markup id, used when a markup carries none. */
@@ -76,12 +85,15 @@ export function buildRows(markups: Markup[], ctx: BuildContext): ScheduleRow[] {
       const isDevice = m.type === 'device'
       if (!isDevice && !ctx.showAll) continue
       const set = m.symbol_set_id ? ctx.symbolSets.get(m.symbol_set_id) : undefined
+      const dtype = m.device_type_id ? ctx.catalog?.types.get(m.device_type_id) : undefined
+      const product = m.product_id ? ctx.catalog?.products.get(m.product_id) : undefined
       const path = areaPathIn(idx, m)
       const docName = m.document_name ?? ctx.docNames?.get(docId) ?? ''
       const meas = isDevice ? { value: '', num: null, unit: '' } : measurement(m, ctx.scaleFor?.(docId, m.page) ?? null)
       rows.push({
         id: m.id, markup: m, type: m.type, isDevice,
         tag: m.tag ?? '', setId: m.symbol_set_id ?? '', setName: set?.name ?? '',
+        typeId: m.device_type_id ?? '', typeName: dtype?.name ?? '', productId: m.product_id ?? '', productName: productLabel(product),
         status: m.status ?? '', statusLabel: statusLabel(m.status),
         areaPath: path, areaText: path.join(AREA_SEP),
         documentId: docId, documentName: docName, page: m.page,
@@ -116,6 +128,8 @@ export function listColumns(rows: ScheduleRow[], sets: Map<string, SymbolSet>, s
   const cols: ColumnDef[] = [
     { id: 'tag', label: 'Tag' },
     { id: 'set', label: 'Type / Set' },
+    { id: 'deviceType', label: 'Device type' },
+    { id: 'product', label: 'Product' },
     { id: 'status', label: 'Status', edit: 'status' },
     { id: 'area', label: 'Area' },
     { id: 'sheet', label: 'Sheet' },
@@ -153,6 +167,8 @@ export function cellText(r: ScheduleRow, col: ColumnDef): string {
   switch (col.id) {
     case 'tag': return r.tag
     case 'set': return r.isDevice ? r.setName : r.type
+    case 'deviceType': return r.typeName
+    case 'product': return r.productName
     case 'status': return r.isDevice ? r.statusLabel : ''
     case 'area': return r.areaText
     case 'sheet': return r.sheet
@@ -184,7 +200,7 @@ export function filterRows(rows: ScheduleRow[], f: RowFilter): ScheduleRow[] {
     if (f.status && r.status !== f.status) return false
     if (f.area && r.areaText !== f.area && !r.areaText.startsWith(f.area + AREA_SEP)) return false
     if (!q) return true
-    const hay = [r.tag, r.setName, r.areaText, r.value, r.sheet, r.statusLabel, ...Object.values(r.fields).map(fieldText)]
+    const hay = [r.tag, r.setName, r.typeName, r.productName, r.areaText, r.value, r.sheet, r.statusLabel, ...Object.values(r.fields).map(fieldText)]
     return hay.some(s => s.toLowerCase().includes(q))
   })
 }
@@ -243,10 +259,10 @@ function deviceTable(name: string, rows: ScheduleRow[], fieldDefs: FieldDef[]): 
   const defs = [...fieldDefs]
   const seen = new Set(defs.map(f => f.key))
   for (const f of [...HARDWARE_FIELDS, NOTES]) if (!seen.has(f.key)) { seen.add(f.key); defs.push(f) }
-  const header = ['Tag', 'Set', 'Status', 'Area', 'Area 1', 'Area 2', 'Area 3', 'Document', 'Page',
+  const header = ['Tag', 'Set', 'Device type', 'Product', 'Status', 'Area', 'Area 1', 'Area 2', 'Area 3', 'Document', 'Page',
     ...defs.map(f => f.label), 'Placed by', 'Placed at', 'Last edited by', 'Last edited at', 'Photos', 'id']
   const data: Cell[][] = rows.map(r => [
-    r.tag, r.setName, r.statusLabel, r.areaText,
+    r.tag, r.setName, r.typeName || null, r.productName || null, r.statusLabel, r.areaText,
     r.areaPath[0] ?? null, r.areaPath[1] ?? null, r.areaPath.length > 2 ? r.areaPath.slice(2).join(AREA_SEP) : null,
     r.documentName, r.page,
     ...defs.map(f => exportFieldValue(r.fields[f.key], f)),

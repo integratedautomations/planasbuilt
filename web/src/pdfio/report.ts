@@ -2,6 +2,9 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import type { PDFFont, PDFPage } from 'pdf-lib'
 import { naturalCompare } from '../markups/stacks'
 import { HARDWARE_FIELDS } from '../markups/types'
+import { fieldDefsFor } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
+import type { DeviceType } from '../catalog/types'
 import type { Markup, SymbolSet } from '../markups/types'
 import { buildRows, fieldText } from '../schedule/rows'
 import type { ScheduleRow } from '../schedule/rows'
@@ -26,6 +29,8 @@ export interface ReportInput {
   /** Every markup of the project (areas are used for area paths). */
   markups: Markup[]
   symbolSets: Map<string, SymbolSet>
+  /** Device types and products for the Type / Product lines. */
+  catalog?: Catalog
   icons?: Map<string, Uint8Array>
   /** Photos for a device (annotated versions preferred by the caller). */
   photosFor: (markupId: string) => Promise<ReportPhoto[]>
@@ -40,17 +45,19 @@ const dateText = (d: Date) => d.toLocaleDateString('en-US', { year: 'numeric', m
 const shortDate = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US') }
 
 /** Label/value pairs shown for a device (all of its fields, empty ones as a dash). */
-export function deviceRows(r: ScheduleRow, set: SymbolSet | undefined): [string, string][] {
+export function deviceRows(r: ScheduleRow, set: SymbolSet | undefined, type?: DeviceType): [string, string][] {
   const out: [string, string][] = [
     ['Tag', r.tag || '-'],
     ['Symbol set', r.setName || '-'],
+    ['Device type', r.typeName || '-'],
+    ['Product', r.productName || '-'],
     ['Status', r.statusLabel || '-'],
     ['Area', r.areaText || '-'],
     ['Sheet', r.sheet || '-'],
     ['Placed by', [r.placedBy, r.placedAt && shortDate(r.placedAt)].filter(Boolean).join(' on ') || '-'],
     ['Last updated by', [r.editedBy, r.editedAt && shortDate(r.editedAt)].filter(Boolean).join(' on ') || '-'],
   ]
-  for (const f of [...(set?.fields ?? []), ...HARDWARE_FIELDS]) out.push([f.label, fieldText(r.fields[f.key]) || '-'])
+  for (const f of [...fieldDefsFor(set, type), ...HARDWARE_FIELDS]) out.push([f.label, fieldText(r.fields[f.key]) || '-'])
   if (r.markup.text) out.push(['Notes', r.markup.text])
   return out
 }
@@ -83,7 +90,7 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
   const w = new Writer(out, await out.embedFont(StandardFonts.Helvetica), await out.embedFont(StandardFonts.HelveticaBold))
   const scaleFor = (docId: string, page: number) => input.sheets.find(s => s.documentId === docId)?.scales.get(page) ?? null
   const rows = buildRows(input.markups, {
-    symbolSets: input.symbolSets, docNames: new Map(input.sheets.map(s => [s.documentId, s.name])), scaleFor,
+    symbolSets: input.symbolSets, catalog: input.catalog, docNames: new Map(input.sheets.map(s => [s.documentId, s.name])), scaleFor,
   }).filter(r => r.isDevice)
   const sheetOrder = new Map(input.sheets.map((s, i) => [s.documentId, i]))
   rows.sort((a, b) => (sheetOrder.get(a.documentId) ?? 0) - (sheetOrder.get(b.documentId) ?? 0) || a.page - b.page || naturalCompare(a.tag, b.tag))
@@ -134,7 +141,7 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
       w.y = H - 70 - 28
     }
     header(false)
-    for (const [label, value] of deviceRows(r, set)) {
+    for (const [label, value] of deviceRows(r, set, r.typeId ? input.catalog?.types.get(r.typeId) : undefined)) {
       const lines = wrapText(value, 10.5, W - 2 * MARGIN - 130, (s, z) => w.width(s, z))
       const h = Math.max(1, lines.length) * 13 + 3
       if (w.y - h < 220) { header(true) } // keep room for photos on the first page; spill onto a continuation page

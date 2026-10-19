@@ -117,6 +117,63 @@ describe('milestone 1 api', () => {
     expect(bad.statusCode).toBe(400)
   })
 
+  it('serves a seeded catalog and numbers tags by device type prefix', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    const cat = (await app.inject({ url: '/api/catalog', headers: h })).json()
+    const fire = (await app.inject({ url: '/api/symbol-sets', headers: h })).json().find((s: any) => s.tag_prefix === 'FA')
+    const smoke = cat.device_types.find((t: any) => t.name === 'Smoke Detector')
+    expect(smoke).toMatchObject({ symbol_set_id: fire.id, tag_prefix: 'SD' })
+    const prod = cat.products.find((p: any) => p.id === smoke.default_product_id)
+    expect(prod).toMatchObject({ model: 'PAD100-PHOTO', unit_cost: 62 })
+    expect(prod.accessories).toHaveLength(1)
+    const put = (id: string, extra = {}) => app.inject({ method: 'PUT', url: `/api/documents/${docId}/markups/${id}`, headers: h,
+      payload: { page: 1, type: 'device', geometry: { x: 0, y: 0, width: 24, height: 24, rotation: 0 }, symbol_set_id: fire.id,
+        device_type_id: smoke.id, product_id: prod.id, ...extra } })
+    expect((await put('44444444-4444-4444-8444-444444444441')).json())
+      .toMatchObject({ tag: 'SD-01', device_type_id: smoke.id, product_id: prod.id })
+    expect((await put('44444444-4444-4444-8444-444444444442')).json().tag).toBe('SD-02')
+    // type without its own prefix falls back to the set prefix
+    const noPrefix = cat.device_types.find((t: any) => t.name === 'IP Camera')
+    const cams = (await app.inject({ url: '/api/symbol-sets', headers: h })).json().find((s: any) => s.tag_prefix === 'CAM')
+    expect((await put('44444444-4444-4444-8444-444444444443', { symbol_set_id: cams.id, device_type_id: noPrefix.id, product_id: null })).json().tag)
+      .toMatch(/^CAM-/)
+    // a type from another set is rejected
+    expect((await put('44444444-4444-4444-8444-444444444444', { device_type_id: noPrefix.id })).statusCode).toBe(400)
+    expect((await put('44444444-4444-4444-8444-444444444445', { product_id: '55555555-5555-4555-8555-555555555555' })).statusCode).toBe(400)
+  })
+
+  it('lets admins manage device types and products, and keeps used products', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    const sets = (await app.inject({ url: '/api/symbol-sets', headers: h })).json()
+    const net = sets.find((s: any) => s.name === 'Network')
+    const t = (await app.inject({ method: 'POST', url: `/api/symbol-sets/${net.id}/device-types`, headers: h,
+      payload: { name: 'Switch', tag_prefix: 'sw', fields: [{ label: 'Ports', type: 'number' }] } })).json()
+    expect(t).toMatchObject({ name: 'Switch', tag_prefix: 'SW', fields: [{ key: 'ports', label: 'Ports', type: 'number' }] })
+    const acc = (await app.inject({ method: 'POST', url: '/api/products', headers: h,
+      payload: { kind: 'accessory', manufacturer: 'Generic', model: 'SFP', unit_cost: '12.5', labor_hours: 0.1 } })).json()
+    expect(acc).toMatchObject({ kind: 'accessory', device_type_id: null, unit_cost: 12.5 })
+    const p = (await app.inject({ method: 'POST', url: '/api/products', headers: h,
+      payload: { device_type_id: t.id, manufacturer: 'Cisco', model: 'C9200', unit_cost: 900, labor_hours: 2,
+        accessories: [{ product_id: acc.id, qty: 2 }, { name: 'Rack kit', unit_cost: 5, qty: 1 }, { qty: 3 }] } })).json()
+    expect(p.accessories).toEqual([{ product_id: acc.id, qty: 2 }, { name: 'Rack kit', unit_cost: 5, labor_hours: 0, qty: 1 }])
+    // first product becomes the type default
+    const cat = (await app.inject({ url: '/api/catalog', headers: h })).json()
+    expect(cat.device_types.find((x: any) => x.id === t.id).default_product_id).toBe(p.id)
+    const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    const vh = { authorization: `Bearer ${viewer}` }
+    expect((await app.inject({ url: '/api/catalog', headers: vh })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: '/api/products', headers: vh, payload: p })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PUT', url: `/api/device-types/${t.id}`, headers: vh, payload: t })).statusCode).toBe(403)
+    // used product is deactivated, unused is removed
+    await app.inject({ method: 'PUT', url: `/api/documents/${docId}/markups/66666666-6666-4666-8666-666666666661`, headers: h,
+      payload: { page: 1, type: 'device', geometry: {}, symbol_set_id: net.id, device_type_id: t.id, product_id: p.id } })
+    expect((await app.inject({ method: 'DELETE', url: `/api/products/${p.id}`, headers: h })).json()).toMatchObject({ deactivated: true })
+    expect((await app.inject({ method: 'DELETE', url: `/api/products/${acc.id}`, headers: h })).json()).toMatchObject({ deactivated: false })
+    const after = (await app.inject({ url: '/api/catalog', headers: h })).json()
+    expect(after.products.find((x: any) => x.id === p.id).active).toBe(false)
+    expect(after.products.find((x: any) => x.id === acc.id)).toBeUndefined()
+  })
+
   it('blocks viewers from editing markups', async () => {
     const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login',
       payload: { email: 'tech@x.com', password: 'password1' } })).json().token

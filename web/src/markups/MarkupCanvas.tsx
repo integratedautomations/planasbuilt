@@ -13,6 +13,8 @@ import { markupBounds, markupsInBox, rectFromCorners, rectsIntersect } from './s
 import { copyMarkup } from './copy'
 import type { Rect as Box } from './selection'
 import { AREA_STYLE, isBoxType } from './types'
+import { deviceIcon } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 import type { Peer } from '../realtime/presence'
@@ -42,8 +44,11 @@ interface Props {
   onSelect: (ids: string[]) => void
   commit: (change: Change) => void
   /** Template for new markups: document, page, layer and current style. */
-  newBase: { document_id: string; page: number; layer_id: string | null; style: MarkupStyle; stampText: string; symbolSetId: string | null }
+  newBase: { document_id: string; page: number; layer_id: string | null; style: MarkupStyle; stampText: string; symbolSetId: string | null
+    /** Device type and product being placed, and the field values the product prefills. */
+    deviceTypeId?: string | null; productId?: string | null; deviceFields?: Record<string, string | number | boolean> }
   symbolSets: Map<string, SymbolSet>
+  catalog: Catalog
   /** Set true when the markup layer owns the current pointer (so the viewport doesn't pan). */
   consumedRef: React.MutableRefObject<boolean>
   onCreated?: (m: Markup) => void
@@ -82,7 +87,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks, peers, onCursor, onContextMenu, constrain } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks, peers, onCursor, onContextMenu, constrain } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -119,7 +124,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const newMarkup = (type: MarkupType, geometry: BoxGeometry | PathGeometry): Markup => ({
     id: uuid(), document_id: newBase.document_id, page: newBase.page, type, geometry,
     style: type === 'area' ? { ...AREA_STYLE } : { ...newBase.style }, text: type === 'stamp' ? newBase.stampText : '', layer_id: newBase.layer_id,
-    ...(type === 'device' ? { symbol_set_id: newBase.symbolSetId, tag: '', status: 'planned' as const, fields: {} } : {}),
+    ...(type === 'device' ? { symbol_set_id: newBase.symbolSetId, device_type_id: newBase.deviceTypeId ?? null, product_id: newBase.productId ?? null, tag: '', status: 'planned' as const, fields: { ...newBase.deviceFields } } : {}),
   })
 
   const finish = (m: Markup | null) => {
@@ -226,7 +231,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (!set) return
       const size = 24
       // Close to a device of the same set: land exactly on it so it joins its stack
-      const snap = findSnapTarget(markups, p, set.id)
+      const snap = findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)
       setSnapHint(null)
       if (snap) {
         const sg = snap.geometry as BoxGeometry
@@ -288,7 +293,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       return
     }
     if (tool === 'device' && !draft && !readOnly) {
-      const t = findSnapTarget(markups, pointer(), newBase.symbolSetId)
+      const t = findSnapTarget(markups, pointer(), newBase.symbolSetId, 1.2, newBase.deviceTypeId ?? null)
       if (t) {
         const c = deviceCenter(t.geometry as BoxGeometry)
         setSnapHint(h => (h && h.x === c.x && h.y === c.y ? h : { ...c, r: deviceRadius(t.geometry as BoxGeometry) }))
@@ -476,6 +481,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               stack={stk && stackTop(stk).id === m.id ? { count: stk.members.length, label: tagRange(stk.members.map(x => x.tag ?? '')), statuses: stk.members.map(x => x.status ?? '') } : undefined} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
               areaPath={m.type === 'area' ? areaPaths.get(m.id) : undefined}
               symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
+              iconSrc={m.type === 'device' ? deviceIcon(m, m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined, catalog) : undefined}
               showCones={showCones}
               editFov={single?.id === m.id && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
               onFovChange={(fov, done) => {

@@ -48,7 +48,8 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
   const ordered = [...markups.filter(m => m.type === 'area'), ...markups.filter(m => m.type !== 'area')]
   for (const m of ordered) {
     const set = m.symbol_set_id ? input.symbolSets.get(m.symbol_set_id) : undefined
-    const iconKey = set && res.icons.has(set.id) ? set.id : undefined
+    const typeKey = m.device_type_id ? `type:${m.device_type_id}` : ''
+    const iconKey = typeKey && res.icons.has(typeKey) ? typeKey : set && res.icons.has(set.id) ? set.id : undefined
     const spec = buildAnnot(m, {
       box, ppf: input.scales.get(pageNumber) ?? null, set, hasIcon: !!iconKey, textWidth: tw,
       areaPath: areaPaths.get(m.id), countNumber: counts.get(m.id), showCones: input.showCones,

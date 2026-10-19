@@ -43,6 +43,8 @@ import { OfflineBanner } from '../offline/OfflineBanner'
 import { SyncIndicator } from '../offline/SyncIndicator'
 import { queueScaleDelete, queueScalePut } from '../offline/sync'
 import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
+import { defaultProductId, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
+import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
 import { Avatars } from '../realtime/Avatars'
@@ -171,6 +173,10 @@ export function ViewerPage() {
   const [symbolSetList, setSymbolSetList] = useState<SymbolSet[]>([])
   const [activeSetId, setActiveSetId] = useState<string | null>(null)
   const symbolSets = useMemo(() => new Map(symbolSetList.map(s => [s.id, s])), [symbolSetList])
+  const { data: catalogData, catalog } = useCatalog()
+  /** Device type / product the Device tool places; the product defaults to the type's default. */
+  const [activeTypeId, setActiveTypeId] = useState<string | null>(null)
+  const [activeProductId, setActiveProductId] = useState<string | null>(null)
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null)
   const [hidden, toggleHidden] = useLayerFlags(projectId, 'hidden')
   const [locked, toggleLocked] = useLayerFlags(projectId, 'locked')
@@ -504,11 +510,13 @@ export function ViewerPage() {
     const top = stack.members[stack.members.length - 1]
     const m: Markup = {
       id: uuid(), document_id: top.document_id, page: top.page, type: 'device', geometry: { ...top.geometry },
-      style: { ...top.style }, text: '', layer_id: top.layer_id, symbol_set_id: top.symbol_set_id, tag: '', status: 'planned', fields: {},
+      style: { ...top.style }, text: '', layer_id: top.layer_id, symbol_set_id: top.symbol_set_id,
+      device_type_id: top.device_type_id ?? null, product_id: top.product_id ?? null, tag: '', status: 'planned',
+      fields: productFields(top.product_id ? catalog.products.get(top.product_id) : undefined),
     }
     store.commit([{ before: null, after: m }])
     setSelectedIds([m.id])
-  }, [readOnly, store])
+  }, [readOnly, store, catalog])
 
   /** Moves one member 1.5 diameters to the right so it stands alone. */
   const pullOut = useCallback((m: Markup) => {
@@ -556,7 +564,7 @@ export function ViewerPage() {
 
   const cutSelected = useCallback(() => { if (readOnly) return; copySelected(); deleteSelected() }, [readOnly, copySelected, deleteSelected])
 
-  const toolEntries = useMemo(() => buildToolEntries(symbolSetList), [symbolSetList])
+  const toolEntries = useMemo(() => buildToolEntries(symbolSetList, catalogData.device_types), [symbolSetList, catalogData.device_types])
   const entryMap = useMemo(() => new Map(toolEntries.map(e => [e.id, e])), [toolEntries])
 
   const chooseTool = useCallback((t: Tool, shape: 'square' | 'circle' | null = null) => {
@@ -572,9 +580,10 @@ export function ViewerPage() {
   /** Picks a Tool chest entry (from the chest, a favorite, the context menu or a hotkey) and remembers it as recent. */
   const pickEntry = useCallback((e: ToolEntry) => {
     if (e.setId) setActiveSetId(e.setId)
+    if (e.tool === 'device') { setActiveTypeId(e.typeId ?? null); setActiveProductId(e.typeId ? defaultProductId(catalog, e.typeId) : null) }
     chooseTool(e.tool, e.shape ?? null)
     if (e.tool !== 'select' && e.tool !== 'pan') setPref('recent', pushRecent(getPrefs().recent, e.id))
-  }, [chooseTool])
+  }, [chooseTool, catalog])
 
   const setPanel = useCallback((id: PanelId, open: boolean) => {
     if (isPhone) {
@@ -670,11 +679,25 @@ export function ViewerPage() {
           {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
           {symbolSetList.map(set => (
             <button key={set.id} className={'palette-item' + (set.id === activeSetId ? ' on' : '')}
-              title={set.name} onClick={() => setActiveSetId(set.id)}>
+              title={set.name} onClick={() => { setActiveSetId(set.id); setActiveTypeId(null); setActiveProductId(null) }}>
               <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
               <span className="hide-sm">{set.name}</span>
             </button>
           ))}
+          {(catalog.typesBySet.get(activeSetId ?? '') ?? []).length > 0 && (
+            <select className="palette-select" aria-label="Device type" value={activeTypeId ?? ''}
+              onChange={e => { const id = e.target.value || null; setActiveTypeId(id); setActiveProductId(id ? defaultProductId(catalog, id) : null) }}>
+              <option value="">Any type</option>
+              {(catalog.typesBySet.get(activeSetId ?? '') ?? []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          )}
+          {activeTypeId && productsFor(catalog, activeTypeId).length > 0 && (
+            <select className="palette-select" aria-label="Product" value={activeProductId ?? ''}
+              onChange={e => setActiveProductId(e.target.value || null)}>
+              <option value="">Unassigned</option>
+              {productsFor(catalog, activeTypeId).map(p => <option key={p.id} value={p.id}>{productOptionLabel(p)}</option>)}
+            </select>
+          )}
           <button className={'palette-item cone-toggle' + (showCones ? ' on' : '')} aria-pressed={showCones}
             title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
             <span className="cone-icon" aria-hidden>
@@ -700,14 +723,15 @@ export function ViewerPage() {
       </div>
       {page && viewportSize.width > 0 && (
         <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
-          zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
+          zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets} catalog={catalog}
           readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
           peers={peersHere} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
           constrain={!!shapeLock}
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
-          newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
+          newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
+            deviceTypeId: activeTypeId, productId: activeProductId, deviceFields: productFields(activeProductId ? catalog.products.get(activeProductId) : undefined) }}
           onCreated={m => {
             if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
             if (m.type === 'text') { openPanel('props'); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
@@ -765,7 +789,7 @@ export function ViewerPage() {
   )
 
   const panelNodes: Record<PanelId, ReactNode> = {
-    tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeSetId)} favorites={prefs.favorites} recent={prefs.recent}
+    tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeSetId, activeTypeId)} favorites={prefs.favorites} recent={prefs.recent}
       hotkeys={hotkeys} readOnly={readOnly} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
       onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))} />,
     pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} /> : <div className="muted small dock-empty">Loading…</div>,
@@ -814,6 +838,7 @@ export function ViewerPage() {
   }
 
   return (
+    <CatalogContext.Provider value={catalog}>
     <div className="viewer">
       <header className="topbar toolbar">
         <Link to={'/projects/' + projectId} className="icon-btn" title="Back to plans">←</Link>
@@ -895,5 +920,6 @@ export function ViewerPage() {
       {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems(ctx)} onClose={closeCtx} />}
       {showHotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setShowHotkeys(false)} />}
     </div>
+    </CatalogContext.Provider>
   )
 }

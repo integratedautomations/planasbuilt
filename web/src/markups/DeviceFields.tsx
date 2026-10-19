@@ -1,4 +1,6 @@
 import { HARDWARE_FIELDS, STATUSES } from './types'
+import { defaultProductId, fieldDefsFor, productOptionLabel, productsFor, refillFields, tagPrefixFor } from '../catalog/catalog'
+import { useCatalogContext } from '../catalog/useCatalog'
 import { useState } from 'react'
 import { Attribution, HistorySection } from './MarkupInfo'
 import { DevicePhotos } from '../photos/DevicePhotos'
@@ -45,6 +47,30 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
     setScanKey(null)
   }
   const fov = 'width' in d.geometry ? d.geometry.fov : undefined
+  const cat = useCatalogContext()
+  const sameType = devices.every(m => (m.device_type_id ?? null) === (d.device_type_id ?? null))
+  const dtype = sameType && d.device_type_id ? cat.types.get(d.device_type_id) : undefined
+  const sameProduct = devices.every(m => (m.product_id ?? null) === (d.product_id ?? null))
+  const typeOptions = set ? cat.typesBySet.get(set.id) ?? [] : []
+  const defs = fieldDefsFor(set, dtype)
+  const productList = sameType ? productsFor(cat, d.device_type_id) : []
+  const curProduct = sameProduct && d.product_id ? cat.products.get(d.product_id) : undefined
+  const setType = (typeId: string) => {
+    const next = typeId ? cat.types.get(typeId) : undefined
+    const pid = defaultProductId(cat, typeId || null)
+    const prod = pid ? cat.products.get(pid) : undefined
+    onUpdate(m => {
+      const old = m.device_type_id ? cat.types.get(m.device_type_id) : undefined
+      // A tag numbered from the old prefix is cleared so the server numbers it from the new one
+      const oldP = tagPrefixFor(set, old), newP = tagPrefixFor(set, next)
+      const renumber = newP !== oldP && new RegExp(`^${oldP}-\\d+$`).test(m.tag ?? '')
+      return { ...m, device_type_id: typeId || null, product_id: pid, tag: renumber ? '' : m.tag, fields: refillFields(m.fields, prod) }
+    }, `devtype.${single ? d.id : 'all'}`)
+  }
+  const setProduct = (productId: string) => {
+    const prod = productId ? cat.products.get(productId) : undefined
+    onUpdate(m => ({ ...m, product_id: productId || null, fields: prod ? refillFields(m.fields, prod) : m.fields }), `product.${single ? d.id : 'all'}`)
+  }
 
   return (
     <>
@@ -53,7 +79,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
         <span className="set-icon" style={{ background: set?.color ?? '#868e96' }}>{set?.icon && <img src={set.icon} alt="" />}</span>
         <div>
           <div className="panel-heading">{single ? d.tag || 'New device' : heading ?? `${devices.length} devices`}</div>
-          <div className="muted small">{set?.name ?? 'Unknown set'}</div>
+          <div className="muted small">{[set?.name ?? 'Unknown set', dtype?.name].filter(Boolean).join(' › ')}</div>
           {single && <Attribution markup={d} />}
           {single && areaPath && areaPath.length > 0 && (
             <div className="area-path small" title="Area">{'📍'} {areaPath.join(' › ')}</div>
@@ -61,6 +87,26 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
         </div>
       </div>
 
+      {set && typeOptions.length > 0 && (
+        <label className="field">Device type
+          <select value={sameType ? d.device_type_id ?? '' : '__mixed'} onChange={e => setType(e.target.value)}>
+            {!sameType && <option value="__mixed" disabled>Mixed</option>}
+            <option value="">—</option>
+            {typeOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </label>
+      )}
+      {sameType && d.device_type_id && (
+        <label className="field">Product
+          <select value={sameProduct ? d.product_id ?? '' : '__mixed'} onChange={e => setProduct(e.target.value)}>
+            {!sameProduct && <option value="__mixed" disabled>Mixed</option>}
+            <option value="">Unassigned</option>
+            {curProduct && !productList.includes(curProduct) && <option value={curProduct.id}>{productOptionLabel(curProduct)} (inactive)</option>}
+            {productList.map(p => <option key={p.id} value={p.id}>{productOptionLabel(p)}</option>)}
+          </select>
+          {curProduct?.spec_url && /^https?:/i.test(curProduct.spec_url) && <a className="small" href={curProduct.spec_url} target="_blank" rel="noreferrer">Spec sheet</a>}
+        </label>
+      )}
       <div className="field">Status
         <div className="status-buttons">
           {STATUSES.map(s => (
@@ -77,7 +123,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           <label className="field">Tag
             <input value={d.tag ?? ''} onChange={e => onUpdate(m => ({ ...m, tag: e.target.value }), `tag.${d.id}`)} />
           </label>
-          {set?.fields.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} {...scanProps(f.key)} />)}
+          {defs.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} {...scanProps(f.key)} />)}
           <div className="muted small section-label">Hardware</div>
           {HARDWARE_FIELDS.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} {...scanProps(f.key)} />)}
           <label className="field">Notes
@@ -100,7 +146,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           )}
         </>
       )}
-      {!single && set?.fields.map(f => {
+      {!single && defs.map(f => {
         const sh = shared(f.key)
         return <FieldInput key={f.key} def={f} value={sh.mixed ? undefined : sh.value} mixed={sh.mixed} onChange={v => setField(f.key, v)} />
       })}

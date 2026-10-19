@@ -1,4 +1,6 @@
 import { HARDWARE_FIELDS, STATUSES } from './types'
+import type { DeviceType, Product } from '../catalog/types'
+import { productLabel } from '../catalog/catalog'
 import type { Markup, SymbolSet } from './types'
 
 export interface PopupFieldDef { id: string; label: string }
@@ -6,7 +8,9 @@ export interface PopupFieldDef { id: string; label: string }
 /** Fields every markup can show in the popup, before the symbol sets' own fields. */
 export const BASE_POPUP_FIELDS: PopupFieldDef[] = [
   { id: 'tag', label: 'Tag' },
-  { id: 'type', label: 'Product / type' },
+  { id: 'type', label: 'Symbol set' },
+  { id: 'deviceType', label: 'Device type' },
+  { id: 'product', label: 'Product' },
   { id: 'status', label: 'Status' },
   { id: 'area', label: 'Area' },
   { id: 'placedBy', label: 'Placed by' },
@@ -14,16 +18,17 @@ export const BASE_POPUP_FIELDS: PopupFieldDef[] = [
 ]
 
 /** Everything the user can tick: base fields, hardware fields, then each set's fields (shared keys listed once). */
-export function popupFieldOptions(sets: Iterable<SymbolSet>): PopupFieldDef[] {
+export function popupFieldOptions(sets: Iterable<SymbolSet>, types: Iterable<DeviceType> = []): PopupFieldDef[] {
   const out = [...BASE_POPUP_FIELDS]
   const seen = new Set<string>()
   const add = (key: string, label: string) => { if (!seen.has(key)) { seen.add(key); out.push({ id: `field:${key}`, label }) } }
   for (const f of HARDWARE_FIELDS) add(f.key, f.label)
   for (const s of sets) for (const f of s.fields) add(f.key, f.label)
+  for (const t of types) for (const f of t.fields) add(f.key, f.label)
   return out
 }
 
-export interface PopupContext { set?: SymbolSet; areaPath?: string[] }
+export interface PopupContext { set?: SymbolSet; deviceType?: DeviceType; product?: Product; areaPath?: string[] }
 
 function fieldText(v: unknown): string {
   if (v === undefined || v === null || v === '') return ''
@@ -35,6 +40,8 @@ export function popupValue(id: string, m: Markup, ctx: PopupContext = {}): strin
   switch (id) {
     case 'tag': return m.tag || ''
     case 'type': return m.type === 'device' ? ctx.set?.name ?? '' : m.type
+    case 'deviceType': return ctx.deviceType?.name ?? ''
+    case 'product': return productLabel(ctx.product)
     case 'status': return STATUSES.find(s => s.value === m.status)?.label ?? ''
     case 'area': return ctx.areaPath?.join(' > ') ?? ''
     case 'placedBy': return m.created_by_name ?? ''

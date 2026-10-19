@@ -150,7 +150,36 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   prefs jsonb NOT NULL DEFAULT '{}',
   updated_at timestamptz NOT NULL DEFAULT now()
-)
+);
+CREATE TABLE IF NOT EXISTS device_types (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  symbol_set_id uuid NOT NULL REFERENCES symbol_sets(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  icon text NOT NULL DEFAULT '',
+  tag_prefix text,
+  fields jsonb NOT NULL DEFAULT '[]',
+  default_product_id uuid,
+  sort int NOT NULL DEFAULT 0,
+  archived boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  device_type_id uuid REFERENCES device_types(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'device',
+  manufacturer text NOT NULL DEFAULT '',
+  model text NOT NULL DEFAULT '',
+  name text NOT NULL DEFAULT '',
+  spec_url text NOT NULL DEFAULT '',
+  unit_cost numeric NOT NULL DEFAULT 0,
+  labor_hours numeric NOT NULL DEFAULT 0,
+  default_fields jsonb NOT NULL DEFAULT '{}',
+  accessories jsonb NOT NULL DEFAULT '[]',
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL;
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL
 `
 
 const svg = (body: string) =>
@@ -217,9 +246,73 @@ async function seedSymbolSets(db: Db) {
   }
 }
 
+type SeedProduct = { manufacturer: string; model: string; name: string; unit_cost: number; labor_hours: number; default_fields?: Record<string, any>; accessories?: { model: string; qty: number }[] }
+type SeedType = { name: string; tag_prefix?: string; products: SeedProduct[] }
+const SEED_CATALOG: Record<string, SeedType[]> = {
+  Cameras: [
+    { name: 'IP Camera', products: [
+      { manufacturer: 'Hikvision', model: 'DS-2CD2387G2-LSU/SL', name: 'Outdoor 8MP ColorVu Bullet', unit_cost: 289, labor_hours: 1.5, default_fields: { lens: 'Bullet' }, accessories: [{ model: 'DS-1280ZJ-S', qty: 1 }] },
+      { manufacturer: 'Axis', model: 'M3216-LVE', name: 'Indoor/Outdoor 4MP Dome', unit_cost: 549, labor_hours: 1.5, default_fields: { lens: 'Fixed dome' } },
+    ] },
+    { name: 'PTZ Camera', tag_prefix: 'PTZ', products: [
+      { manufacturer: 'Axis', model: 'Q6225-LE', name: '2MP 30x PTZ', unit_cost: 2800, labor_hours: 3, default_fields: { lens: 'PTZ' } },
+    ] },
+  ],
+  'Fire Alarm': [
+    { name: 'Smoke Detector', tag_prefix: 'SD', products: [{ manufacturer: 'Potter', model: 'PAD100-PHOTO', name: 'Photoelectric smoke detector', unit_cost: 62, labor_hours: 0.5, default_fields: { device_type: 'Smoke' }, accessories: [{ model: 'PAD100-B6', qty: 1 }] }] },
+    { name: 'Heat Detector', tag_prefix: 'HD', products: [{ manufacturer: 'Potter', model: 'PAD100-HEAT', name: 'Heat detector', unit_cost: 55, labor_hours: 0.5, default_fields: { device_type: 'Heat' } }] },
+    { name: 'Pull Station', tag_prefix: 'PS', products: [{ manufacturer: 'Potter', model: 'PAD100-PULL', name: 'Addressable pull station', unit_cost: 68, labor_hours: 0.75, default_fields: { device_type: 'Pull station' } }] },
+    { name: 'Horn/Strobe', tag_prefix: 'HS', products: [{ manufacturer: 'Potter', model: 'PH-HS-W', name: 'Horn/strobe, wall, white', unit_cost: 74, labor_hours: 0.75, default_fields: { device_type: 'Horn/strobe' } }] },
+    { name: 'Module', tag_prefix: 'MM', products: [{ manufacturer: 'Potter', model: 'PAD100-SM', name: 'Monitor module', unit_cost: 58, labor_hours: 0.75, default_fields: { device_type: 'Monitor module' } }] },
+  ],
+  'Access Control': [
+    { name: 'Card Reader', tag_prefix: 'CR', products: [{ manufacturer: 'HID', model: 'RP40', name: 'Multi-tech reader', unit_cost: 195, labor_hours: 1, default_fields: { reader: 'Multi-tech' } }] },
+    { name: 'Door Contact', tag_prefix: 'DC', products: [{ manufacturer: 'Sentrol', model: '1078W', name: 'Recessed door contact', unit_cost: 12, labor_hours: 0.5 }] },
+    { name: 'REX', tag_prefix: 'REX', products: [{ manufacturer: 'Bosch', model: 'DS160', name: 'REX motion sensor', unit_cost: 48, labor_hours: 0.75, default_fields: { rex: true } }] },
+  ],
+  Network: [
+    { name: 'Wireless Access Point', products: [{ manufacturer: 'Ubiquiti', model: 'U6-Pro', name: 'WiFi 6 Pro AP', unit_cost: 159, labor_hours: 1, accessories: [{ model: 'U-PoE-AF', qty: 1 }] }] },
+  ],
+}
+
+async function seedCatalog(db: Db) {
+  const [{ count }] = await db.query<{ count: number }>('SELECT count(*)::int AS count FROM device_types')
+  if (count > 0) return
+  for (const [setName, types] of Object.entries(SEED_CATALOG)) {
+    const [set] = await db.query('SELECT id FROM symbol_sets WHERE name = $1 LIMIT 1', [setName])
+    if (!set) continue
+    let sort = 0
+    for (const t of types) {
+      const [dt] = await db.query(
+        'INSERT INTO device_types (symbol_set_id, name, tag_prefix, sort) VALUES ($1,$2,$3,$4) RETURNING id',
+        [set.id, t.name, t.tag_prefix ?? null, sort++])
+      let first: string | null = null
+      for (const p of t.products) {
+        const [pr] = await db.query(
+          `INSERT INTO products (device_type_id, manufacturer, model, name, unit_cost, labor_hours, default_fields)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+          [dt.id, p.manufacturer, p.model, p.name, p.unit_cost, p.labor_hours, JSON.stringify(p.default_fields ?? {})])
+        first ??= pr.id
+        // Accessories are standalone accessory products referenced by id
+        const acc: any[] = []
+        for (const a of p.accessories ?? []) {
+          const [ap] = await db.query(
+            `INSERT INTO products (device_type_id, kind, manufacturer, model, name, unit_cost, labor_hours)
+             VALUES (NULL,'accessory',$1,$2,$3,$4,$5) RETURNING id`,
+            [p.manufacturer, a.model, a.model, 8, 0.25])
+          acc.push({ product_id: ap.id, qty: a.qty })
+        }
+        if (acc.length) await db.query('UPDATE products SET accessories = $1 WHERE id = $2', [JSON.stringify(acc), pr.id])
+      }
+      await db.query('UPDATE device_types SET default_product_id = $1 WHERE id = $2', [first, dt.id])
+    }
+  }
+}
+
 export async function migrate(db: Db) {
   for (const stmt of SCHEMA.split(';').map(s => s.trim()).filter(Boolean)) {
     await db.query(stmt)
   }
   await seedSymbolSets(db)
+  await seedCatalog(db)
 }

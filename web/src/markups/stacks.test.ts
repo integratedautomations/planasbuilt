@@ -47,6 +47,13 @@ describe('findSnapTarget', () => {
     expect(findSnapTarget([a], { x: 12 + 15, y: 12 }, 'fa')).toBeNull()
     expect(findSnapTarget([a], { x: 12, y: 12 }, 'cam')).toBeNull()
   })
+  it('only joins a stack of the same device type', () => {
+    const t = { ...a, id: 'typed', device_type_id: 'sd' }
+    expect(findSnapTarget([t], { x: 12, y: 12 }, 'fa')).toBeNull()
+    expect(findSnapTarget([t], { x: 12, y: 12 }, 'fa', 1.2, 'sd')).toBe(t)
+    const { stacks } = detectStacks([t, { ...a, id: 'plain' }])
+    expect(stacks).toHaveLength(0)
+  })
 })
 
 describe('tagRange', () => {

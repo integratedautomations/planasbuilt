@@ -8,6 +8,7 @@
 import { api, ApiError, documentFileUrl, attachmentFileUrl } from '../api'
 import type { Attachment, DocumentSummary, Project } from '../api'
 import type { Layer, Markup, SymbolSet } from '../markups/types'
+import type { CatalogData } from '../catalog/types'
 import { isOfflineError, OfflineMissError } from './classify'
 import { db } from './db'
 import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
@@ -88,6 +89,19 @@ export const loadSymbolSets = () => readThrough(
   async rows => db.transaction('rw', db.symbolSets, async () => { await db.symbolSets.clear(); await db.symbolSets.bulkPut(rows) }),
   async () => nonEmpty(await db.symbolSets.toArray()),
   'Symbol sets',
+)
+
+export const loadCatalog = () => readThrough(
+  () => api<CatalogData>('/catalog'),
+  async d => db.transaction('rw', db.deviceTypes, db.products, async () => {
+    await db.deviceTypes.clear(); await db.deviceTypes.bulkPut(d.device_types)
+    await db.products.clear(); await db.products.bulkPut(d.products)
+  }),
+  async () => {
+    const device_types = await db.deviceTypes.toArray(), products = await db.products.toArray()
+    return device_types.length || products.length ? { device_types, products } : undefined
+  },
+  'Catalog',
 )
 
 /** Scales for a document, always read back from Dexie so queued (unsent) scale edits are respected. */
@@ -252,14 +266,14 @@ export interface Progress { done: number; total: number; label: string }
 
 /**
  * Cache everything needed to work on a project with no signal: plan list, every PDF (byte-weighted
- * progress), markups, layers, symbol sets and scales. Throws on the first hard failure.
+ * progress), markups, layers, symbol sets, the catalog and scales. Throws on the first hard failure.
  */
 export async function makeProjectOffline(projectId: string, onProgress: (p: Progress) => void) {
   const report = (done: number, total: number, label: string) => onProgress({ done, total, label })
   report(0, 1, 'Reading project')
   await loadProject(projectId)
   const { data: docs } = await loadDocuments(projectId)
-  await Promise.all([loadLayers(projectId), loadSymbolSets()])
+  await Promise.all([loadLayers(projectId), loadSymbolSets(), loadCatalog().catch(() => {})])
 
   // Progress weights: PDFs dominate, so measure by bytes where we can (HEAD-less: use count + bytes of finished)
   const total = docs.length * 4

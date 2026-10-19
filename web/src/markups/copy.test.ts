@@ -25,6 +25,10 @@ describe('copyFields', () => {
 })
 
 describe('copyMarkup', () => {
+  it('keeps device type and product', () => {
+    const c = copyMarkup({ ...camera, device_type_id: 'ipc', product_id: 'cam1' })
+    expect(c).toMatchObject({ device_type_id: 'ipc', product_id: 'cam1', tag: '' })
+  })
   it('gives a device no tag, default status and cleared unique fields, keeping product and settings', () => {
     const c = copyMarkup(camera, { dx: 30, dy: 40 })
     expect(c.id).not.toBe(camera.id)

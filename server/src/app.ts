@@ -510,6 +510,137 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return { ok: true }
   })
 
+  // ---- Catalog: device types and products ----
+  const cleanFields = (v: any) => cleanSymbolSet({ name: 'x', tag_prefix: 'x', fields: v })?.fields ?? []
+  const numOr0 = (v: any) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 0 }
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+  function cleanDeviceType(b: any) {
+    const name = String(b?.name ?? '').trim()
+    if (!name) return null
+    const icon = String(b.icon ?? '')
+    if (icon && (!/^data:image\/(svg\+xml|png|jpeg|webp)[;,]/.test(icon) || icon.length > 300_000)) return null
+    const prefix = String(b.tag_prefix ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+    return { name, icon, tag_prefix: prefix || null, fields: cleanFields(b.fields) }
+  }
+
+  function cleanProduct(b: any) {
+    const kind = b?.kind === 'accessory' ? 'accessory' : 'device'
+    const manufacturer = String(b?.manufacturer ?? '').trim(), model = String(b?.model ?? '').trim()
+    const name = String(b?.name ?? '').trim()
+    if (!manufacturer && !model && !name) return null
+    const accessories = (Array.isArray(b.accessories) ? b.accessories : []).map((a: any) => {
+      const qty = Math.max(1, Math.round(Number(a?.qty) || 1))
+      if (a?.product_id && uuidRe.test(String(a.product_id))) return { product_id: String(a.product_id), qty }
+      const an = String(a?.name ?? '').trim()
+      return an ? { name: an, unit_cost: numOr0(a.unit_cost), labor_hours: numOr0(a.labor_hours), qty } : null
+    }).filter(Boolean)
+    const df = b.default_fields && typeof b.default_fields === 'object' && !Array.isArray(b.default_fields) ? b.default_fields : {}
+    return {
+      kind, manufacturer, model, name, spec_url: String(b.spec_url ?? '').trim(),
+      unit_cost: numOr0(b.unit_cost), labor_hours: numOr0(b.labor_hours),
+      default_fields: df, accessories, active: b.active !== false,
+    }
+  }
+
+  // numeric columns come back as strings from Postgres; the client wants numbers
+  const productOut = (r: any) => ({ ...r, unit_cost: Number(r.unit_cost), labor_hours: Number(r.labor_hours) })
+
+  app.get('/api/catalog', { preHandler: auth }, async () => ({
+    device_types: await db.query('SELECT * FROM device_types WHERE NOT archived ORDER BY symbol_set_id, sort, created_at'),
+    products: (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut),
+  }))
+
+  app.post('/api/symbol-sets/:id/device-types', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const t = cleanDeviceType(req.body)
+    if (!t) return reply.code(400).send({ error: 'Name and a valid icon are required' })
+    const [set] = await db.query('SELECT id FROM symbol_sets WHERE id = $1', [(req.params as any).id])
+    if (!set) return reply.code(404).send({ error: 'Not found' })
+    const [row] = await db.query(
+      `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, sort)
+       VALUES ($1,$2,$3,$4,$5,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
+      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields)])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return row
+  })
+
+  app.put('/api/device-types/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const t = cleanDeviceType(req.body)
+    if (!t) return reply.code(400).send({ error: 'Name and a valid icon are required' })
+    const b = req.body as any
+    let defaultId: string | null = null
+    if (b.default_product_id) {
+      const [p] = await db.query('SELECT id FROM products WHERE id = $1 AND device_type_id = $2', [b.default_product_id, (req.params as any).id])
+      if (!p) return reply.code(400).send({ error: 'Default product must belong to this type' })
+      defaultId = p.id
+    }
+    const [row] = await db.query(
+      `UPDATE device_types SET name=$1, icon=$2, tag_prefix=$3, fields=$4, default_product_id=$5 WHERE id=$6 RETURNING *`,
+      [t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), defaultId, (req.params as any).id])
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return row
+  })
+
+  // Archive so existing device markups keep their type
+  app.delete('/api/device-types/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    await db.query('UPDATE device_types SET archived = true WHERE id = $1', [(req.params as any).id])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return { ok: true }
+  })
+
+  app.post('/api/products', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const p = cleanProduct(req.body)
+    if (!p) return reply.code(400).send({ error: 'Manufacturer, model or name is required' })
+    let typeId: string | null = null
+    if (p.kind === 'device') {
+      typeId = (req.body as any).device_type_id ?? null
+      const [t] = typeId && uuidRe.test(typeId) ? await db.query('SELECT id FROM device_types WHERE id = $1', [typeId]) : []
+      if (!t) return reply.code(400).send({ error: 'Unknown device type' })
+    }
+    const [row] = await db.query(
+      `INSERT INTO products (device_type_id, kind, manufacturer, model, name, spec_url, unit_cost, labor_hours, default_fields, accessories, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [typeId, p.kind, p.manufacturer, p.model, p.name, p.spec_url, p.unit_cost, p.labor_hours,
+        JSON.stringify(p.default_fields), JSON.stringify(p.accessories), p.active])
+    if (typeId) await db.query('UPDATE device_types SET default_product_id = $1 WHERE id = $2 AND default_product_id IS NULL', [row.id, typeId])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return productOut(row)
+  })
+
+  app.put('/api/products/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const p = cleanProduct(req.body)
+    if (!p) return reply.code(400).send({ error: 'Manufacturer, model or name is required' })
+    const [row] = await db.query(
+      `UPDATE products SET manufacturer=$1, model=$2, name=$3, spec_url=$4, unit_cost=$5, labor_hours=$6,
+         default_fields=$7, accessories=$8, active=$9 WHERE id=$10 RETURNING *`,
+      [p.manufacturer, p.model, p.name, p.spec_url, p.unit_cost, p.labor_hours,
+        JSON.stringify(p.default_fields), JSON.stringify(p.accessories), p.active, (req.params as any).id])
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return productOut(row)
+  })
+
+  // Hard delete only when unused; otherwise deactivate so BOMs of existing devices stay correct
+  app.delete('/api/products/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const id = (req.params as any).id
+    const [used] = await db.query('SELECT count(*)::int AS n FROM markups WHERE product_id = $1', [id])
+    if (used.n > 0) {
+      await db.query('UPDATE products SET active = false WHERE id = $1', [id])
+    } else {
+      await db.query('UPDATE device_types SET default_product_id = NULL WHERE default_product_id = $1', [id])
+      await db.query('DELETE FROM products WHERE id = $1', [id])
+    }
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return { ok: true, deactivated: used.n > 0 }
+  })
+
   /** Next free tag for a prefix across the whole project, e.g. CAM-07. */
   async function nextTag(projectId: string, prefix: string) {
     const rows = await db.query<{ tag: string }>(
@@ -523,7 +654,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   }
 
   // ---- Markups ----
-  const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, version, created_by, updated_by, created_at, updated_at'
+  const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, device_type_id, product_id, tag, status, fields, version, created_by, updated_by, created_at, updated_at'
   const STATUSES = ['', 'planned', 'installed', 'tested', 'punch']
 
   app.get('/api/documents/:id/markups', { preHandler: auth }, async (req, reply) => {
@@ -579,7 +710,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       const from = emptyToNull(pf[k]), to = emptyToNull(nf[k])
       if (!same(from, to)) changes[`fields.${k}`] = { from, to }
     }
-    for (const k of ['status', 'tag', 'text', 'layer_id', 'symbol_set_id'])
+    for (const k of ['status', 'tag', 'text', 'layer_id', 'symbol_set_id', 'device_type_id', 'product_id'])
       if ((prev[k] ?? null) !== (next[k] ?? null)) changes[k] = { from: prev[k] ?? null, to: next[k] ?? null }
     if (!same(prev.geometry, next.geometry)) changes.geometry = true
     if (!same(prev.style, next.style)) changes.style = true
@@ -648,22 +779,36 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const status = String(b.status ?? '')
     if (!STATUSES.includes(status)) return reply.code(400).send({ error: 'Bad status' })
     let tag = String(b.tag ?? '').trim()
+    let deviceTypeId: string | null = null, productId: string | null = null
     if (b.symbol_set_id) {
       const [set] = await db.query('SELECT tag_prefix FROM symbol_sets WHERE id = $1', [b.symbol_set_id])
       if (!set) return reply.code(400).send({ error: 'Unknown symbol set' })
-      if (!tag) tag = await nextTag(doc.project_id, set.tag_prefix)
+      let prefix = set.tag_prefix
+      if (b.device_type_id) {
+        const [dt] = uuidRe.test(String(b.device_type_id))
+          ? await db.query('SELECT id, tag_prefix FROM device_types WHERE id = $1 AND symbol_set_id = $2', [b.device_type_id, b.symbol_set_id]) : []
+        if (!dt) return reply.code(400).send({ error: 'Unknown device type' })
+        deviceTypeId = dt.id
+        if (dt.tag_prefix) prefix = dt.tag_prefix
+      }
+      if (b.product_id) {
+        const [pr] = uuidRe.test(String(b.product_id)) ? await db.query('SELECT id FROM products WHERE id = $1', [b.product_id]) : []
+        if (!pr) return reply.code(400).send({ error: 'Unknown product' })
+        productId = pr.id
+      }
+      if (!tag) tag = await nextTag(doc.project_id, prefix)
     }
     const fields = b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields) ? b.fields : {}
     const [row] = await db.query(
-      `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+      `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by, device_type_id, product_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15)
        ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
          style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id,
-         symbol_set_id = EXCLUDED.symbol_set_id, tag = EXCLUDED.tag, status = EXCLUDED.status, fields = EXCLUDED.fields,
+         symbol_set_id = EXCLUDED.symbol_set_id, device_type_id = EXCLUDED.device_type_id, product_id = EXCLUDED.product_id, tag = EXCLUDED.tag, status = EXCLUDED.status, fields = EXCLUDED.fields,
          deleted = false, version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
        RETURNING ${MARKUP_COLUMNS}`,
       [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
-        String(b.text ?? ''), b.layer_id || null, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id])
+        String(b.text ?? ''), b.layer_id || null, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id, deviceTypeId, productId])
     if (!existing) await recordEvent(markupId, req.user.id, 'created')
     else if (existing.deleted) await recordEvent(markupId, req.user.id, 'restored')
     else {

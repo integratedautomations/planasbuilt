@@ -1,4 +1,6 @@
 import { api } from '../api'
+import { buildCatalog } from '../catalog/catalog'
+import type { CatalogData } from '../catalog/types'
 import type { Markup, SymbolSet } from '../markups/types'
 import { buildRows, exportFileName, exportTables } from './rows'
 
@@ -8,14 +10,15 @@ export const scaleKey = (documentId: string, page: number) => `${documentId}|${p
 
 /** Fetches the whole project and downloads the device schedule workbook. */
 export async function exportProjectSchedule(projectId: string, projectName: string) {
-  const [markups, scales, sets] = await Promise.all([
+  const [markups, scales, sets, cat] = await Promise.all([
     api<Markup[]>(`/projects/${projectId}/markups`),
     api<ProjectScaleRow[]>(`/projects/${projectId}/scales`).catch(() => [] as ProjectScaleRow[]),
     api<SymbolSet[]>('/symbol-sets'),
+    api<CatalogData>('/catalog').catch(() => ({ device_types: [], products: [] }) as CatalogData),
   ])
   const ppf = new Map(scales.map(s => [scaleKey(s.document_id, s.page), s.points_per_foot]))
   const rows = buildRows(markups, {
-    symbolSets: new Map(sets.map(s => [s.id, s])), showAll: true,
+    symbolSets: new Map(sets.map(s => [s.id, s])), catalog: buildCatalog(cat), showAll: true,
     scaleFor: (d, p) => ppf.get(scaleKey(d, p)) ?? null,
   })
   const { downloadWorkbook } = await import('./xlsxIO')

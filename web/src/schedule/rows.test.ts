@@ -87,12 +87,12 @@ describe('export', () => {
   })
   it('lays out columns with set fields first, id last, split area columns, real dates and numbers', () => {
     const t = tables[1]
-    expect(t.header.slice(0, 9)).toEqual(['Tag', 'Set', 'Status', 'Area', 'Area 1', 'Area 2', 'Area 3', 'Document', 'Page'])
-    expect(t.header.slice(9, 12)).toEqual(['IP', 'Resolution', 'Manufacturer'])
+    expect(t.header.slice(0, 11)).toEqual(['Tag', 'Set', 'Device type', 'Product', 'Status', 'Area', 'Area 1', 'Area 2', 'Area 3', 'Document', 'Page'])
+    expect(t.header.slice(11, 14)).toEqual(['IP', 'Resolution', 'Manufacturer'])
     expect(t.header.at(-1)).toBe('id')
     const row = t.data[0]
-    expect(row[3]).toBe('First Floor > Living Room')
-    expect(row[4]).toBe('First Floor'); expect(row[5]).toBe('Living Room'); expect(row[6]).toBeNull()
+    expect(row[5]).toBe('First Floor > Living Room')
+    expect(row[6]).toBe('First Floor'); expect(row[7]).toBe('Living Room'); expect(row[8]).toBeNull()
     expect(t.data[0][t.header.indexOf('Placed at')]).toBeInstanceOf(Date)
     expect(tables[2].data[0][tables[2].header.indexOf('Zone')]).toBe(4)
   })

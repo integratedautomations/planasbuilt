@@ -34,6 +34,8 @@ export interface Markup {
   text: string
   layer_id: string | null
   symbol_set_id?: string | null
+  device_type_id?: string | null
+  product_id?: string | null
   tag?: string
   status?: Status
   fields?: Record<string, string | number | boolean>

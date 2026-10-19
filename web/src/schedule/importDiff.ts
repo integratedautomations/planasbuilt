@@ -15,7 +15,7 @@ export interface ColumnMap { index: number; header: string; target: Target }
 export const normalizeHeader = (h: unknown) => String(h ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
 const NOTES_DEF: FieldDef = { key: 'notes', label: 'Notes', type: 'text' }
-const READ_ONLY = new Set(['set', 'type', 'area', 'area1', 'area2', 'area3', 'document', 'page', 'sheet', 'placedby', 'placedat',
+const READ_ONLY = new Set(['set', 'type', 'devicetype', 'product', 'area', 'area1', 'area2', 'area3', 'document', 'page', 'sheet', 'placedby', 'placedat',
   'lasteditedby', 'lasteditedat', 'updated', 'photos', 'photoscount', 'photocount'])
 
 /** The field definitions a device can take from a spreadsheet: its set's fields, then hardware and notes. */

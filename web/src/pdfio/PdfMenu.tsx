@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { useCatalogContext } from '../catalog/useCatalog'
 import type { PageScale } from '../markups/ScaleControl'
 import type { Markup, SymbolSet } from '../markups/types'
 import type { Change } from '../markups/useMarkups'
@@ -19,6 +20,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
 /** Viewer toolbar menu: annotated / flattened PDF export and import from an annotated PDF. */
 export function PdfMenu({ documentId, documentName, markups, symbolSets, scales, readOnly, commit }: Props) {
+  const catalog = useCatalogContext()
   const menu = useRef<HTMLDetailsElement>(null)
   const file = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState('')
@@ -31,7 +33,7 @@ export function PdfMenu({ documentId, documentName, markups, symbolSets, scales,
     close(); setNote(''); setBusy(kind === 'annotated' ? 'Exporting annotated PDF…' : 'Exporting flattened PDF…')
     try {
       await exportDocumentPdf(kind, {
-        documentId, name: documentName, markups: markups.values(), symbolSets,
+        documentId, name: documentName, markups: markups.values(), symbolSets, deviceTypes: catalog.types.values(),
         scales: new Map([...scales].map(([p, s]) => [p, s.pointsPerFoot])),
       })
     } catch (e) { setNote(`Export failed: ${(e as Error).message}`) } finally { setBusy('') }

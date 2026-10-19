@@ -4,6 +4,7 @@ import { describeEvent, formatWhen } from './history'
 import type { HistoryEvent } from './history'
 import type { Markup, SymbolSet } from './types'
 import { popupFieldOptions, popupRows } from './popupFields'
+import { useCatalogContext } from '../catalog/useCatalog'
 
 /** "Placed by Dana · Oct 19" / "Last edited by Sam · 2h ago". Markups made this session show "you" until reload. */
 export function Attribution({ markup: m }: { markup: Markup }) {
@@ -77,9 +78,12 @@ export function MarkupPopup({ markup: m, set, sets, areaPath, fields, onFields }
 }) {
   const [picking, setPicking] = useState(false)
   const [closedFor, setClosedFor] = useState('')
-  const options = popupFieldOptions(sets)
+  const cat = useCatalogContext()
+  const options = popupFieldOptions(sets, cat.types.values())
   if (closedFor === m.id) return null
-  const rows = popupRows(m, fields, options, { set, areaPath })
+  const rows = popupRows(m, fields, options, {
+    set, areaPath, deviceType: m.device_type_id ? cat.types.get(m.device_type_id) : undefined, product: m.product_id ? cat.products.get(m.product_id) : undefined,
+  })
   const toggle = (id: string) => onFields(fields.includes(id) ? fields.filter(f => f !== id) : [...fields, id])
   return (
     <div className="markup-popup" data-no-pan role="region" aria-label="Markup info" onPointerDown={e => e.stopPropagation()}>

@@ -61,7 +61,7 @@ export function ImportDialog({ devices, symbolSets, documentId, liveMarkups, com
             method: 'PUT',
             body: JSON.stringify({
               page: a.page, type: a.type, geometry: a.geometry, style: a.style, text: a.text, layer_id: a.layer_id,
-              symbol_set_id: a.symbol_set_id ?? null, tag: a.tag ?? '', status: a.status ?? '', fields: a.fields ?? {},
+              symbol_set_id: a.symbol_set_id ?? null, device_type_id: a.device_type_id ?? null, product_id: a.product_id ?? null, tag: a.tag ?? '', status: a.status ?? '', fields: a.fields ?? {},
             }),
           })
         } catch { failed++ }

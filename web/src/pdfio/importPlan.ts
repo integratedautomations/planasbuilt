@@ -30,8 +30,8 @@ export interface ImportPlan {
 /** Fields that come from the server and must not be copied onto a new markup. */
 const SERVER_FIELDS = ['version', 'created_by', 'updated_by', 'created_by_name', 'updated_by_name', 'created_at', 'updated_at', 'document_name', 'photo_count'] as const
 
-const same = (a: Markup, b: Markup) => JSON.stringify([a.page, a.type, a.geometry, a.style, a.text, a.tag ?? '', a.status ?? '', a.fields ?? {}, a.symbol_set_id ?? null])
-  === JSON.stringify([b.page, b.type, b.geometry, b.style, b.text, b.tag ?? '', b.status ?? '', b.fields ?? {}, b.symbol_set_id ?? null])
+const same = (a: Markup, b: Markup) => JSON.stringify([a.page, a.type, a.geometry, a.style, a.text, a.tag ?? '', a.status ?? '', a.fields ?? {}, a.symbol_set_id ?? null, a.device_type_id ?? null, a.product_id ?? null])
+  === JSON.stringify([b.page, b.type, b.geometry, b.style, b.text, b.tag ?? '', b.status ?? '', b.fields ?? {}, b.symbol_set_id ?? null, b.device_type_id ?? null, b.product_id ?? null])
 
 /** Reads an annotated PDF and works out which markups to add or update. Nothing is saved here. */
 export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportContext): Promise<ImportPlan> {

@@ -5,6 +5,7 @@ import type { PageScale } from '../markups/ScaleControl'
 import { STATUSES } from '../markups/types'
 import type { Markup, Status, SymbolSet } from '../markups/types'
 import type { Change } from '../markups/useMarkups'
+import { useCatalogContext } from '../catalog/useCatalog'
 import { scaleKey } from './exportProject'
 import type { ProjectScaleRow } from './exportProject'
 import { ImportDialog } from './ImportDialog'
@@ -65,6 +66,7 @@ export function MarkupsList(p: Props) {
   useEffect(refresh, [refresh])
 
   const sets = p.symbolSets
+  const catalog = useCatalogContext()
   const setList = useMemo(() => [...sets.values()].sort((a, b) => a.sort - b.sort), [sets])
   const { documentId, documentName, pageNum } = p
 
@@ -83,8 +85,8 @@ export function MarkupsList(p: Props) {
   [documentId, p.localScales, projectScales])
 
   const allRows = useMemo(
-    () => buildRows(source, { symbolSets: sets, docNames, photoCounts, scaleFor, showAll }),
-    [source, sets, docNames, photoCounts, scaleFor, showAll])
+    () => buildRows(source, { symbolSets: sets, catalog, docNames, photoCounts, scaleFor, showAll }),
+    [source, sets, catalog, docNames, photoCounts, scaleFor, showAll])
   const allColumns = useMemo(() => listColumns(allRows, sets, filter.setId, showAll), [allRows, sets, filter.setId, showAll])
   const columns = useMemo(() => p.visibleColumns ? allColumns.filter(c => c.id === 'tag' || p.visibleColumns!.includes(c.id)) : allColumns, [allColumns, p.visibleColumns])
   const rows = useMemo(() => sortRows(filterRows(allRows, filter), allColumns, sort.col, sort.dir), [allRows, filter, allColumns, sort])
@@ -104,7 +106,7 @@ export function MarkupsList(p: Props) {
   async function exportExcel() {
     setBusy(true); setExportError('')
     try {
-      const all = buildRows(source, { symbolSets: sets, docNames, photoCounts, scaleFor, showAll: true })
+      const all = buildRows(source, { symbolSets: sets, catalog, docNames, photoCounts, scaleFor, showAll: true })
       const { downloadWorkbook } = await import('./xlsxIO')
       await downloadWorkbook(exportTables(all, setList), exportFileName(p.projectName))
     } catch (e) { setExportError((e as Error).message) } finally { setBusy(false) }

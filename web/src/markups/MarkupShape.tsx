@@ -15,6 +15,8 @@ interface Props {
   /** 1-based number shown on a count marker. */
   countNumber?: number
   symbolSet?: SymbolSet
+  /** Icon image for a device: its device type's icon, else the set's (default). */
+  iconSrc?: string
   /** Names from the outermost area down to this area (area markups only). */
   areaPath?: string[]
   draggable?: boolean
@@ -45,7 +47,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 export function MarkupShape(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true, stack, ghost } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true, stack, ghost } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g && showCones && !g.fov?.hidden ? g.fov : undefined
@@ -69,7 +71,7 @@ export function MarkupShape(props: Props) {
         onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
         {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
-            : <DeviceBody m={m} g={g} set={symbolSet} zoom={zoom} stack={stack} />)
+            : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} zoom={zoom} stack={stack} />)
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
           <PointHandles points={g.points} zoom={zoom} onChange={onPointsChange} />
@@ -79,8 +81,8 @@ export function MarkupShape(props: Props) {
   )
 }
 
-function DeviceBody({ m, g, set, zoom, stack }: { m: Markup; g: BoxGeometry; set?: SymbolSet; zoom: number; stack?: StackView }) {
-  const icon = useImage(set?.icon)
+function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeometry; set?: SymbolSet; iconSrc?: string; zoom: number; stack?: StackView }) {
+  const icon = useImage(iconSrc ?? set?.icon)
   const color = set?.color ?? '#868e96'
   const r = Math.min(g.width, g.height) / 2
   const cx = g.width / 2, cy = g.height / 2

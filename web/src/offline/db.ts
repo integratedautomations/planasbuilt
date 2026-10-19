@@ -12,6 +12,7 @@ import Dexie from 'dexie'
 import type { Table } from 'dexie'
 import type { Attachment, DocumentSummary, Project } from '../api'
 import type { Layer, Markup, SymbolSet } from '../markups/types'
+import type { DeviceType, Product } from '../catalog/types'
 
 export type DocumentRow = DocumentSummary & { project_id: string }
 /** `revisionId` = which revision of the document these bytes are; a newer revision on the server makes the copy stale. */
@@ -66,6 +67,8 @@ class OfflineDb extends Dexie {
   markups!: Table<Markup, string>
   layers!: Table<Layer, string>
   symbolSets!: Table<SymbolSet, string>
+  deviceTypes!: Table<DeviceType, string>
+  products!: Table<Product, string>
   scales!: Table<ScaleRow, string>
   attachments!: Table<AttachmentRow, string>
   photoBlobs!: Table<PhotoBlobRow, string>
@@ -87,6 +90,8 @@ class OfflineDb extends Dexie {
       outbox: '++seq, targetId, docId, status',
       kv: 'key',
     })
+    // Catalog (device types and products), cached for field use
+    this.version(2).stores({ deviceTypes: 'id, symbol_set_id', products: 'id, device_type_id' })
   }
 }
 
