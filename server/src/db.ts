@@ -75,6 +75,31 @@ CREATE TABLE IF NOT EXISTS pages (
   scale_ratio double precision,
   PRIMARY KEY (revision_id, page_number)
 );
+CREATE TABLE IF NOT EXISTS layers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  color text NOT NULL DEFAULT '#e8590c',
+  sort int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS markups (
+  id uuid PRIMARY KEY,
+  document_id uuid REFERENCES documents(id) ON DELETE CASCADE,
+  page int NOT NULL,
+  type text NOT NULL,
+  geometry jsonb NOT NULL,
+  style jsonb NOT NULL DEFAULT '{}',
+  text text NOT NULL DEFAULT '',
+  layer_id uuid REFERENCES layers(id) ON DELETE SET NULL,
+  version int NOT NULL DEFAULT 1,
+  deleted boolean NOT NULL DEFAULT false,
+  created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS markups_document ON markups(document_id) WHERE NOT deleted
 `
 
 export async function migrate(db: Db) {

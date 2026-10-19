@@ -238,6 +238,96 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return reply.send(createReadStream(filePath))
   })
 
+  // ---- Layers ----
+  app.get('/api/projects/:id/layers', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    return db.query('SELECT * FROM layers WHERE project_id = $1 ORDER BY sort, created_at', [id])
+  })
+
+  app.post('/api/projects/:id/layers', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    if (!(await requireRole(req, reply, id, 'editor'))) return
+    const { name, color } = (req.body ?? {}) as any
+    if (!String(name ?? '').trim()) return reply.code(400).send({ error: 'Layer name is required' })
+    const [layer] = await db.query(
+      `INSERT INTO layers (project_id, name, color, sort)
+       VALUES ($1, $2, $3, (SELECT coalesce(max(sort), 0) + 1 FROM layers WHERE project_id = $1)) RETURNING *`,
+      [id, String(name).trim(), color || '#e8590c'])
+    return layer
+  })
+
+  async function layerWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+    const { id } = req.params as any
+    const [layer] = await db.query('SELECT * FROM layers WHERE id = $1', [id])
+    if (!layer) { reply.code(404).send({ error: 'Not found' }); return null }
+    if (!(await requireRole(req, reply, layer.project_id, min))) return null
+    return layer
+  }
+
+  app.patch('/api/layers/:id', { preHandler: auth }, async (req, reply) => {
+    const layer = await layerWithAccess(req, reply, 'editor')
+    if (!layer) return
+    const { name, color } = (req.body ?? {}) as any
+    const [updated] = await db.query(
+      'UPDATE layers SET name = $1, color = $2 WHERE id = $3 RETURNING *',
+      [String(name ?? layer.name).trim() || layer.name, color ?? layer.color, layer.id])
+    return updated
+  })
+
+  app.delete('/api/layers/:id', { preHandler: auth }, async (req, reply) => {
+    const layer = await layerWithAccess(req, reply, 'admin')
+    if (!layer) return
+    await db.query('DELETE FROM layers WHERE id = $1', [layer.id])
+    return { ok: true }
+  })
+
+  // ---- Markups ----
+  const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, version, created_by, updated_by, created_at, updated_at'
+
+  app.get('/api/documents/:id/markups', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'viewer')
+    if (!doc) return
+    return db.query(`SELECT ${MARKUP_COLUMNS} FROM markups WHERE document_id = $1 AND NOT deleted ORDER BY created_at`, [doc.id])
+  })
+
+  // Upsert by client-generated id. Last write wins; version increases on every save.
+  app.put('/api/documents/:id/markups/:markupId', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const { markupId } = req.params as any
+    const b = (req.body ?? {}) as any
+    if (!/^[0-9a-f-]{36}$/i.test(markupId)) return reply.code(400).send({ error: 'Bad markup id' })
+    if (!b.type || !b.geometry || !Number.isInteger(b.page) || b.page < 1)
+      return reply.code(400).send({ error: 'type, page and geometry are required' })
+    const [existing] = await db.query('SELECT document_id FROM markups WHERE id = $1', [markupId])
+    if (existing && existing.document_id !== doc.id) return reply.code(409).send({ error: 'Markup belongs to another document' })
+    if (b.layer_id) {
+      const [layer] = await db.query('SELECT project_id FROM layers WHERE id = $1', [b.layer_id])
+      if (!layer || layer.project_id !== doc.project_id) return reply.code(400).send({ error: 'Unknown layer' })
+    }
+    const [row] = await db.query(
+      `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+       ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
+         style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id, deleted = false,
+         version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
+       RETURNING ${MARKUP_COLUMNS}`,
+      [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
+        String(b.text ?? ''), b.layer_id || null, req.user.id])
+    return row
+  })
+
+  app.delete('/api/documents/:id/markups/:markupId', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const { markupId } = req.params as any
+    await db.query(
+      `UPDATE markups SET deleted = true, version = version + 1, updated_by = $1, updated_at = now()
+       WHERE id = $2 AND document_id = $3`, [req.user.id, markupId, doc.id])
+    return { ok: true }
+  })
+
   // ---- Built web app (production) ----
   if (webDir && existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir })

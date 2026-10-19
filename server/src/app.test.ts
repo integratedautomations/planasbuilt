@@ -67,4 +67,31 @@ describe('milestone 1 api', () => {
     expect((await app.inject({ url: `/api/projects/${projectId}/documents`, headers: vh })).json()).toHaveLength(1)
     expect((await app.inject({ method: 'DELETE', url: `/api/documents/${docId}`, headers: vh })).statusCode).toBe(403)
   })
+
+  it('saves, updates and deletes markups and layers', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    const layer = (await app.inject({ method: 'POST', url: `/api/projects/${projectId}/layers`, headers: h,
+      payload: { name: 'Cameras', color: '#1971c2' } })).json()
+    expect(layer.name).toBe('Cameras')
+    const id = '11111111-1111-4111-8111-111111111111'
+    const url = `/api/documents/${docId}/markups/${id}`
+    const body = { page: 1, type: 'rect', geometry: { x: 1, y: 2, width: 3, height: 4, rotation: 0 }, style: { stroke: '#f00' }, layer_id: layer.id }
+    expect((await app.inject({ method: 'PUT', url, headers: h, payload: body })).json().version).toBe(1)
+    const v2 = (await app.inject({ method: 'PUT', url, headers: h, payload: { ...body, geometry: { ...body.geometry, x: 50 } } })).json()
+    expect(v2).toMatchObject({ version: 2, geometry: { x: 50 } })
+    expect((await app.inject({ url: `/api/documents/${docId}/markups`, headers: h })).json()).toHaveLength(1)
+    await app.inject({ method: 'DELETE', url, headers: h })
+    expect((await app.inject({ url: `/api/documents/${docId}/markups`, headers: h })).json()).toHaveLength(0)
+    // re-saving (undo of a delete) restores it
+    await app.inject({ method: 'PUT', url, headers: h, payload: body })
+    expect((await app.inject({ url: `/api/documents/${docId}/markups`, headers: h })).json()).toHaveLength(1)
+  })
+
+  it('blocks viewers from editing markups', async () => {
+    const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login',
+      payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    const res = await app.inject({ method: 'PUT', url: `/api/documents/${docId}/markups/22222222-2222-4222-8222-222222222222`,
+      headers: { authorization: `Bearer ${viewer}` }, payload: { page: 1, type: 'line', geometry: {} } })
+    expect(res.statusCode).toBe(403)
+  })
 })
