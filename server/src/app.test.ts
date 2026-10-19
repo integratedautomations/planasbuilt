@@ -161,6 +161,72 @@ describe('milestone 1 api', () => {
       expect((await app.inject({ method: 'PUT', url, headers: h, payload })).statusCode, url + JSON.stringify(payload)).toBe(400)
   })
 
+  describe('markup history', () => {
+    const mid = '55555555-5555-4555-8555-555555555555'
+    let sam = ''
+    const hist = async (token = admin) => (await app.inject({ url: `/api/markups/${mid}/history`, headers: { authorization: `Bearer ${token}` } })).json()
+    const put = (token: string, extra: any = {}) => app.inject({ method: 'PUT', url: `/api/documents/${docId}/markups/${mid}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { page: 1, type: 'device', geometry: { x: 0, y: 0 }, status: 'planned', ...extra } })
+
+    it('records created, coalesces typing, and tracks status', async () => {
+      const h = { authorization: `Bearer ${admin}` }
+      await app.inject({ method: 'POST', url: '/api/users', headers: h, payload: { email: 'sam@x.com', name: 'Sam', password: 'password1' } })
+      await app.inject({ method: 'PUT', url: `/api/projects/${projectId}/members`, headers: h, payload: { email: 'sam@x.com', role: 'editor' } })
+      sam = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'sam@x.com', password: 'password1' } })).json().token
+      await put(admin)
+      await put(admin, { fields: { ip: '10' } })
+      await put(admin, { fields: { ip: '10.0.0.7' } })
+      let ev = await hist()
+      expect(ev.map((e: any) => e.action)).toEqual(['updated', 'created'])
+      expect(ev[0].changes).toEqual({ 'fields.ip': { from: null, to: '10.0.0.7' } })
+      expect(ev[0].user).toMatchObject({ name: 'Boss', email: 'boss@x.com' })
+      await put(admin, { fields: { ip: '10.0.0.7' }, status: 'installed' })
+      ev = await hist()
+      expect(ev).toHaveLength(2)
+      expect(ev[0].changes).toEqual({ 'fields.ip': { from: null, to: '10.0.0.7' }, status: { from: 'planned', to: 'installed' } })
+      // a no-op save writes nothing
+      await put(admin, { fields: { ip: '10.0.0.7' }, status: 'installed' })
+      expect(await hist()).toHaveLength(2)
+    })
+
+    it('a different user gets a separate event; list has names', async () => {
+      await put(sam, { fields: { ip: '10.0.0.8' }, status: 'installed' })
+      const ev = await hist(sam)
+      expect(ev).toHaveLength(3)
+      expect(ev[0]).toMatchObject({ action: 'updated', changes: { 'fields.ip': { from: '10.0.0.7', to: '10.0.0.8' } }, user: { name: 'Sam' } })
+      expect(ev[1].user.name).toBe('Boss')
+      const list = (await app.inject({ url: `/api/documents/${docId}/markups`, headers: { authorization: `Bearer ${admin}` } })).json()
+      expect(list.find((m: any) => m.id === mid)).toMatchObject({ created_by_name: 'Boss', updated_by_name: 'Sam' })
+    })
+
+    it('records photos and deletion; viewers can read history', async () => {
+      const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1])
+      const aid = '66666666-6666-4666-8666-666666666666'
+      const b = 'HB'
+      const body = Buffer.concat([
+        Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="id"\r\n\r\n${aid}\r\n`),
+        Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="caption"\r\n\r\nRack\r\n`),
+        Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="photo"; filename="a.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`),
+        jpg, Buffer.from(`\r\n--${b}--\r\n`)])
+      const post = () => app.inject({ method: 'POST', url: `/api/markups/${mid}/attachments`,
+        headers: { authorization: `Bearer ${admin}`, 'content-type': `multipart/form-data; boundary=${b}` }, payload: body })
+      expect((await post()).statusCode).toBe(200)
+      expect((await post()).statusCode).toBe(200) // idempotent re-POST adds no event
+      let ev = await hist()
+      expect(ev.filter((e: any) => e.action === 'photo_added')).toHaveLength(1)
+      expect(ev[0]).toMatchObject({ action: 'photo_added', changes: { attachment_id: aid, caption: 'Rack' } })
+      await app.inject({ method: 'DELETE', url: `/api/attachments/${aid}`, headers: { authorization: `Bearer ${admin}` } })
+      await app.inject({ method: 'DELETE', url: `/api/documents/${docId}/markups/${mid}`, headers: { authorization: `Bearer ${admin}` } })
+      ev = await hist()
+      expect(ev.slice(0, 2).map((e: any) => e.action)).toEqual(['deleted', 'photo_deleted'])
+      const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+      expect((await app.inject({ url: `/api/markups/${mid}/history`, headers: { authorization: `Bearer ${viewer}` } })).statusCode).toBe(200)
+      await put(admin)
+      expect((await hist())[0].action).toBe('restored')
+    })
+  })
+
   describe('photo attachments', () => {
     const mk = '11111111-1111-4111-8111-111111111111'
     const aid = '44444444-4444-4444-8444-444444444444'

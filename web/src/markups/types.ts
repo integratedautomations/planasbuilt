@@ -2,14 +2,14 @@
 
 export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device'
 export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand' | 'cable'
-  | 'measure-length' | 'measure-polylength' | 'measure-area' | 'count'
+  | 'measure-length' | 'measure-polylength' | 'measure-area' | 'count' | 'area'
 export type MarkupType = BoxType | PathType
 
 export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp', 'device']
 export const isBoxType = (t: MarkupType): t is BoxType => BOX_TYPES.includes(t)
 
 /** Camera coverage wedge, in degrees and page points, from the device center. */
-export interface Fov { direction: number; angle: number; range: number }
+export interface Fov { direction: number; angle: number; range: number; hidden?: boolean }
 
 export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number; fov?: Fov }
 /** points are relative to x/y: [x0, y0, x1, y1, ...] */
@@ -40,6 +40,9 @@ export interface Markup {
   version?: number
   created_by?: string
   updated_by?: string
+  created_by_name?: string | null
+  updated_by_name?: string | null
+  created_at?: string
   updated_at?: string
 }
 
@@ -75,11 +78,15 @@ export interface SymbolSet {
 
 export interface Layer { id: string; project_id: string; name: string; color: string; sort: number }
 
-export type Tool = 'select' | 'pan' | 'calibrate' | MarkupType
+/** 'area-rect' is a drag-a-rectangle variant of 'area'; it stores a 4-point polygon of type 'area'. */
+export type Tool = 'select' | 'pan' | 'calibrate' | 'area-rect' | MarkupType
 
 export const DEFAULT_STYLE: MarkupStyle = {
   stroke: '#e03131', fill: '', strokeWidth: 3, opacity: 1, fontSize: 18,
 }
+
+/** Areas: muted dashed outline, very light fill. */
+export const AREA_STYLE: MarkupStyle = { stroke: '#5f7a99', fill: '#5f7a99', strokeWidth: 2, opacity: 1, fontSize: 16, dash: true }
 
 export function defaultStyleFor(type: MarkupType, base: MarkupStyle): MarkupStyle {
   if (type === 'highlight') return { ...base, stroke: '', fill: '#ffd43b', opacity: 0.4 }

@@ -2,12 +2,30 @@ import { useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
 import { DeviceFields } from './DeviceFields'
+import { Attribution, HistorySection } from './MarkupInfo'
 import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
 import { summarize } from './measure'
 import type { MeasureTotal } from './measure'
 
-export type PanelTab = 'props' | 'measure' | 'layers'
+export type PanelTab = 'props' | 'measure' | 'layers' | 'areas'
+
+/** Everything the Areas tab and area/device panels need, computed once in ViewerPage. */
+export interface AreasProps {
+  /** Every area on this page (including the sheet area). */
+  pageAreas: Markup[]
+  parentOf: (id: string) => string | null
+  /** Computed area names, outermost first, for a device/markup or for an area itself. */
+  pathOf: (m: Markup) => string[]
+  /** Devices inside an area, counting nested areas. */
+  deviceCount: (id: string) => number
+  parentChoices: (a: Markup) => Markup[]
+  show: boolean
+  onShow: (v: boolean) => void
+  onSelectArea: (id: string) => void
+  onDraw: (tool: 'area' | 'area-rect') => void
+  onNameSheet: () => void
+}
 
 export interface MeasureProps {
   scale: PageScale | null
@@ -42,6 +60,7 @@ interface Props {
   tab: PanelTab
   onTab: (t: PanelTab) => void
   measure: MeasureProps
+  areas: AreasProps
   selected: Markup[]
   readOnly: boolean
   /** Style used for new markups when nothing is selected. */
@@ -62,6 +81,8 @@ interface Props {
   onAddLayer: (name: string) => Promise<void>
   textRef: React.RefObject<HTMLTextAreaElement | null>
   symbolSets: Map<string, SymbolSet>
+  /** Per-viewer display options shown at the top of the Layers tab. */
+  display: { showCones: boolean; onShowCones: (v: boolean) => void }
 }
 
 export function SidePanel(p: Props) {
@@ -74,8 +95,9 @@ export function SidePanel(p: Props) {
         <button className={tab === 'props' ? 'active' : ''} onClick={() => setTab('props')}>Properties</button>
         <button className={tab === 'measure' ? 'active' : ''} onClick={() => setTab('measure')}>Measure</button>
         <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>Layers</button>
+        <button className={tab === 'areas' ? 'active' : ''} onClick={() => setTab('areas')}>Areas</button>
       </div>
-      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : <Layers {...p} />}
+      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : tab === 'areas' ? <Areas {...p} /> : <Layers {...p} />}
     </aside>
   )
 }
@@ -127,13 +149,97 @@ function Properties(p: Props) {
     return (
       <div className="panel-body">
         <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate}
-          set={sameSet && first.symbol_set_id ? symbolSets.get(first.symbol_set_id) : undefined} />
+          set={sameSet && first.symbol_set_id ? symbolSets.get(first.symbol_set_id) : undefined}
+          areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
         <LayerSelect {...p} />
         {!readOnly && <button className="danger" onClick={onDelete}>Delete {selected.length > 1 ? `${selected.length} devices` : 'device'}</button>}
       </div>
     )
   }
+  if (selected.length === 1 && selected[0].type === 'area') return <AreaProperties {...p} />
   return <StyleProperties {...p} />
+}
+
+function AreaProperties(p: Props) {
+  const { selected, readOnly, onUpdate, onDelete, areas } = p
+  const a = selected[0]
+  const sheet = a.fields?.sheet === true
+  const path = areas.pathOf(a)
+  const override = typeof a.fields?.parent_id === 'string' ? a.fields.parent_id : ''
+  const choices = areas.parentChoices(a)
+  const auto = areas.parentOf(a.id)
+  const nameOf = (m: Markup) => m.text.trim() || (m.fields?.sheet === true ? 'Unnamed sheet' : 'Unnamed area')
+  const setParent = (v: string) => onUpdate(m => {
+    const { parent_id: _drop, ...rest } = m.fields ?? {}
+    return { ...m, fields: v ? { ...rest, parent_id: v } : rest }
+  }, 'parent')
+  const autoParent = auto ? areas.pageAreas.find(x => x.id === auto) : undefined
+  return (
+    <div className="panel-body">
+      <div className="panel-heading">{sheet ? 'Sheet area' : 'Area'}</div>
+      <Attribution markup={a} />
+      <fieldset disabled={readOnly} className="stack">
+        <label className="field">Name
+          <input value={a.text} placeholder={sheet ? 'e.g. First Floor' : 'e.g. Living Room'}
+            onChange={e => onUpdate(m => ({ ...m, text: e.target.value }), `text.${a.id}`)} />
+        </label>
+        {!sheet && (
+          <label className="field">Parent
+            <select value={choices.some(c => c.id === override) ? override : ''} onChange={e => setParent(e.target.value)}>
+              <option value="">Automatic{autoParent && !override ? ` (${nameOf(autoParent)})` : ''}</option>
+              {choices.map(c => <option key={c.id} value={c.id}>{nameOf(c)}</option>)}
+            </select>
+          </label>
+        )}
+        <div className="field">Full path
+          <div className="area-path">{path.length ? path.join(' › ') : '—'}</div>
+        </div>
+        <div className="field">Devices inside
+          <div><b>{areas.deviceCount(a.id)}</b></div>
+        </div>
+        {!readOnly && <button className="danger" onClick={onDelete}>{sheet ? 'Remove sheet area' : 'Delete area'}</button>}
+      </fieldset>
+      <HistorySection markup={a} />
+    </div>
+  )
+}
+
+function Areas({ areas, readOnly, selected }: Props) {
+  const kids = new Map<string | null, Markup[]>()
+  const ids = new Set(areas.pageAreas.map(a => a.id))
+  for (const a of areas.pageAreas) {
+    const par = areas.parentOf(a.id)
+    const key = par && ids.has(par) ? par : null
+    kids.set(key, [...(kids.get(key) ?? []), a])
+  }
+  for (const list of kids.values()) list.sort((x, y) => (x.text || '').localeCompare(y.text || ''))
+  const sheet = areas.pageAreas.find(a => a.fields?.sheet === true)
+  const node = (a: Markup, depth: number): React.ReactNode => (
+    <li key={a.id} style={{ display: 'block' }}>
+      <button className={`area-row${selected.some(s => s.id === a.id) ? ' active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }}
+        onClick={() => areas.onSelectArea(a.id)} title="Select and zoom to fit">
+        <span className="area-name">{a.text.trim() || (a.fields?.sheet === true ? 'Unnamed sheet' : 'Unnamed area')}</span>
+        <span className="muted small">{areas.deviceCount(a.id)}</span>
+      </button>
+      {(kids.get(a.id) ?? []).length > 0 && <ul className="layer-list">{(kids.get(a.id) ?? []).map(c => node(c, depth + 1))}</ul>}
+    </li>
+  )
+  const roots = kids.get(null) ?? []
+  return (
+    <div className="panel-body">
+      <div className="panel-heading">Areas, this sheet</div>
+      {!readOnly && (
+        <div className="area-actions">
+          <button onClick={() => areas.onDraw('area')}>Draw area</button>
+          <button onClick={() => areas.onDraw('area-rect')}>Draw rectangle</button>
+          <button onClick={areas.onNameSheet}>{sheet ? 'Rename sheet' : 'Name this sheet'}</button>
+        </div>
+      )}
+      <label className="check"><input type="checkbox" checked={areas.show} onChange={e => areas.onShow(e.target.checked)} /> Show area outlines and labels</label>
+      {roots.length ? <ul className="layer-list">{roots.map(a => node(a, 0))}</ul>
+        : <p className="muted small">No areas yet. Draw one around a room or floor; areas can sit inside areas. Numbers are devices inside.</p>}
+    </div>
+  )
 }
 
 function LayerSelect({ selected, layers, onUpdate, readOnly }: Props) {
@@ -164,6 +270,7 @@ function StyleProperties(p: Props) {
       <div className="panel-heading">
         {first ? `${selected.length > 1 ? `${selected.length} markups` : labelFor(first.type)}` : 'New markup style'}
       </div>
+      {selected.length === 1 && <Attribution markup={first} />}
       <fieldset disabled={disabled} className="stack">
         <label className="field">Color
           <div className="swatches">
@@ -220,6 +327,7 @@ function StyleProperties(p: Props) {
         {first && <LayerSelect {...p} />}
         {first && !readOnly && <button className="danger" onClick={onDelete}>Delete {selected.length > 1 ? `${selected.length} markups` : 'markup'}</button>}
       </fieldset>
+      {selected.length === 1 && <HistorySection markup={first} />}
     </div>
   )
 }
@@ -257,7 +365,7 @@ function Measure({ measure: m, readOnly }: Props) {
   )
 }
 
-function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly, symbolSets }: Props) {
+function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly, symbolSets, display }: Props) {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const all = [{ id: '', name: 'Default', color: '#868e96' }, ...layers]
@@ -269,6 +377,8 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
 
   return (
     <div className="panel-body">
+      <div className="panel-heading">Display</div>
+      <label className="check"><input type="checkbox" checked={display.showCones} onChange={e => display.onShowCones(e.target.checked)} /> Show coverage cones</label>
       <div className="panel-heading">Layers</div>
       <p className="muted small">The selected layer gets new markups.</p>
       <ul className="layer-list">
@@ -316,6 +426,6 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
 
 function labelFor(t: Markup['type']) {
   return ({ rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text box', stamp: 'Stamp',
-    line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', cable: 'Cable run',
+    line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', area: 'Area', cable: 'Cable run',
     'measure-length': 'Length', 'measure-polylength': 'Polylength', 'measure-area': 'Area', count: 'Count marker' } as const)[t]
 }

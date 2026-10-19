@@ -1,11 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Layer, Stage, Transformer } from 'react-konva'
+import { Layer, Rect, Stage, Transformer } from 'react-konva'
 import type Konva from 'konva'
 import { bakeBox, bakePath, boxFromDrag, pathFromPoints, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
 import { MarkupShape } from './MarkupShape'
 import type { Change } from './useMarkups'
-import { isBoxType } from './types'
+import { isSheetArea } from './areas'
+import { markupsInBox, rectFromCorners } from './selection'
+import type { Rect as Box } from './selection'
+import { AREA_STYLE, isBoxType } from './types'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 
@@ -39,17 +42,26 @@ interface Props {
   onCalibrate: (a: Pt, b: Pt) => void
   /** Temporary calibration line to keep showing while the length prompt is open. */
   calLine: [Pt, Pt] | null
+  /** Area id to names from the outermost area down (for area labels). */
+  areaPaths: Map<string, string[]>
+  /** One-finger/mouse drag on empty space draws a selection box instead of panning. */
+  boxSelect: boolean
+  /** Taps toggle markups in and out of the selection (touch multi-select). */
+  multiSelect: boolean
+  /** Global coverage cone switch. */
+  showCones: boolean
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
-const CLICK_PATHS: MarkupType[] = ['polyline', 'polygon', 'cable', 'measure-polylength', 'measure-area']
-const CLOSED: MarkupType[] = ['polygon', 'measure-area']
+const CLICK_PATHS: MarkupType[] = ['polyline', 'polygon', 'cable', 'measure-polylength', 'measure-area', 'area']
+const CLOSED: MarkupType[] = ['polygon', 'measure-area', 'area']
+const rectPoints = (a: Pt, b: Pt): Pt[] => [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]
 const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'ellipse', 'cloud', 'highlight', 'text', 'freehand']
 
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -58,6 +70,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const clickPts = useRef<Pt[]>([])
   const [pointOverride, setPointOverride] = useState<{ id: string; points: number[] } | null>(null)
   const countGroup = useRef<{ id: string; n: number } | null>(null)
+  const [marquee, setMarquee] = useState<Box | null>(null)
+  const marqueeStart = useRef<{ p: Pt; add: boolean } | null>(null)
+  const marqueeRect = useRef<Box | null>(null)
   const [fovOverride, setFovOverride] = useState<{ id: string; fov: Fov } | null>(null)
 
   const byId = new Map(markups.map(m => [m.id, m]))
@@ -70,7 +85,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const tr = trRef.current, stage = stageRef.current
     if (!tr || !stage) return
     const nodes = readOnly || tool !== 'select' ? [] : selected
-      .filter(m => !(selected.length === 1 && TWO_POINT.includes(m.type)))
+      .filter(m => !(selected.length === 1 && TWO_POINT.includes(m.type)) && !isSheetArea(m))
       .map(m => stage.findOne<Konva.Group>('#' + m.id))
       .filter((n): n is Konva.Group => !!n)
     tr.nodes(nodes)
@@ -81,7 +96,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
   const newMarkup = (type: MarkupType, geometry: BoxGeometry | PathGeometry): Markup => ({
     id: uuid(), document_id: newBase.document_id, page: newBase.page, type, geometry,
-    style: { ...newBase.style }, text: type === 'stamp' ? newBase.stampText : '', layer_id: newBase.layer_id,
+    style: type === 'area' ? { ...AREA_STYLE } : { ...newBase.style }, text: type === 'stamp' ? newBase.stampText : '', layer_id: newBase.layer_id,
     ...(type === 'device' ? { symbol_set_id: newBase.symbolSetId, tag: '', status: 'planned' as const, fields: {} } : {}),
   })
 
@@ -104,14 +119,16 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     finish(pts.length >= min ? newMarkup(draft.type, pathFromPoints(pts)) : null)
   }
 
+  const cancelMarquee = () => { marqueeStart.current = null; marqueeRect.current = null; setMarquee(null) }
+
   useImperativeHandle(ref, () => ({
     stage: () => stageRef.current,
-    cancelDraft: () => finish(null),
+    cancelDraft: () => { cancelMarquee(); finish(null) },
     finishDraft: finishClickPath,
   }))
 
   // Leaving a tool abandons its half-drawn markup
-  useEffect(() => { finish(null); countGroup.current = null }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
     while (node && node !== stageRef.current) {
@@ -132,11 +149,17 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (onTransformer || target.name() === 'point-handle') { consumedRef.current = true; return }
       if (hitId) {
         consumedRef.current = true
-        if (e.evt.shiftKey) onSelect(selectedIds.includes(hitId) ? selectedIds.filter(i => i !== hitId) : [...selectedIds, hitId])
+        if (e.evt.shiftKey || multiSelect) onSelect(selectedIds.includes(hitId) ? selectedIds.filter(i => i !== hitId) : [...selectedIds, hitId])
         else if (!selectedIds.includes(hitId)) onSelect([hitId])
+      } else if (boxSelect || e.evt.shiftKey) {
+        consumedRef.current = true // empty space with Shift / box mode: marquee
+        const p = pointer()
+        marqueeStart.current = { p, add: e.evt.shiftKey || multiSelect }
+        marqueeRect.current = rectFromCorners(p, p)
+        setMarquee(marqueeRect.current)
       } else {
         consumedRef.current = false // empty space: pan
-        if (!e.evt.shiftKey) onSelect([])
+        if (!multiSelect) onSelect([])
       }
       return
     }
@@ -144,6 +167,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     consumedRef.current = true
     const p = pointer()
     const cal = tool === 'calibrate'
+    if (tool === 'area-rect') {
+      dragStart.current = p
+      setDraft(newMarkup('area', pathFromPoints(rectPoints(p, p))))
+      return
+    }
     const t = (cal ? 'line' : tool) as MarkupType
     if (t === 'stamp') {
       finish(newMarkup('stamp', { x: p.x - 80, y: p.y - 25, width: 160, height: 50, rotation: 0 }))
@@ -193,10 +221,15 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }
 
   function onPointerMove(e: Konva.KonvaEventObject<PointerEvent>) {
+    if (marqueeStart.current) {
+      marqueeRect.current = rectFromCorners(marqueeStart.current.p, pointer())
+      setMarquee(marqueeRect.current)
+      return
+    }
     if (!draft) return
     const p = pointer()
     const shift = e.evt.shiftKey
-    if (CLICK_PATHS.includes(draft.type)) {
+    if (CLICK_PATHS.includes(draft.type) && !dragStart.current) {
       const pts = clickPts.current
       const last = shift && pts.length > 1 ? snap45(pts[pts.length - 2], p) : p
       clickPts.current = [...pts.slice(0, -1), last]
@@ -205,6 +238,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
     const a = dragStart.current
     if (!a) return
+    if (draft.type === 'area') {
+      setDraft({ ...draft, geometry: pathFromPoints(rectPoints(a, p)) })
+      return
+    }
     if (draft.type === 'freehand') {
       freehandPts.current.push(p)
       setDraft({ ...draft, geometry: pathFromPoints(freehandPts.current) })
@@ -216,9 +253,22 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }
 
   function onPointerUp() {
+    const ms = marqueeStart.current, box = marqueeRect.current
+    if (ms && box) {
+      cancelMarquee()
+      if (box.width < 4 / zoom && box.height < 4 / zoom) { if (!ms.add) onSelect([]); return }
+      const ids = markupsInBox(markups, box, lockedIds)
+      onSelect(ms.add ? [...selectedIds, ...ids.filter(i => !selectedIds.includes(i))] : ids)
+      return
+    }
     if (!draft || !dragStart.current) return
     const g = draft.geometry
     const tiny = 4 / zoom
+    if (draft.type === 'area') {
+      const pts = (g as PathGeometry).points
+      finish(Math.abs(pts[4]) < tiny * 3 || Math.abs(pts[5]) < tiny * 3 ? null : draft)
+      return
+    }
     if (draft.type === 'freehand') {
       const pts = simplify(freehandPts.current, 1 / zoom)
       finish(pts.length > 1 ? { ...draft, geometry: pathFromPoints(pts) } : null)
@@ -300,23 +350,28 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
   }
 
-  const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id)
+  const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id) && !isSheetArea(m)
+
+  // Areas draw first (below everything) so they never cover devices
+  const ordered = [...markups.filter(m => m.type === 'area'), ...markups.filter(m => m.type !== 'area')]
 
   return (
     <Stage ref={stageRef} width={width} height={height} className="markup-stage"
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
       onDblClick={onDoubleClick} onDblTap={onDoubleClick}>
       <Layer>
-        {markups.map(m => {
+        {ordered.map(m => {
           const shown = pointOverride?.id === m.id && 'points' in m.geometry
             ? { ...m, geometry: { ...m.geometry, points: pointOverride.points } }
             : fovOverride?.id === m.id && 'width' in m.geometry
             ? { ...m, geometry: { ...m.geometry, fov: fovOverride.fov } } : m
           const editable = single?.id === m.id && !readOnly && tool === 'select'
-            && 'points' in m.geometry && m.type !== 'freehand' && !lockedIds.has(m.id)
+            && 'points' in m.geometry && m.type !== 'freehand' && !lockedIds.has(m.id) && !isSheetArea(m)
           return (
             <MarkupShape key={m.id} markup={shown} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
+              areaPath={m.type === 'area' ? areaPaths.get(m.id) : undefined}
               symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
+              showCones={showCones}
               editFov={single?.id === m.id && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
               onFovChange={(fov, done) => {
                 if (!done) { setFovOverride({ id: m.id, fov }); return }
@@ -334,6 +389,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               onDragEnd={onDragEnd} />
           )
         })}
+        {marquee && <Rect x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} listening={false}
+          stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} fill="rgba(25,113,194,0.12)" />}
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}

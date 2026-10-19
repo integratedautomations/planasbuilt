@@ -136,7 +136,16 @@ CREATE TABLE IF NOT EXISTS page_scales (
   updated_by uuid REFERENCES users(id),
   updated_at timestamptz DEFAULT now(),
   PRIMARY KEY (document_id, page)
-)
+);
+CREATE TABLE IF NOT EXISTS markup_events (
+  id bigserial PRIMARY KEY,
+  markup_id uuid REFERENCES markups(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES users(id),
+  at timestamptz DEFAULT now(),
+  action text NOT NULL,
+  changes jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS markup_events_markup ON markup_events(markup_id, at)
 `
 
 const svg = (body: string) =>

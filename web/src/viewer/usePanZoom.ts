@@ -107,6 +107,8 @@ export function usePanZoom(
     }
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0 && e.button !== 1) return
+      // Floating controls (selection bar) own their own pointers
+      if ((e.target as Element | null)?.closest?.('[data-no-pan]')) return
       const middle = e.button === 1
       const pan = middle || (opts.current.shouldPan?.(e) ?? true)
       pointers.set(e.pointerId, { ...local(e), pan })

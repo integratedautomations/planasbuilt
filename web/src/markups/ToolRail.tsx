@@ -21,6 +21,8 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: ReactNode }[
   { tool: 'device', label: 'Device', key: 'D', icon: icon(<><circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="2" fill="currentColor" /></>) },
   { tool: 'cable', label: 'Cable run', key: 'W', icon: icon(<><path d="M4 18c4 0 4-12 8-12s4 12 8 12" strokeDasharray="3 3" /><circle cx="4" cy="18" r="1.5" fill="currentColor" /><circle cx="20" cy="18" r="1.5" fill="currentColor" /></>) },
   { tool: 'stamp', label: 'Stamp', key: 'S', icon: icon(<><rect x="4" y="14" width="16" height="5" rx="1" /><path d="M9 14v-3a3 3 0 116 0v3" /></>) },
+  { tool: 'area', label: 'Area (click points)', key: 'J', icon: icon(<path d="M5 6h6M14 6h5v5M19 14v5h-6M10 19H5v-5M5 11V9" strokeDasharray="3 2.5" />) },
+  { tool: 'area-rect', label: 'Area (drag rectangle)', key: 'U', icon: icon(<><rect x="4" y="6" width="16" height="12" rx="1" strokeDasharray="3 2.5" /><path d="M7 9.5h4" /></>) },
   { tool: 'calibrate', label: 'Calibrate scale', key: 'K', icon: icon(<><path d="M3 15l12-12 6 6-12 12z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
   { tool: 'measure-length', label: 'Length', key: 'M', icon: icon(<><path d="M4 12h16M4 8v8M20 8v8" /></>) },
   { tool: 'measure-polylength', label: 'Polylength', key: 'N', icon: icon(<><path d="M4 18l5-8 5 5 6-9" /><path d="M3 15v6M21 3v6" /></>) },
@@ -28,13 +30,15 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: ReactNode }[
   { tool: 'count', label: 'Count', key: 'O', icon: icon(<><circle cx="12" cy="12" r="7" fill="currentColor" fillOpacity="0.25" /><path d="M10 10l2-1v6" /></>) },
 ]
 
-interface Props { tool: Tool; onTool: (t: Tool) => void; readOnly: boolean }
+interface Props { tool: Tool; onTool: (t: Tool) => void; readOnly: boolean; boxSelect: boolean; onBoxSelect: () => void }
+
+const BOX_ICON = icon(<><rect x="4" y="5" width="16" height="14" rx="1" strokeDasharray="3 2.5" /><path d="M9 12h6M12 9v6" /></>)
 
 // On phones only these stay in the rail; the rest move into the "More" grid (CSS hides .secondary there).
 const PRIMARY: Tool[] = ['select', 'pan', 'device', 'cable']
 const MORE_ICON = icon(<><circle cx="6" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="18" cy="12" r="1.5" fill="currentColor" /></>)
 
-export function ToolRail({ tool, onTool, readOnly }: Props) {
+export function ToolRail({ tool, onTool, readOnly, boxSelect, onBoxSelect }: Props) {
   const [more, setMore] = useState(false)
   const tools = readOnly ? TOOLS.slice(0, 2) : TOOLS
   const secondary = tools.filter(t => !PRIMARY.includes(t.tool))
@@ -47,6 +51,10 @@ export function ToolRail({ tool, onTool, readOnly }: Props) {
           {t.icon}
         </button>
       ))}
+      <button className={`tool-btn${boxSelect ? ' active' : ''}`} title="Box select (X): drag on empty space to select several"
+        aria-pressed={boxSelect} onClick={() => { setMore(false); onBoxSelect() }}>
+        {BOX_ICON}
+      </button>
       {secondary.length > 0 && (
         <button className={`tool-btn tool-more${more || secondary.some(t => t.tool === tool) ? ' active' : ''}`}
           title="More tools" aria-expanded={more} onClick={() => setMore(m => !m)}>

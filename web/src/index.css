@@ -127,7 +127,8 @@ a.list-item:hover { border-color: var(--accent); }
 
 .side-panel { width: 272px; flex-shrink: 0; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .tabs { display: flex; border-bottom: 1px solid var(--border); }
-.tabs button { flex: 1; border: none; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; }
+.tabs { overflow-x: auto; scrollbar-width: none; }
+.tabs button { flex: 1 0 auto; padding-left: 10px; padding-right: 10px; white-space: nowrap; border: none; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; }
 .tabs button.active { border-bottom-color: var(--accent); font-weight: 600; }
 .panel-body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .panel-body fieldset { border: none; padding: 0; margin: 0; }
@@ -145,6 +146,13 @@ a.list-item:hover { border-color: var(--accent); }
 .layer-list li { display: flex; align-items: center; gap: 2px; border-radius: var(--radius); }
 .layer-list li.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .layer-name { flex: 1; text-align: left; display: flex; align-items: center; gap: 8px; border: none; background: transparent; }
+.area-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.area-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; text-align: left; border: none; background: transparent; }
+.area-row.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.area-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.area-path { font-size: 13px; color: var(--muted); }
+.name-modal { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgb(0 0 0 / 0.35); padding: 16px; }
+.name-modal form { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; width: min(360px, 100%); box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
 /* Tool grid ("More") is phone-only */
@@ -241,3 +249,18 @@ input.invalid { border-color: var(--danger); }
 .measure-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .measure-value { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
 .tool-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 20px); padding: 6px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); font-size: 13px; pointer-events: none; text-align: center; }
+
+/* ---- Selection bar, history, cone toggle ---- */
+.selection-bar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 4px; padding: 6px; max-width: calc(100% - 20px); overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); touch-action: pan-x; }
+.selection-bar button { flex-shrink: 0; white-space: nowrap; min-height: 40px; padding: 4px 10px; }
+.selection-count { flex-shrink: 0; min-width: 22px; text-align: center; font-size: 12px; font-weight: 600; color: var(--accent); }
+.selection-multi { flex-shrink: 0; white-space: nowrap; padding: 0 8px; font-size: 13px; }
+.selection-multi input { width: 20px; height: 20px; }
+.cone-toggle .cone-icon { display: grid; place-items: center; width: 28px; height: 28px; }
+.attribution { margin-top: 2px; }
+.history-toggle { align-self: flex-start; border-color: transparent; background: transparent; padding: 4px 6px; min-height: 32px; font-size: 13px; font-weight: 600; }
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.history-list li { display: flex; flex-direction: column; }
+@media (max-width: 640px) {
+  .selection-bar { top: 6px; padding: 4px; }
+}

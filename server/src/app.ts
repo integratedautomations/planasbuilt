@@ -405,7 +405,79 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   app.get('/api/documents/:id/markups', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'viewer')
     if (!doc) return
-    return db.query(`SELECT ${MARKUP_COLUMNS} FROM markups WHERE document_id = $1 AND NOT deleted ORDER BY created_at`, [doc.id])
+    const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
+    return db.query(
+      `SELECT ${cols}, cu.name AS created_by_name, uu.name AS updated_by_name
+       FROM markups m LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
+       WHERE m.document_id = $1 AND NOT m.deleted ORDER BY m.created_at`, [doc.id])
+  })
+
+  // ---- Change history ----
+  const stable = (v: any): string => {
+    if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']'
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}'
+    return JSON.stringify(v ?? null)
+  }
+  const same = (a: any, b: any) => stable(a) === stable(b)
+  const emptyToNull = (v: any) => (v === undefined || v === '' ? null : v)
+
+  /** Describes what changed between two markup states. Empty object = nothing changed. */
+  function diffMarkup(prev: any, next: any) {
+    const changes: Record<string, any> = {}
+    const pf = prev.fields ?? {}, nf = next.fields ?? {}
+    for (const k of new Set([...Object.keys(pf), ...Object.keys(nf)])) {
+      const from = emptyToNull(pf[k]), to = emptyToNull(nf[k])
+      if (!same(from, to)) changes[`fields.${k}`] = { from, to }
+    }
+    for (const k of ['status', 'tag', 'text', 'layer_id', 'symbol_set_id'])
+      if ((prev[k] ?? null) !== (next[k] ?? null)) changes[k] = { from: prev[k] ?? null, to: next[k] ?? null }
+    if (!same(prev.geometry, next.geometry)) changes.geometry = true
+    if (!same(prev.style, next.style)) changes.style = true
+    return changes
+  }
+
+  async function recordEvent(markupId: string, userId: string, action: string, changes: Record<string, any> = {}) {
+    if (action === 'updated') {
+      // The client saves on every keystroke: fold quick successive edits by one user into one event.
+      const [last] = await db.query(
+        `SELECT id, user_id, action, changes, at > now() - interval '2 minutes' AS recent
+         FROM markup_events WHERE markup_id = $1 ORDER BY at DESC, id DESC LIMIT 1`, [markupId])
+      if (last && last.action === 'updated' && last.user_id === userId && last.recent) {
+        const merged: Record<string, any> = { ...last.changes }
+        for (const [k, v] of Object.entries(changes)) {
+          const old = merged[k]
+          merged[k] = old && typeof old === 'object' && typeof v === 'object' ? { from: old.from, to: (v as any).to } : v
+        }
+        for (const [k, v] of Object.entries(merged))
+          if (v && typeof v === 'object' && same((v as any).from, (v as any).to)) delete merged[k]
+        if (Object.keys(merged).length === 0) {
+          await db.query('DELETE FROM markup_events WHERE id = $1', [last.id])
+        } else {
+          await db.query('UPDATE markup_events SET changes = $1, at = now() WHERE id = $2', [JSON.stringify(merged), last.id])
+        }
+        return
+      }
+    }
+    await db.query('INSERT INTO markup_events (markup_id, user_id, action, changes) VALUES ($1,$2,$3,$4)',
+      [markupId, userId, action, JSON.stringify(changes)])
+  }
+
+  app.get('/api/markups/:markupId/history', { preHandler: auth }, async (req, reply) => {
+    const { markupId } = req.params as any
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(markupId)))
+      return reply.code(404).send({ error: 'Not found' })
+    const [m] = await db.query(
+      'SELECT d.project_id FROM markups m JOIN documents d ON d.id = m.document_id WHERE m.id = $1', [markupId])
+    if (!m) return reply.code(404).send({ error: 'Not found' })
+    if (!(await requireRole(req, reply, m.project_id, 'viewer'))) return
+    const rows = await db.query(
+      `SELECT e.id, e.at, e.action, e.changes, u.id AS uid, u.name AS uname, u.email AS uemail
+       FROM markup_events e LEFT JOIN users u ON u.id = e.user_id
+       WHERE e.markup_id = $1 ORDER BY e.at DESC, e.id DESC`, [markupId])
+    return rows.map((r: any) => ({
+      id: String(r.id), at: r.at, action: r.action, changes: r.changes,
+      user: r.uid ? { id: r.uid, name: r.uname, email: r.uemail } : null,
+    }))
   })
 
   // Upsert by client-generated id. Last write wins; version increases on every save.
@@ -417,7 +489,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     if (!/^[0-9a-f-]{36}$/i.test(markupId)) return reply.code(400).send({ error: 'Bad markup id' })
     if (!b.type || !b.geometry || !Number.isInteger(b.page) || b.page < 1)
       return reply.code(400).send({ error: 'type, page and geometry are required' })
-    const [existing] = await db.query('SELECT document_id FROM markups WHERE id = $1', [markupId])
+    const [existing] = await db.query('SELECT * FROM markups WHERE id = $1', [markupId])
     if (existing && existing.document_id !== doc.id) return reply.code(409).send({ error: 'Markup belongs to another document' })
     if (b.layer_id) {
       const [layer] = await db.query('SELECT project_id FROM layers WHERE id = $1', [b.layer_id])
@@ -442,6 +514,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
        RETURNING ${MARKUP_COLUMNS}`,
       [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
         String(b.text ?? ''), b.layer_id || null, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id])
+    if (!existing) await recordEvent(markupId, req.user.id, 'created')
+    else if (existing.deleted) await recordEvent(markupId, req.user.id, 'restored')
+    else {
+      const changes = diffMarkup(existing, row)
+      if (Object.keys(changes).length) await recordEvent(markupId, req.user.id, 'updated', changes)
+    }
     return row
   })
 
@@ -449,9 +527,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const doc = await documentWithAccess(req, reply, 'editor')
     if (!doc) return
     const { markupId } = req.params as any
-    await db.query(
+    const gone = await db.query(
       `UPDATE markups SET deleted = true, version = version + 1, updated_by = $1, updated_at = now()
-       WHERE id = $2 AND document_id = $3`, [req.user.id, markupId, doc.id])
+       WHERE id = $2 AND document_id = $3 AND NOT deleted RETURNING id`, [req.user.id, markupId, doc.id])
+    if (gone.length) await recordEvent(markupId, req.user.id, 'deleted')
     return { ok: true }
   })
 
@@ -542,6 +621,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       if (again && again.markup_id === m.id) return attRow(id)
       throw e
     }
+    await recordEvent(m.id, req.user.id, 'photo_added', { attachment_id: id, caption: String(f.caption?.value ?? '') })
     return attRow(id)
   })
 
@@ -563,6 +643,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     if (!key) return
     await db.query('UPDATE attachments SET annotated_key = $1 WHERE id = $2', [key, a.id])
     removeFile(a.annotated_key)
+    await recordEvent(a.markup_id, req.user.id, 'photo_annotated', { attachment_id: a.id, caption: a.caption })
     return attRow(a.id)
   })
 
@@ -570,6 +651,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const a = await attachmentWithAccess(req, reply, 'editor')
     if (!a) return
     await db.query('DELETE FROM attachments WHERE id = $1', [a.id])
+    await recordEvent(a.markup_id, req.user.id, 'photo_deleted', { attachment_id: a.id, caption: a.caption })
     removeFile(a.file_key)
     removeFile(a.annotated_key)
     return { ok: true }

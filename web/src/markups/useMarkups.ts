@@ -55,7 +55,16 @@ export function useMarkups(documentId: string) {
               symbol_set_id: after.symbol_set_id ?? null, tag: after.tag ?? '',
               status: after.status ?? '', fields: after.fields ?? {},
             }),
-          }).then(saved => { if (saved.tag && saved.tag !== after.tag) adoptTag(id, saved.tag) })
+          }).then(saved => {
+            if (saved.tag && saved.tag !== after.tag) adoptTag(id, saved.tag)
+            // Refresh who/when from the server's answer (history refetches when version changes)
+            setMarkups(prev => {
+              const m = prev.get(id)
+              if (!m || saved.version === undefined) return prev
+              const { version, created_by, created_by_name, created_at, updated_by, updated_by_name, updated_at } = saved
+              return new Map(prev).set(id, { ...m, version, created_by, created_by_name, created_at, updated_by, updated_by_name, updated_at })
+            })
+          })
         : api(`/documents/${documentId}/markups/${id}`, { method: 'DELETE' })
       req.then(() => setSaveError(''))
         .catch(e => setSaveError(`Not saved: ${e.message}`))

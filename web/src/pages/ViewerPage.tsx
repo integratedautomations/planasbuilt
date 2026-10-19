@@ -9,14 +9,17 @@ import { usePanZoom } from '../viewer/usePanZoom'
 import type { View } from '../viewer/usePanZoom'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
+import { SelectionBar } from '../markups/SelectionBar'
 import { ToolRail, TOOLS } from '../markups/ToolRail'
 import { SidePanel, sheetHeight } from '../markups/SidePanel'
 import type { PanelTab, SheetSnap } from '../markups/SidePanel'
 import { CalibrateDialog } from '../markups/ScaleControl'
 import type { PageScale } from '../markups/ScaleControl'
+import { pathFromPoints } from '../markups/geometry'
 import type { Pt } from '../markups/geometry'
+import { areaBounds, areaPathIn, buildAreaIndex, deviceCounts, isArea, isSheetArea, parentChoices } from '../markups/areas'
 import { useMarkups } from '../markups/useMarkups'
-import { DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
+import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
 
@@ -36,6 +39,22 @@ function useLayerFlags(projectId: string, kind: 'hidden' | 'locked') {
     return next
   })
   return [set, toggle] as const
+}
+
+/** Per-viewer toggle for area outlines and labels, remembered per project in this browser. */
+function useShowAreas(projectId: string) {
+  const key = `planmark.areas.show.${projectId}`
+  const [show, setShow] = useState(() => { try { return localStorage.getItem(key) !== '0' } catch { return true } })
+  const set = (v: boolean) => { setShow(v); try { localStorage.setItem(key, v ? '1' : '0') } catch { /* ignore */ } }
+  return [show, set] as const
+}
+
+/** Per-viewer toggle for device coverage cones (default on), remembered per project in this browser. */
+function useShowCones(projectId: string) {
+  const key = `planmark.cones.show.${projectId}`
+  const [show, setShow] = useState(() => { try { return localStorage.getItem(key) !== '0' } catch { return true } })
+  const set = (v: boolean) => { setShow(v); try { localStorage.setItem(key, v ? '1' : '0') } catch { /* ignore */ } }
+  return [show, set] as const
 }
 
 function useMediaQuery(query: string) {
@@ -60,6 +79,26 @@ function anchorOf(m: Markup) {
     return { x: g.x + sx / n, y: g.y + sy / n }
   }
   return { x: g.x + g.width / 2, y: g.y + g.height / 2 }
+}
+
+/** Small modal asking for a name; Enter saves, Escape skips. */
+function NamePrompt({ title, hint, initial, onSave, onCancel }: {
+  title: string; hint: string; initial: string; onSave: (name: string) => void; onCancel: () => void
+}) {
+  const [value, setValue] = useState(initial)
+  return (
+    <div className="name-modal" onPointerDown={e => e.stopPropagation()}>
+      <form onSubmit={e => { e.preventDefault(); onSave(value) }} onKeyDown={e => { if (e.key === 'Escape') onCancel() }}>
+        <div className="panel-heading">{title}</div>
+        <input autoFocus value={value} placeholder={hint} aria-label="Name" onChange={e => setValue(e.target.value)}
+          onFocus={e => e.currentTarget.select()} />
+        <div className="row">
+          <button type="button" onClick={onCancel}>Skip</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+  )
 }
 
 export function ViewerPage() {
@@ -87,6 +126,13 @@ export function ViewerPage() {
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null)
   const [hidden, toggleHidden] = useLayerFlags(projectId, 'hidden')
   const [locked, toggleLocked] = useLayerFlags(projectId, 'locked')
+  const [showAreas, setShowAreas] = useShowAreas(projectId)
+  const [showCones, setShowCones] = useShowCones(projectId)
+  const [boxMode, setBoxMode] = useState(false)
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [clipCount, setClipCount] = useState(0)
+  /** Name prompt: an existing area id, or (sheet) a sheet area that may not exist yet. */
+  const [naming, setNaming] = useState<{ id: string | null; sheet: boolean; initial: string } | null>(null)
   const [panelTab, setPanelTab] = useState<PanelTab>('props')
   const [scales, setScales] = useState<Map<number, PageScale>>(new Map())
   const [scaleBusy, setScaleBusy] = useState(false)
@@ -181,6 +227,12 @@ export function ViewerPage() {
   const pageMarkups = useMemo(
     () => [...store.markups.values()].filter(m => m.page === pageNum && !flagged(hidden, m)),
     [store.markups, pageNum, hidden]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Area hierarchy is built from every area (even on hidden layers or with outlines hidden) so paths stay reliable.
+  const areaIndex = useMemo(() => buildAreaIndex([...store.markups.values()].filter(isArea)), [store.markups])
+  const pageAreas = useMemo(() => [...areaIndex.byId.values()].filter(a => a.page === pageNum), [areaIndex, pageNum])
+  const areaPaths = useMemo(() => new Map(pageAreas.map(a => [a.id, areaPathIn(areaIndex, a)])), [areaIndex, pageAreas])
+  const counts = useMemo(() => deviceCounts(areaIndex, store.markups.values()), [areaIndex, store.markups])
+  const canvasMarkups = useMemo(() => showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area'), [pageMarkups, showAreas])
   const lockedIds = useMemo(
     () => new Set(pageMarkups.filter(m => flagged(locked, m)).map(m => m.id)),
     [pageMarkups, locked]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -207,7 +259,7 @@ export function ViewerPage() {
     const v = view.current
     const sx = v.x + a.x * v.zoom, sy = v.y + a.y * v.zoom
     const margin = 40
-    if (sx > margin && sx < vp.clientWidth - margin && sy > margin && sy < vp.clientHeight - sheetH - margin) return
+    if (sx > margin && sx < vp.clientWidth - margin && sy > 72 && sy < vp.clientHeight - sheetH - margin) return
     centerOn(a.x, a.y + sheetH / (2 * v.zoom))
   }, [selectedKey, snap, isPhone, showPanel]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -234,6 +286,44 @@ export function ViewerPage() {
     } catch (e) { setScaleError((e as Error).message) } finally { setScaleBusy(false) }
   }
   const openMeasure = () => { setPanelTab('measure'); setShowPanel(true); setSnap(s => (s === 'peek' ? 'half' : s)) }
+  /** Select an area and zoom the plan to fit it (above the phone sheet, if open). */
+  const selectArea = (id: string) => {
+    const a = areaIndex.byId.get(id)
+    if (!a) return
+    setShowAreas(true)
+    setSelectedIds([id])
+    const b = areaBounds(areaIndex, id)
+    const vp = viewportRef.current
+    if (!b || !vp || isSheetArea(a)) { fit(); return }
+    const bottom = isPhone ? sheetHeight('peek', vp.parentElement?.clientHeight ?? vp.clientHeight) : 0
+    const z = Math.min(vp.clientWidth / (Math.max(b.width, 1) * 1.2), (vp.clientHeight - bottom) / (Math.max(b.height, 1) * 1.2))
+    centerOn(b.x + b.width / 2, b.y + b.height / 2 + bottom / (2 * z), z)
+  }
+  const drawArea = (t: 'area' | 'area-rect') => { if (isPhone) setShowPanel(false); chooseTool(t) }
+  const nameSheet = () => {
+    const sheet = pageAreas.find(isSheetArea)
+    setNaming({ id: sheet?.id ?? null, sheet: true, initial: sheet?.text ?? '' })
+  }
+  function saveName(name: string) {
+    const n = naming
+    setNaming(null)
+    if (!n || readOnly) return
+    const text = name.trim()
+    const existing = n.id ? store.markups.get(n.id) : undefined
+    if (existing) {
+      if (text !== existing.text) store.commit([{ before: existing, after: { ...existing, text } }])
+      return
+    }
+    if (!n.sheet || !text || !pageSize) return
+    const sheet: Markup = {
+      id: uuid(), document_id: documentId, page: pageNum, type: 'area', text,
+      geometry: pathFromPoints([{ x: 0, y: 0 }, { x: pageSize.width, y: 0 }, { x: pageSize.width, y: pageSize.height }, { x: 0, y: pageSize.height }]),
+      style: { ...AREA_STYLE }, layer_id: null, fields: { sheet: true },
+    }
+    store.commit([{ before: null, after: sheet }])
+    setSelectedIds([sheet.id])
+  }
+
   const goTo = useCallback((n: number) => setPageNum(p => Math.min(Math.max(1, n), pageCount || p)), [pageCount])
 
   const deleteSelected = useCallback(() => {
@@ -247,16 +337,27 @@ export function ViewerPage() {
     store.commit(selected.map(m => ({ before: m, after: patch(m) })), `${mergeKey}:${selectedIds.join(',')}`)
   }, [readOnly, selected, selectedIds, store])
 
+  const setClip = useCallback((items: Markup[]) => { clipboard.current = items; setClipCount(items.length) }, [])
+
+  const copySelected = useCallback(() => { setClip(selected.map(m => structuredClone(m))) }, [selected, setClip])
+
+  /** Pastes the clipboard (+20pt offset, fresh device tags, sheet area skipped) onto the current page. */
   const paste = useCallback(() => {
     if (readOnly || !clipboard.current.length) return
-    const copies = clipboard.current.map(m => ({
+    const copies = clipboard.current.filter(m => !isSheetArea(m)).map(m => ({
       ...m, id: uuid(), page: pageNum, tag: m.type === 'device' ? '' : m.tag, // pasted devices get fresh numbers
       geometry: { ...m.geometry, x: m.geometry.x + 20, y: m.geometry.y + 20 },
+      // The copy belongs to this session, not to whoever placed the original
+      created_by: undefined, created_by_name: undefined, created_at: undefined,
+      updated_by: undefined, updated_by_name: undefined, updated_at: undefined, version: undefined,
     }))
-    clipboard.current = copies // paste again cascades
+    if (!copies.length) return
+    setClip(copies) // paste again cascades
     store.commit(copies.map(m => ({ before: null, after: m })))
     setSelectedIds(copies.map(m => m.id))
-  }, [pageNum, readOnly, store])
+  }, [pageNum, readOnly, store, setClip])
+
+  const duplicateSelected = useCallback(() => { copySelected(); paste() }, [copySelected, paste])
 
   const chooseTool = useCallback((t: Tool) => {
     setTool(t)
@@ -275,13 +376,14 @@ export function ViewerPage() {
       const k = e.key.toLowerCase()
       if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); setSelectedIds([]) }
       else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); setSelectedIds([]) }
-      else if (mod && k === 'c') clipboard.current = selected.map(m => structuredClone(m))
+      else if (mod && k === 'c') copySelected()
       else if (mod && k === 'v') { e.preventDefault(); paste() }
-      else if (mod && k === 'a') { e.preventDefault(); setSelectedIds(pageMarkups.filter(m => !lockedIds.has(m.id)).map(m => m.id)) }
+      else if (mod && k === 'a') { e.preventDefault(); setSelectedIds(pageMarkups.filter(m => m.type !== 'area' && !lockedIds.has(m.id)).map(m => m.id)) }
       else if (mod) return
       else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
       else if (e.key === 'Escape') { markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select') }
       else if (e.key === 'Enter') markupRef.current?.finishDraft()
+      else if (k === 'x') { setBoxMode(b => !b); setTool('select') }
       else if (e.key === ' ' && !e.repeat) { e.preventDefault(); setSpaceHeld(true) }
       else if (e.key === 'PageDown') goTo(pageNum + 1)
       else if (e.key === 'PageUp') goTo(pageNum - 1)
@@ -297,7 +399,7 @@ export function ViewerPage() {
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyUp)
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp) }
-  }, [pageNum, goTo, zoomBy, fit, store, selected, paste, deleteSelected, pageMarkups, lockedIds, readOnly, chooseTool])
+  }, [pageNum, goTo, zoomBy, fit, store, selected, paste, copySelected, deleteSelected, pageMarkups, lockedIds, readOnly, chooseTool])
 
   async function addLayer(name: string) {
     const layer = await post<Layer>(`/projects/${projectId}/layers`, { name })
@@ -346,12 +448,15 @@ export function ViewerPage() {
               onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
           </>
         )}
-        <ToolRail tool={activeTool} onTool={chooseTool} readOnly={readOnly} />
+        <ToolRail tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />
         <div className={`viewport tool-${activeTool}`} ref={viewportRef}>
           {error && <div className="error floating">{error}</div>}
           {!page && !error && <div className="center muted">Loading plan…</div>}
           {activeTool === 'calibrate' && !calLine && (
             <div className="tool-hint">Drag a line along a known dimension (Shift snaps 45°)</div>
+          )}
+          {(activeTool === 'area' || activeTool === 'area-rect') && (
+            <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
           )}
           {activeTool === 'device' && (
             <div className="symbol-palette" onPointerDown={e => e.stopPropagation()}>
@@ -363,7 +468,18 @@ export function ViewerPage() {
                   <span className="hide-sm">{set.name}</span>
                 </button>
               ))}
+              <button className={`palette-item cone-toggle${showCones ? ' on' : ''}`} aria-pressed={showCones}
+                title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
+                <span className="cone-icon" aria-hidden>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fillOpacity={showCones ? 0.3 : 0} stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 20L4 6a12 12 0 0116 0z" /></svg>
+                </span>
+                <span className="hide-sm">Cones</span>
+              </button>
             </div>
+          )}
+          {!readOnly && activeTool === 'select' && (selectedIds.length > 0 || clipCount > 0) && (
+            <SelectionBar count={selected.length} canPaste={clipCount > 0} multi={multiSelect} onMulti={setMultiSelect}
+              onCopy={copySelected} onPaste={paste} onDuplicate={duplicateSelected} onDelete={deleteSelected} />
           )}
           <div className="stage" ref={stageRef}
             style={pageSize ? { width: pageSize.width, height: pageSize.height } : { display: 'none' }}>
@@ -371,12 +487,15 @@ export function ViewerPage() {
           </div>
           {page && viewportSize.width > 0 && (
             <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
-              zoom={settledZoom} markups={pageMarkups} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
+              zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
               readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
-              consumedRef={consumedRef} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
+              consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
               onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
               newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
-              onCreated={m => { if (m.type === 'text') { setShowPanel(true); setTool('select'); setTimeout(() => textRef.current?.select(), 50) } }} />
+              onCreated={m => {
+                if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
+                if (m.type === 'text') { setShowPanel(true); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
+              }} />
           )}
         </div>
         {calLine && (
@@ -387,12 +506,22 @@ export function ViewerPage() {
               setCalLine(null)
             }} />
         )}
+        {naming && <NamePrompt title={naming.sheet ? 'Name this sheet' : 'Name this area'}
+          hint={naming.sheet ? 'Everything on this page will be listed under it, e.g. First Floor.' : 'e.g. Living Room'}
+          initial={naming.initial} onSave={saveName} onCancel={() => setNaming(null)} />}
         {showPanel && (
           <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
             stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
             layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
             hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
+            display={{ showCones, onShowCones: setShowCones }}
             onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
+            areas={{
+              pageAreas, parentOf: id => areaIndex.parents.get(id) ?? null,
+              pathOf: m => areaPathIn(areaIndex, m), deviceCount: id => counts.get(id) ?? 0,
+              parentChoices: a => parentChoices(areaIndex, a), show: showAreas, onShow: setShowAreas,
+              onSelectArea: selectArea, onDraw: drawArea, onNameSheet: nameSheet,
+            }}
             measure={{
               scale: pageScale, pageMarkups, scaleBusy, scaleError, onSelectIds: setSelectedIds,
               onPreset: s => { saveScale(s, false).catch(() => {}) },

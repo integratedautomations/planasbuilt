@@ -15,6 +15,8 @@ interface Props {
   /** 1-based number shown on a count marker. */
   countNumber?: number
   symbolSet?: SymbolSet
+  /** Names from the outermost area down to this area (area markups only). */
+  areaPath?: string[]
   draggable?: boolean
   listening?: boolean
   /** Show per-point handles (single selected path markup). */
@@ -22,6 +24,8 @@ interface Props {
   onPointsChange?: (points: number[], done: boolean) => void
   /** Show the coverage-cone handle (single selected camera). */
   editFov?: boolean
+  /** Global "Show coverage cones" switch (default true). */
+  showCones?: boolean
   onFovChange?: (fov: Fov, done: boolean) => void
   onDragEnd?: (e: Konva.KonvaEventObject<DragEvent>) => void
   onDblClick?: () => void
@@ -35,10 +39,10 @@ interface Props {
  * icon doesn't stretch the cone.
  */
 export function MarkupShape(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
-  const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g ? g.fov : undefined
+  const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g && showCones && !g.fov?.hidden ? g.fov : undefined
 
   // Keep the cone attached while the device is being dragged
   const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => {
@@ -57,7 +61,7 @@ export function MarkupShape(props: Props) {
         draggable={draggable} listening={listening} opacity={m.style.opacity}
         onDragMove={fov ? onDragMove : undefined}
         onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
-        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} />
+        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
           : m.type === 'device' ? <DeviceBody m={m} g={g} set={symbolSet} />
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
@@ -188,7 +192,7 @@ function hexAlpha(hex: string, a: number) {
   return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`
 }
 
-function PathBody({ m, g, zoom, scale, countNumber }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number }) {
+function PathBody({ m, g, zoom, scale, countNumber, areaPath }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number; areaPath?: string[] }) {
   const { stroke, fill, strokeWidth, dash } = m.style
   const common = {
     points: g.points, stroke: stroke || '#e03131', strokeWidth,
@@ -197,6 +201,8 @@ function PathBody({ m, g, zoom, scale, countNumber }: { m: Markup; g: PathGeomet
     lineCap: 'round' as const, lineJoin: 'round' as const,
   }
   switch (m.type) {
+    case 'area':
+      return <AreaBody m={m} g={g} zoom={zoom} path={areaPath} />
     case 'arrow':
       return <Arrow {...common} fill={stroke || '#e03131'} pointerLength={strokeWidth * 4 + 6} pointerWidth={strokeWidth * 3 + 6} />
     case 'polygon':
@@ -280,4 +286,44 @@ function PointHandles({ points, zoom, onChange }: { points: number[]; zoom: numb
     )
   }
   return <>{handles}</>
+}
+
+/**
+ * Area: dashed muted outline and very light fill that cannot be hit (only the wide outline stroke
+ * and the label can), so devices, panning and placing work through it. The label sits at the
+ * top-left vertex, sized in screen pixels, with the parent path as a small breadcrumb.
+ * The sheet area draws nothing but its label, pinned to the page corner.
+ */
+function AreaBody({ m, g, zoom, path }: { m: Markup; g: PathGeometry; zoom: number; path?: string[] }) {
+  const sheet = m.fields?.sheet === true
+  const { stroke, fill, strokeWidth, dash } = m.style
+  const color = stroke || '#5f7a99'
+  const name = m.text.trim() || 'Unnamed area'
+  const crumbs = (path ?? [name]).slice(0, -1)
+  // top-left-most vertex (smallest x + y)
+  let ax = 0, ay = 0, best = Infinity
+  for (let i = 0; i + 1 < g.points.length; i += 2) {
+    const v = g.points[i] + g.points[i + 1]
+    if (v < best) { best = v; ax = g.points[i]; ay = g.points[i + 1] }
+  }
+  const fs = 14 / zoom, small = 10.5 / zoom, pad = 5 / zoom
+  const crumbText = crumbs.length ? `${crumbs.join(' › ')} ›` : ''
+  const halo = { stroke: '#fff', fillAfterStrokeEnabled: true, fontFamily: 'system-ui, sans-serif', lineHeight: 1.15 }
+  return (
+    <>
+      {!sheet && (
+        <>
+          <Line points={g.points} closed fill={hexAlpha(fill || color, 0.06)} listening={false} />
+          <Line points={g.points} closed stroke={color} strokeWidth={strokeWidth} lineJoin="round"
+            dash={dash ? [strokeWidth * 4, strokeWidth * 3] : undefined} hitStrokeWidth={Math.max(strokeWidth, 14 / zoom)} />
+        </>
+      )}
+      {crumbText && (
+        <Text text={crumbText} x={ax + pad} y={ay + pad} fontSize={small} fill={color} strokeWidth={small * 0.25} {...halo}
+          listening={false} />
+      )}
+      <Text text={name} x={ax + pad} y={ay + pad + (crumbText ? small * 1.2 : 0)} fontSize={fs} fontStyle="bold" fill={color}
+        strokeWidth={fs * 0.22} {...halo} />
+    </>
+  )
 }

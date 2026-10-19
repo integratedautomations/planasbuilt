@@ -1,5 +1,6 @@
 import { HARDWARE_FIELDS, STATUSES } from './types'
 import { useState } from 'react'
+import { Attribution, HistorySection } from './MarkupInfo'
 import { DevicePhotos } from '../photos/DevicePhotos'
 import { BarcodeScanner } from '../photos/BarcodeScanner'
 import '../photos/photos.css'
@@ -14,10 +15,12 @@ interface Props {
   set?: SymbolSet
   readOnly: boolean
   onUpdate: (patch: (m: Markup) => Markup, mergeKey: string) => void
+  /** Computed area names (outermost first) for a single device; omitted for multi-select. */
+  areaPath?: string[]
 }
 
 /** Device data entry: tag, install status, hardware fields and the symbol set's own fields. */
-export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
+export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath }: Props) {
   const d = devices[0]
   const single = devices.length === 1
   const setStatus = (status: Status) => onUpdate(m => ({ ...m, status }), 'status')
@@ -44,6 +47,10 @@ export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
         <div>
           <div className="panel-heading">{single ? d.tag || 'New device' : `${devices.length} devices`}</div>
           <div className="muted small">{set?.name ?? 'Unknown set'}</div>
+          {single && <Attribution markup={d} />}
+          {single && areaPath && areaPath.length > 0 && (
+            <div className="area-path small" title="Area">{'📍'} {areaPath.join(' › ')}</div>
+          )}
         </div>
       </div>
 
@@ -71,7 +78,9 @@ export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
           </label>
           {set?.has_fov && fov && (
             <>
-              <div className="muted small section-label">Coverage cone · drag the white dot to aim</div>
+              <div className="muted small section-label">Coverage cone{fov.hidden ? '' : ' · drag the white dot to aim'}</div>
+              <label className="check"><input type="checkbox" checked={!fov.hidden}
+                onChange={e => onUpdate(m => ({ ...m, geometry: { ...m.geometry, fov: { ...fov, hidden: !e.target.checked } } }), `fovshow.${d.id}`)} /> Show coverage cone</label>
               <label className="field">Angle <span className="muted">{fov.angle}°</span>
                 <input type="range" min={10} max={360} step={5} value={fov.angle}
                   onChange={e => onUpdate(m => ({ ...m, geometry: { ...m.geometry, fov: { ...fov, angle: +e.target.value } } }), `fov.${d.id}`)} />
@@ -93,6 +102,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
         <DevicePhotos markupId={d.id} readOnly={readOnly} />
       </div>
     )}
+    {single && <HistorySection markup={d} set={set} />}
     </>
   )
 }
