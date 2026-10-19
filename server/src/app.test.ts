@@ -87,6 +87,36 @@ describe('milestone 1 api', () => {
     expect((await app.inject({ url: `/api/documents/${docId}/markups`, headers: h })).json()).toHaveLength(1)
   })
 
+  it('seeds symbol sets and auto-numbers device tags per project', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    const sets = (await app.inject({ url: '/api/symbol-sets', headers: h })).json()
+    const cams = sets.find((s: any) => s.tag_prefix === 'CAM')
+    expect(cams.has_fov).toBe(true)
+    const put = (id: string, extra = {}) => app.inject({ method: 'PUT', url: `/api/documents/${docId}/markups/${id}`, headers: h,
+      payload: { page: 1, type: 'device', geometry: { x: 0, y: 0, width: 24, height: 24, rotation: 0 }, symbol_set_id: cams.id, status: 'planned', ...extra } })
+    expect((await put('33333333-3333-4333-8333-333333333331')).json().tag).toBe('CAM-01')
+    expect((await put('33333333-3333-4333-8333-333333333332', { fields: { ip: '10.0.0.5' } })).json())
+      .toMatchObject({ tag: 'CAM-02', fields: { ip: '10.0.0.5' } })
+    // existing tags are kept on update
+    expect((await put('33333333-3333-4333-8333-333333333331', { tag: 'CAM-01', status: 'installed' })).json())
+      .toMatchObject({ tag: 'CAM-01', status: 'installed' })
+    expect((await put('33333333-3333-4333-8333-333333333333', { status: 'bogus' })).statusCode).toBe(400)
+  })
+
+  it('lets only admins edit symbol sets', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    const created = (await app.inject({ method: 'POST', url: '/api/symbol-sets', headers: h,
+      payload: { name: 'Intercom', tag_prefix: 'ic', color: '#000', fields: [{ label: 'Station #', type: 'text' }, { label: 'x', type: 'bogus' }] } })).json()
+    expect(created).toMatchObject({ tag_prefix: 'IC', fields: [{ key: 'station', label: 'Station #', type: 'text' }] })
+    const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login',
+      payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    expect((await app.inject({ method: 'PUT', url: `/api/symbol-sets/${created.id}`,
+      headers: { authorization: `Bearer ${viewer}` }, payload: created })).statusCode).toBe(403)
+    const bad = await app.inject({ method: 'POST', url: '/api/symbol-sets', headers: h,
+      payload: { name: 'X', tag_prefix: 'X', icon: 'javascript:alert(1)' } })
+    expect(bad.statusCode).toBe(400)
+  })
+
   it('blocks viewers from editing markups', async () => {
     const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login',
       payload: { email: 'tech@x.com', password: 'password1' } })).json().token

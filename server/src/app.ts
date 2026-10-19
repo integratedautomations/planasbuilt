@@ -282,8 +282,73 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return { ok: true }
   })
 
+  // ---- Symbol sets (shared by the whole team; app admins edit) ----
+  const FIELD_TYPES = ['text', 'number', 'select', 'ip', 'date', 'checkbox']
+  function cleanSymbolSet(b: any) {
+    const name = String(b?.name ?? '').trim()
+    const tag_prefix = String(b?.tag_prefix ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (!name || !tag_prefix) return null
+    const fields = Array.isArray(b.fields) ? b.fields
+      .filter((f: any) => f && String(f.label ?? '').trim() && FIELD_TYPES.includes(f.type))
+      .map((f: any) => ({
+        key: String(f.key || f.label).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+        label: String(f.label).trim(),
+        type: f.type,
+        ...(f.type === 'select' ? { options: (Array.isArray(f.options) ? f.options : []).map(String).filter(Boolean) } : {}),
+      })) : []
+    const icon = String(b.icon ?? '')
+    if (icon && !/^data:image\/(svg\+xml|png|jpeg|webp)[;,]/.test(icon)) return null
+    if (icon.length > 300_000) return null
+    return { name, tag_prefix, fields, icon, color: String(b.color || '#868e96'), has_fov: !!b.has_fov }
+  }
+
+  app.get('/api/symbol-sets', { preHandler: auth }, async () =>
+    db.query('SELECT * FROM symbol_sets WHERE NOT archived ORDER BY sort, created_at'))
+
+  app.post('/api/symbol-sets', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const s = cleanSymbolSet(req.body)
+    if (!s) return reply.code(400).send({ error: 'Name, tag prefix and a valid icon are required' })
+    const [row] = await db.query(
+      `INSERT INTO symbol_sets (name, color, tag_prefix, icon, fields, has_fov, sort)
+       VALUES ($1,$2,$3,$4,$5,$6,(SELECT coalesce(max(sort),0)+1 FROM symbol_sets)) RETURNING *`,
+      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov])
+    return row
+  })
+
+  app.put('/api/symbol-sets/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const s = cleanSymbolSet(req.body)
+    if (!s) return reply.code(400).send({ error: 'Name, tag prefix and a valid icon are required' })
+    const [row] = await db.query(
+      `UPDATE symbol_sets SET name=$1, color=$2, tag_prefix=$3, icon=$4, fields=$5, has_fov=$6 WHERE id=$7 RETURNING *`,
+      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, (req.params as any).id])
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    return row
+  })
+
+  // Archive rather than delete so existing device markups keep their set
+  app.delete('/api/symbol-sets/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    await db.query('UPDATE symbol_sets SET archived = true WHERE id = $1', [(req.params as any).id])
+    return { ok: true }
+  })
+
+  /** Next free tag for a prefix across the whole project, e.g. CAM-07. */
+  async function nextTag(projectId: string, prefix: string) {
+    const rows = await db.query<{ tag: string }>(
+      `SELECT m.tag FROM markups m JOIN documents d ON d.id = m.document_id
+       WHERE d.project_id = $1 AND NOT m.deleted AND m.tag LIKE $2`, [projectId, `${prefix}-%`])
+    const max = rows.reduce((n, r) => {
+      const k = Number(r.tag.slice(prefix.length + 1))
+      return Number.isInteger(k) && k > n ? k : n
+    }, 0)
+    return `${prefix}-${String(max + 1).padStart(2, '0')}`
+  }
+
   // ---- Markups ----
-  const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, version, created_by, updated_by, created_at, updated_at'
+  const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, version, created_by, updated_by, created_at, updated_at'
+  const STATUSES = ['', 'planned', 'installed', 'tested', 'punch']
 
   app.get('/api/documents/:id/markups', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'viewer')
@@ -306,15 +371,25 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       const [layer] = await db.query('SELECT project_id FROM layers WHERE id = $1', [b.layer_id])
       if (!layer || layer.project_id !== doc.project_id) return reply.code(400).send({ error: 'Unknown layer' })
     }
+    const status = String(b.status ?? '')
+    if (!STATUSES.includes(status)) return reply.code(400).send({ error: 'Bad status' })
+    let tag = String(b.tag ?? '').trim()
+    if (b.symbol_set_id) {
+      const [set] = await db.query('SELECT tag_prefix FROM symbol_sets WHERE id = $1', [b.symbol_set_id])
+      if (!set) return reply.code(400).send({ error: 'Unknown symbol set' })
+      if (!tag) tag = await nextTag(doc.project_id, set.tag_prefix)
+    }
+    const fields = b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields) ? b.fields : {}
     const [row] = await db.query(
-      `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+      `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
        ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
-         style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id, deleted = false,
-         version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
+         style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id,
+         symbol_set_id = EXCLUDED.symbol_set_id, tag = EXCLUDED.tag, status = EXCLUDED.status, fields = EXCLUDED.fields,
+         deleted = false, version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
        RETURNING ${MARKUP_COLUMNS}`,
       [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
-        String(b.text ?? ''), b.layer_id || null, req.user.id])
+        String(b.text ?? ''), b.layer_id || null, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id])
     return row
   })
 

@@ -6,7 +6,7 @@ import type { Pt } from './geometry'
 import { MarkupShape } from './MarkupShape'
 import type { Change } from './useMarkups'
 import { isBoxType } from './types'
-import type { BoxGeometry, Markup, MarkupStyle, MarkupType, PathGeometry, Tool } from './types'
+import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 
 export interface MarkupCanvasHandle {
@@ -20,24 +20,27 @@ interface Props {
   height: number
   zoom: number
   markups: Markup[]
-  lockedLayerIds: Set<string>
+  /** Markups on a locked layer or symbol set: visible but not selectable. */
+  lockedIds: Set<string>
   tool: Tool
   readOnly: boolean
   selectedIds: string[]
   onSelect: (ids: string[]) => void
   commit: (change: Change) => void
   /** Template for new markups: document, page, layer and current style. */
-  newBase: { document_id: string; page: number; layer_id: string | null; style: MarkupStyle; stampText: string }
+  newBase: { document_id: string; page: number; layer_id: string | null; style: MarkupStyle; stampText: string; symbolSetId: string | null }
+  symbolSets: Map<string, SymbolSet>
   /** Set true when the markup layer owns the current pointer (so the viewport doesn't pan). */
   consumedRef: React.MutableRefObject<boolean>
   onCreated?: (m: Markup) => void
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow']
+const CLICK_PATHS: MarkupType[] = ['polyline', 'polygon', 'cable']
 const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'rect', 'ellipse', 'cloud', 'highlight', 'text', 'freehand']
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedLayerIds, tool, readOnly, selectedIds, onSelect, commit, newBase, consumedRef, onCreated } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -45,6 +48,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const freehandPts = useRef<Pt[]>([])
   const clickPts = useRef<Pt[]>([])
   const [pointOverride, setPointOverride] = useState<{ id: string; points: number[] } | null>(null)
+  const [fovOverride, setFovOverride] = useState<{ id: string; fov: Fov } | null>(null)
 
   const byId = new Map(markups.map(m => [m.id, m]))
   const selected = selectedIds.map(id => byId.get(id)).filter((m): m is Markup => !!m)
@@ -68,6 +72,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const newMarkup = (type: MarkupType, geometry: BoxGeometry | PathGeometry): Markup => ({
     id: uuid(), document_id: newBase.document_id, page: newBase.page, type, geometry,
     style: { ...newBase.style }, text: type === 'stamp' ? newBase.stampText : '', layer_id: newBase.layer_id,
+    ...(type === 'device' ? { symbol_set_id: newBase.symbolSetId, tag: '', status: 'planned' as const, fields: {} } : {}),
   })
 
   const finish = (m: Markup | null) => {
@@ -82,7 +87,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }
 
   const finishClickPath = () => {
-    if (!draft || (draft.type !== 'polyline' && draft.type !== 'polygon')) return
+    if (!draft || !CLICK_PATHS.includes(draft.type)) return
     // Drop the rubber-band point and any double-click duplicate
     const pts = clickPts.current.filter((p, i, a) => i === 0 || Math.hypot(p.x - a[i - 1].x, p.y - a[i - 1].y) > 0.5)
     const min = draft.type === 'polygon' ? 3 : 2
@@ -133,7 +138,17 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       finish(newMarkup('stamp', { x: p.x - 80, y: p.y - 25, width: 160, height: 50, rotation: 0 }))
       return
     }
-    if (t === 'polyline' || t === 'polygon') {
+    if (t === 'device') {
+      const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
+      if (!set) return
+      const size = 24
+      finish(newMarkup('device', {
+        x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0,
+        ...(set.has_fov ? { fov: { direction: -90, angle: 90, range: 150 } } : {}),
+      }))
+      return
+    }
+    if (CLICK_PATHS.includes(t)) {
       const pts = clickPts.current
       if (!pts.length) {
         clickPts.current = [p, p]
@@ -162,7 +177,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (!draft) return
     const p = pointer()
     const shift = e.evt.shiftKey
-    if (draft.type === 'polyline' || draft.type === 'polygon') {
+    if (CLICK_PATHS.includes(draft.type)) {
       const pts = clickPts.current
       const last = shift && pts.length > 1 ? snap45(pts[pts.length - 2], p) : p
       clickPts.current = [...pts.slice(0, -1), last]
@@ -211,7 +226,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       node.scale({ x: 1, y: 1 })
       const geometry = 'points' in m.geometry
         ? bakePath({ ...base, points: m.geometry.points }, sx, sy)
-        : bakeBox({ ...base, width: m.geometry.width, height: m.geometry.height }, sx, sy)
+        : { ...m.geometry, ...bakeBox({ ...base, width: m.geometry.width, height: m.geometry.height }, sx, sy) }
       // Stamps and text grow their lettering with the box
       const style = m.type === 'text' ? { ...m.style, fontSize: Math.max(6, Math.round(m.style.fontSize * Math.abs(sy))) } : m.style
       change.push({ before: m, after: { ...m, geometry, style } })
@@ -246,7 +261,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (Math.hypot(a.x - b.x, a.y - b.y) < 8 / zoom) finishClickPath()
   }
 
-  const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedLayerIds.has(m.layer_id ?? '')
+  const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id)
 
   return (
     <Stage ref={stageRef} width={width} height={height} className="markup-stage"
@@ -255,13 +270,22 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       <Layer>
         {markups.map(m => {
           const shown = pointOverride?.id === m.id && 'points' in m.geometry
-            ? { ...m, geometry: { ...m.geometry, points: pointOverride.points } } : m
+            ? { ...m, geometry: { ...m.geometry, points: pointOverride.points } }
+            : fovOverride?.id === m.id && 'width' in m.geometry
+            ? { ...m, geometry: { ...m.geometry, fov: fovOverride.fov } } : m
           const editable = single?.id === m.id && !readOnly && tool === 'select'
-            && 'points' in m.geometry && m.type !== 'freehand' && !lockedLayerIds.has(m.layer_id ?? '')
+            && 'points' in m.geometry && m.type !== 'freehand' && !lockedIds.has(m.id)
           return (
             <MarkupShape key={m.id} markup={shown} zoom={zoom}
+              symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
+              editFov={single?.id === m.id && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
+              onFovChange={(fov, done) => {
+                if (!done) { setFovOverride({ id: m.id, fov }); return }
+                setFovOverride(null)
+                commit([{ before: m, after: { ...m, geometry: { ...(m.geometry as BoxGeometry), fov } } }])
+              }}
               draggable={canDrag(m)}
-              listening={!lockedLayerIds.has(m.layer_id ?? '') && !isDrawTool}
+              listening={!lockedIds.has(m.id) && !isDrawTool}
               editPoints={editable}
               onPointsChange={(points, done) => {
                 if (!done) { setPointOverride({ id: m.id, points }); return }
@@ -272,7 +296,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           )
         })}
         {draft && <MarkupShape markup={draft} zoom={zoom} listening={false} />}
-        <Transformer ref={trRef} rotateEnabled keepRatio={false} ignoreStroke flipEnabled={false}
+        <Transformer ref={trRef} rotateEnabled keepRatio={selected.length > 0 && selected.every(m => m.type === 'device')} ignoreStroke flipEnabled={false}
           rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={4}
           anchorSize={11} anchorCornerRadius={2} borderStroke="#1971c2" anchorStroke="#1971c2"
           boundBoxFunc={(oldBox, newBox) => (Math.abs(newBox.width) < 4 || Math.abs(newBox.height) < 4 ? oldBox : newBox)}

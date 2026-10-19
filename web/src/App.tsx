@@ -5,6 +5,7 @@ import { AuthPage } from './pages/AuthPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { ViewerPage } from './pages/ViewerPage'
+import { SymbolSetsPage } from './pages/SymbolSetsPage'
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
@@ -28,6 +29,7 @@ export default function App() {
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
       <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
       <Route path="/projects/:projectId/documents/:documentId" element={<ViewerPage />} />
+      <Route path="/symbols" element={<SymbolSetsPage user={user} />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

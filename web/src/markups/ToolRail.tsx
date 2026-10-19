@@ -17,6 +17,8 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: ReactNode }[
   { tool: 'freehand', label: 'Pen', key: 'F', icon: icon(<path d="M3 17c3-6 5 2 8-3s4-7 7-6 2 6-2 9" />) },
   { tool: 'text', label: 'Text box', key: 'T', icon: icon(<><path d="M5 6h14M12 6v13" /></>) },
   { tool: 'highlight', label: 'Highlight', key: 'I', icon: icon(<><path d="M9 4l9 9-5 5-9-9z" /><path d="M4 20h7" /></>) },
+  { tool: 'device', label: 'Device', key: 'D', icon: icon(<><circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="2" fill="currentColor" /></>) },
+  { tool: 'cable', label: 'Cable run', key: 'W', icon: icon(<><path d="M4 18c4 0 4-12 8-12s4 12 8 12" strokeDasharray="3 3" /><circle cx="4" cy="18" r="1.5" fill="currentColor" /><circle cx="20" cy="18" r="1.5" fill="currentColor" /></>) },
   { tool: 'stamp', label: 'Stamp', key: 'S', icon: icon(<><rect x="4" y="14" width="16" height="5" rx="1" /><path d="M9 14v-3a3 3 0 116 0v3" /></>) },
 ]
 

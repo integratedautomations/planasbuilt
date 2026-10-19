@@ -13,7 +13,7 @@ import { ToolRail, TOOLS } from '../markups/ToolRail'
 import { SidePanel } from '../markups/SidePanel'
 import { useMarkups } from '../markups/useMarkups'
 import { DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
-import type { Layer, Markup, MarkupStyle, MarkupType, Tool } from '../markups/types'
+import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
 
 interface DocMeta { id: string; name: string; revisions: { revision: number; page_count: number }[] }
@@ -50,6 +50,9 @@ export function ViewerPage() {
   const [defaultStyle, setDefaultStyle] = useState<MarkupStyle>(DEFAULT_STYLE)
   const [stampText, setStampText] = useState('APPROVED')
   const [layers, setLayers] = useState<Layer[]>([])
+  const [symbolSetList, setSymbolSetList] = useState<SymbolSet[]>([])
+  const [activeSetId, setActiveSetId] = useState<string | null>(null)
+  const symbolSets = useMemo(() => new Map(symbolSetList.map(s => [s.id, s])), [symbolSetList])
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null)
   const [hidden, toggleHidden] = useLayerFlags(projectId, 'hidden')
   const [locked, toggleLocked] = useLayerFlags(projectId, 'locked')
@@ -88,6 +91,10 @@ export function ViewerPage() {
     api<DocMeta>(`/documents/${documentId}`).then(setMeta).catch(e => setError(e.message))
     api<Project>(`/projects/${projectId}`).then(setProject).catch(() => {})
     api<Layer[]>(`/projects/${projectId}/layers`).then(setLayers).catch(() => {})
+    api<SymbolSet[]>('/symbol-sets').then(sets => {
+      setSymbolSetList(sets)
+      setActiveSetId(id => id ?? sets[0]?.id ?? null)
+    }).catch(() => {})
     let cancelled = false
     const task = loadPdf(documentFileUrl(documentId))
     task.promise.then(setPdf).catch(e => { if (!cancelled) setError(`Could not open PDF: ${e.message}`) })
@@ -130,9 +137,15 @@ export function ViewerPage() {
     return () => task.cancel()
   }, [page, settledZoom])
 
+  // A markup is hidden/locked if its custom layer or its symbol set's layer is
+  const flagged = (flags: Set<string>, m: Markup) =>
+    flags.has(m.layer_id ?? '') || (!!m.symbol_set_id && flags.has(`set:${m.symbol_set_id}`))
   const pageMarkups = useMemo(
-    () => [...store.markups.values()].filter(m => m.page === pageNum && !hidden.has(m.layer_id ?? '')),
-    [store.markups, pageNum, hidden])
+    () => [...store.markups.values()].filter(m => m.page === pageNum && !flagged(hidden, m)),
+    [store.markups, pageNum, hidden]) // eslint-disable-line react-hooks/exhaustive-deps
+  const lockedIds = useMemo(
+    () => new Set(pageMarkups.filter(m => flagged(locked, m)).map(m => m.id)),
+    [pageMarkups, locked]) // eslint-disable-line react-hooks/exhaustive-deps
   const selected = useMemo(
     () => selectedIds.map(id => store.markups.get(id)).filter((m): m is Markup => !!m),
     [selectedIds, store.markups])
@@ -154,7 +167,7 @@ export function ViewerPage() {
   const paste = useCallback(() => {
     if (readOnly || !clipboard.current.length) return
     const copies = clipboard.current.map(m => ({
-      ...m, id: uuid(), page: pageNum,
+      ...m, id: uuid(), page: pageNum, tag: m.type === 'device' ? '' : m.tag, // pasted devices get fresh numbers
       geometry: { ...m.geometry, x: m.geometry.x + 20, y: m.geometry.y + 20 },
     }))
     clipboard.current = copies // paste again cascades
@@ -180,7 +193,7 @@ export function ViewerPage() {
       else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); setSelectedIds([]) }
       else if (mod && k === 'c') clipboard.current = selected.map(m => structuredClone(m))
       else if (mod && k === 'v') { e.preventDefault(); paste() }
-      else if (mod && k === 'a') { e.preventDefault(); setSelectedIds(pageMarkups.filter(m => !locked.has(m.layer_id ?? '')).map(m => m.id)) }
+      else if (mod && k === 'a') { e.preventDefault(); setSelectedIds(pageMarkups.filter(m => !lockedIds.has(m.id)).map(m => m.id)) }
       else if (mod) return
       else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
       else if (e.key === 'Escape') { markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select') }
@@ -200,7 +213,7 @@ export function ViewerPage() {
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyUp)
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp) }
-  }, [pageNum, goTo, zoomBy, fit, store, selected, paste, deleteSelected, pageMarkups, locked, readOnly, chooseTool])
+  }, [pageNum, goTo, zoomBy, fit, store, selected, paste, deleteSelected, pageMarkups, lockedIds, readOnly, chooseTool])
 
   async function addLayer(name: string) {
     const layer = await post<Layer>(`/projects/${projectId}/layers`, { name })
@@ -247,16 +260,28 @@ export function ViewerPage() {
         <div className={`viewport tool-${activeTool}`} ref={viewportRef}>
           {error && <div className="error floating">{error}</div>}
           {!page && !error && <div className="center muted">Loading plan…</div>}
+          {activeTool === 'device' && (
+            <div className="symbol-palette" onPointerDown={e => e.stopPropagation()}>
+              {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
+              {symbolSetList.map(set => (
+                <button key={set.id} className={`palette-item${set.id === activeSetId ? ' on' : ''}`}
+                  title={set.name} onClick={() => setActiveSetId(set.id)}>
+                  <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
+                  <span className="hide-sm">{set.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="stage" ref={stageRef}
             style={pageSize ? { width: pageSize.width, height: pageSize.height } : { display: 'none' }}>
             <canvas ref={canvasRef} className="page-canvas" />
           </div>
           {page && viewportSize.width > 0 && (
             <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
-              zoom={settledZoom} markups={pageMarkups} lockedLayerIds={locked} tool={activeTool}
+              zoom={settledZoom} markups={pageMarkups} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
               readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
               consumedRef={consumedRef}
-              newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText }}
+              newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
               onCreated={m => { if (m.type === 'text') { setShowPanel(true); setTool('select'); setTimeout(() => textRef.current?.select(), 50) } }} />
           )}
         </div>
@@ -265,7 +290,7 @@ export function ViewerPage() {
             stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
             layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
             hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
-            onAddLayer={addLayer} textRef={textRef} />
+            onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets} />
         )}
       </div>
     </div>

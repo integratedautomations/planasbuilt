@@ -30,6 +30,18 @@ export function useMarkups(documentId: string) {
     }).catch(e => setSaveError(e.message))
   }, [documentId])
 
+  /** The server numbers new devices (CAM-07); copy the tag into local state and history. */
+  const adoptTag = useCallback((id: string, tag: string) => {
+    const fix = (m: Markup | null) => (m && m.id === id && !m.tag ? { ...m, tag } : m)
+    for (const stack of [undoStack.current, redoStack.current])
+      stack.forEach((change, i) => { stack[i] = change.map(c => ({ before: fix(c.before), after: fix(c.after) })) })
+    setMarkups(prev => {
+      const m = prev.get(id)
+      if (!m || m.tag) return prev
+      return new Map(prev).set(id, { ...m, tag })
+    })
+  }, [])
+
   const persist = useCallback((change: Change) => {
     for (const { before, after } of change) {
       const id = (after ?? before)!.id
@@ -40,14 +52,16 @@ export function useMarkups(documentId: string) {
             body: JSON.stringify({
               page: after.page, type: after.type, geometry: after.geometry,
               style: after.style, text: after.text, layer_id: after.layer_id,
+              symbol_set_id: after.symbol_set_id ?? null, tag: after.tag ?? '',
+              status: after.status ?? '', fields: after.fields ?? {},
             }),
-          })
+          }).then(saved => { if (saved.tag && saved.tag !== after.tag) adoptTag(id, saved.tag) })
         : api(`/documents/${documentId}/markups/${id}`, { method: 'DELETE' })
       req.then(() => setSaveError(''))
         .catch(e => setSaveError(`Not saved: ${e.message}`))
         .finally(() => setPending(n => n - 1))
     }
-  }, [documentId])
+  }, [documentId, adoptTag])
 
   const applyLocal = useCallback((change: Change, direction: 'forward' | 'back') => {
     setMarkups(prev => {

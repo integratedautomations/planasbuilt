@@ -43,6 +43,13 @@ export function bakePath(g: { x: number; y: number; rotation: number; points: nu
   }
 }
 
+/** Center of a (possibly rotated about its top-left) box, in page space. */
+export function deviceCenter(g: BoxGeometry): Pt {
+  const a = (g.rotation * Math.PI) / 180
+  const cx = g.width / 2, cy = g.height / 2
+  return { x: g.x + cx * Math.cos(a) - cy * Math.sin(a), y: g.y + cx * Math.sin(a) + cy * Math.cos(a) }
+}
+
 /** Removes points closer than `minDist` to the previous kept point (keeps freehand light). */
 export function simplify(points: Pt[], minDist = 1.5): Pt[] {
   if (points.length < 3) return points

@@ -27,6 +27,7 @@ export function ProjectsPage({ user, onSignOut }: Props) {
       <header className="topbar">
         <span className="brand">PlanMark</span>
         <span className="spacer" />
+        <Link to="/symbols" className="btn-link">Symbols</Link>
         {user.is_admin && <button onClick={() => setShowUsers(true)}>Users</button>}
         <span className="muted hide-sm">{user.name}</span>
         <button onClick={onSignOut}>Sign out</button>

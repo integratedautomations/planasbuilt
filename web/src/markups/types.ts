@@ -1,13 +1,16 @@
 // All geometry is in PDF page points at scale 1, origin top-left, y down (pdf.js viewport space).
 
-export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp'
-export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand'
+export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device'
+export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand' | 'cable'
 export type MarkupType = BoxType | PathType
 
-export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp']
+export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp', 'device']
 export const isBoxType = (t: MarkupType): t is BoxType => BOX_TYPES.includes(t)
 
-export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number }
+/** Camera coverage wedge, in degrees and page points, from the device center. */
+export interface Fov { direction: number; angle: number; range: number }
+
+export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number; fov?: Fov }
 /** points are relative to x/y: [x0, y0, x1, y1, ...] */
 export interface PathGeometry { x: number; y: number; rotation: number; points: number[] }
 
@@ -29,10 +32,44 @@ export interface Markup {
   style: MarkupStyle
   text: string
   layer_id: string | null
+  symbol_set_id?: string | null
+  tag?: string
+  status?: Status
+  fields?: Record<string, string | number | boolean>
   version?: number
   created_by?: string
   updated_by?: string
   updated_at?: string
+}
+
+export type Status = '' | 'planned' | 'installed' | 'tested' | 'punch'
+export const STATUSES: { value: Status; label: string; color: string }[] = [
+  { value: 'planned', label: 'Planned', color: '#868e96' },
+  { value: 'installed', label: 'Installed', color: '#1971c2' },
+  { value: 'tested', label: 'Tested', color: '#2f9e44' },
+  { value: 'punch', label: 'Punch', color: '#e03131' },
+]
+
+export type FieldType = 'text' | 'number' | 'select' | 'ip' | 'date' | 'checkbox'
+export interface FieldDef { key: string; label: string; type: FieldType; options?: string[] }
+
+/** Fields every device has, before its symbol set's own fields. */
+export const HARDWARE_FIELDS: FieldDef[] = [
+  { key: 'manufacturer', label: 'Manufacturer', type: 'text' },
+  { key: 'model', label: 'Model #', type: 'text' },
+  { key: 'serial', label: 'Serial #', type: 'text' },
+  { key: 'firmware', label: 'Firmware', type: 'text' },
+]
+
+export interface SymbolSet {
+  id: string
+  name: string
+  color: string
+  tag_prefix: string
+  icon: string
+  fields: FieldDef[]
+  has_fov: boolean
+  sort: number
 }
 
 export interface Layer { id: string; project_id: string; name: string; color: string; sort: number }
@@ -46,5 +83,6 @@ export const DEFAULT_STYLE: MarkupStyle = {
 export function defaultStyleFor(type: MarkupType, base: MarkupStyle): MarkupStyle {
   if (type === 'highlight') return { ...base, stroke: '', fill: '#ffd43b', opacity: 0.4 }
   if (type === 'stamp') return { ...base, fontSize: 28 }
+  if (type === 'cable') return { ...base, strokeWidth: 2, dash: true }
   return base
 }

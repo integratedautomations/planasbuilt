@@ -99,11 +99,92 @@ CREATE TABLE IF NOT EXISTS markups (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS markups_document ON markups(document_id) WHERE NOT deleted
+CREATE INDEX IF NOT EXISTS markups_document ON markups(document_id) WHERE NOT deleted;
+CREATE TABLE IF NOT EXISTS symbol_sets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  color text NOT NULL,
+  tag_prefix text NOT NULL,
+  icon text NOT NULL DEFAULT '',
+  fields jsonb NOT NULL DEFAULT '[]',
+  has_fov boolean NOT NULL DEFAULT false,
+  sort int NOT NULL DEFAULT 0,
+  archived boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS symbol_set_id uuid REFERENCES symbol_sets(id) ON DELETE SET NULL;
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS tag text NOT NULL DEFAULT '';
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT '';
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS fields jsonb NOT NULL DEFAULT '{}'
 `
+
+const svg = (body: string) =>
+  'data:image/svg+xml;utf8,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`)
+
+/** Starter symbol sets so a new install is useful right away; admins edit them in the app. */
+const DEFAULT_SETS = [
+  {
+    name: 'Cameras', color: '#1971c2', tag_prefix: 'CAM', has_fov: true,
+    icon: svg('<path d="M3 8h12v8H3z"/><path d="M15 11l6-3v8l-6-3"/>'),
+    fields: [
+      { key: 'ip', label: 'IP address', type: 'ip' },
+      { key: 'mac', label: 'MAC address', type: 'text' },
+      { key: 'nvr', label: 'NVR', type: 'text' },
+      { key: 'channel', label: 'NVR channel', type: 'number' },
+      { key: 'lens', label: 'Lens / type', type: 'select', options: ['Fixed dome', 'Varifocal dome', 'Bullet', 'PTZ', '360° fisheye', 'Multi-sensor'] },
+    ],
+  },
+  {
+    name: 'Fire Alarm', color: '#e03131', tag_prefix: 'FA', has_fov: false,
+    icon: svg('<path d="M12 3c3 4 6 6 6 10a6 6 0 01-12 0c0-2 1-4 3-5 0 2 1 3 2 3 0-3 0-5 1-8z"/>'),
+    fields: [
+      { key: 'device_type', label: 'Device type', type: 'select', options: ['Smoke', 'Heat', 'Pull station', 'Horn/strobe', 'Strobe', 'Duct detector', 'Monitor module', 'Control module'] },
+      { key: 'panel', label: 'Fire panel', type: 'text' },
+      { key: 'loop', label: 'Loop / SLC', type: 'text' },
+      { key: 'address', label: 'Address', type: 'text' },
+      { key: 'zone', label: 'Zone', type: 'text' },
+    ],
+  },
+  {
+    name: 'Access Control', color: '#2f9e44', tag_prefix: 'AC', has_fov: false,
+    icon: svg('<rect x="5" y="3" width="14" height="18" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M9 17h6"/>'),
+    fields: [
+      { key: 'door', label: 'Door number', type: 'text' },
+      { key: 'panel', label: 'Controller / panel', type: 'text' },
+      { key: 'reader', label: 'Reader type', type: 'text' },
+      { key: 'lock', label: 'Lock hardware', type: 'select', options: ['Mag lock', 'Electric strike', 'Electrified lever', 'Exit device', 'None'] },
+      { key: 'rex', label: 'REX', type: 'checkbox' },
+      { key: 'ip', label: 'IP address', type: 'ip' },
+    ],
+  },
+  {
+    name: 'Network', color: '#7048e8', tag_prefix: 'WAP', has_fov: false,
+    icon: svg('<path d="M5 12a10 10 0 0114 0"/><path d="M8 15a6 6 0 018 0"/><circle cx="12" cy="18" r="1"/>'),
+    fields: [
+      { key: 'ip', label: 'IP address', type: 'ip' },
+      { key: 'mac', label: 'MAC address', type: 'text' },
+      { key: 'vlan', label: 'VLAN', type: 'number' },
+      { key: 'switch', label: 'Switch', type: 'text' },
+      { key: 'port', label: 'Switch port', type: 'text' },
+    ],
+  },
+]
+
+async function seedSymbolSets(db: Db) {
+  const [{ count }] = await db.query<{ count: number }>('SELECT count(*)::int AS count FROM symbol_sets')
+  if (count > 0) return
+  let sort = 0
+  for (const s of DEFAULT_SETS) {
+    await db.query(
+      'INSERT INTO symbol_sets (name, color, tag_prefix, icon, fields, has_fov, sort) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, sort++])
+  }
+}
 
 export async function migrate(db: Db) {
   for (const stmt of SCHEMA.split(';').map(s => s.trim()).filter(Boolean)) {
     await db.query(stmt)
   }
+  await seedSymbolSets(db)
 }

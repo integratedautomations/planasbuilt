@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bakeBox, bakePath, boxFromDrag, pathFromPoints, simplify, snap45 } from './geometry'
+import { bakeBox, bakePath, boxFromDrag, deviceCenter, pathFromPoints, simplify, snap45 } from './geometry'
 
 describe('geometry', () => {
   it('snaps to 45° keeping length', () => {
@@ -23,6 +23,12 @@ describe('geometry', () => {
     expect(bakeBox({ x: 1, y: 2, rotation: 30, width: 10, height: 20 }, 2, 0.5))
       .toEqual({ x: 1, y: 2, rotation: 30, width: 20, height: 10 })
     expect(bakePath({ x: 0, y: 0, rotation: 0, points: [0, 0, 10, 10] }, 3, 2).points).toEqual([0, 0, 30, 20])
+  })
+
+  it('finds a rotated device center', () => {
+    const c = deviceCenter({ x: 10, y: 10, width: 20, height: 20, rotation: 90 })
+    expect(c.x).toBeCloseTo(0)
+    expect(c.y).toBeCloseTo(20)
   })
 
   it('simplifies dense freehand input but keeps endpoints', () => {

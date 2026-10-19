@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Layer, Markup, MarkupStyle } from './types'
+import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
+import { DeviceFields } from './DeviceFields'
 
 const SWATCHES = ['#e03131', '#e8590c', '#f59f00', '#2f9e44', '#1971c2', '#7048e8', '#000000', '#868e96']
 const STAMPS = ['APPROVED', 'REVISED', 'VOID', 'FIELD VERIFY', 'AS-BUILT', 'NOT IN SCOPE']
@@ -25,6 +26,7 @@ interface Props {
   onToggleLocked: (id: string) => void
   onAddLayer: (name: string) => Promise<void>
   textRef: React.RefObject<HTMLTextAreaElement | null>
+  symbolSets: Map<string, SymbolSet>
 }
 
 export function SidePanel(p: Props) {
@@ -40,7 +42,37 @@ export function SidePanel(p: Props) {
   )
 }
 
-function Properties({ selected, readOnly, defaultStyle, onDefaultStyle, stampText, onStampText, onUpdate, onDelete, layers, textRef }: Props) {
+function Properties(p: Props) {
+  const { selected, readOnly, onUpdate, onDelete, symbolSets } = p
+  if (selected.length && selected.every(m => m.type === 'device')) {
+    const first = selected[0]
+    const sameSet = selected.every(m => m.symbol_set_id === first.symbol_set_id)
+    return (
+      <div className="panel-body">
+        <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate}
+          set={sameSet && first.symbol_set_id ? symbolSets.get(first.symbol_set_id) : undefined} />
+        <LayerSelect {...p} />
+        {!readOnly && <button className="danger" onClick={onDelete}>Delete {selected.length > 1 ? `${selected.length} devices` : 'device'}</button>}
+      </div>
+    )
+  }
+  return <StyleProperties {...p} />
+}
+
+function LayerSelect({ selected, layers, onUpdate, readOnly }: Props) {
+  const first = selected[0]
+  return (
+    <label className="field">Layer
+      <select disabled={readOnly} value={first.layer_id ?? ''} onChange={e => onUpdate(m => ({ ...m, layer_id: e.target.value || null }), 'layer')}>
+        <option value="">Default</option>
+        {layers.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+      </select>
+    </label>
+  )
+}
+
+function StyleProperties(p: Props) {
+  const { selected, readOnly, defaultStyle, onDefaultStyle, stampText, onStampText, onUpdate, onDelete, textRef } = p
   const first = selected[0]
   const style = first?.style ?? defaultStyle
   const disabled = readOnly && !!first
@@ -108,21 +140,14 @@ function Properties({ selected, readOnly, defaultStyle, onDefaultStyle, stampTex
             </select>
           </label>
         )}
-        {first && (
-          <label className="field">Layer
-            <select value={first.layer_id ?? ''} onChange={e => onUpdate(m => ({ ...m, layer_id: e.target.value || null }), 'layer')}>
-              <option value="">Default</option>
-              {layers.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-            </select>
-          </label>
-        )}
+        {first && <LayerSelect {...p} />}
         {first && !readOnly && <button className="danger" onClick={onDelete}>Delete {selected.length > 1 ? `${selected.length} markups` : 'markup'}</button>}
       </fieldset>
     </div>
   )
 }
 
-function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly }: Props) {
+function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly, symbolSets }: Props) {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const all = [{ id: '', name: 'Default', color: '#868e96' }, ...layers]
@@ -151,6 +176,23 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
           </li>
         ))}
       </ul>
+      <div className="panel-heading">Symbol sets</div>
+      <ul className="layer-list">
+        {[...symbolSets.values()].map(set => {
+          const key = `set:${set.id}`
+          return (
+            <li key={key}>
+              <span className="layer-name"><span className="dot" style={{ background: set.color }} />{set.name}</span>
+              <button className="icon-btn small" title={hidden.has(key) ? 'Show' : 'Hide'} onClick={() => onToggleHidden(key)}>
+                {hidden.has(key) ? '◌' : '●'}
+              </button>
+              <button className="icon-btn small" title={locked.has(key) ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(key)}>
+                {locked.has(key) ? '🔒' : '🔓'}
+              </button>
+            </li>
+          )
+        })}
+      </ul>
       {!readOnly && (
         <form className="row" onSubmit={add}>
           <input placeholder="New layer" value={name} onChange={e => setName(e.target.value)} required />
@@ -164,5 +206,5 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
 
 function labelFor(t: Markup['type']) {
   return ({ rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text box', stamp: 'Stamp',
-    line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen' } as const)[t]
+    line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', cable: 'Cable run' } as const)[t]
 }
