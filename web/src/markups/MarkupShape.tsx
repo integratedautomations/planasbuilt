@@ -4,7 +4,7 @@ import type Konva from 'konva'
 import { cloudArcs, deviceCenter } from './geometry'
 import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from './measure'
 import { STATUSES } from './types'
-import type { BoxGeometry, Fov, Markup, PathGeometry, SymbolSet } from './types'
+import type { BoxGeometry, Fov, Markup, PathGeometry, Status, SymbolSet } from './types'
 import { useImage } from './useImage'
 
 interface Props {
@@ -29,7 +29,13 @@ interface Props {
   onFovChange?: (fov: Fov, done: boolean) => void
   onDragEnd?: (e: Konva.KonvaEventObject<DragEvent>) => void
   onDblClick?: () => void
+  /** Set on the drawn (top) member of a device stack. */
+  stack?: StackView
+  /** A non-top stack member: keeps its node (for selection, drag, resize) but draws no icon. */
+  ghost?: boolean
 }
+
+export interface StackView { count: number; label: string; statuses: Status[] }
 
 /**
  * Every markup is a Group positioned at geometry x/y/rotation. Boxes draw children at
@@ -39,7 +45,7 @@ interface Props {
  * icon doesn't stretch the cone.
  */
 export function MarkupShape(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true, stack, ghost } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g && showCones && !g.fov?.hidden ? g.fov : undefined
@@ -58,11 +64,12 @@ export function MarkupShape(props: Props) {
           editable={!!editFov} onChange={onFovChange} />
       )}
       <Group id={m.id} name="markup" x={g.x} y={g.y} rotation={g.rotation}
-        draggable={draggable} listening={listening} opacity={m.style.opacity}
+        draggable={draggable} listening={listening && !ghost} opacity={m.style.opacity}
         onDragMove={fov ? onDragMove : undefined}
         onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
         {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
-          : m.type === 'device' ? <DeviceBody m={m} g={g} set={symbolSet} />
+          : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
+            : <DeviceBody m={m} g={g} set={symbolSet} zoom={zoom} stack={stack} />)
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
           <PointHandles points={g.points} zoom={zoom} onChange={onPointsChange} />
@@ -72,24 +79,47 @@ export function MarkupShape(props: Props) {
   )
 }
 
-function DeviceBody({ m, g, set }: { m: Markup; g: BoxGeometry; set?: SymbolSet }) {
+function DeviceBody({ m, g, set, zoom, stack }: { m: Markup; g: BoxGeometry; set?: SymbolSet; zoom: number; stack?: StackView }) {
   const icon = useImage(set?.icon)
   const color = set?.color ?? '#868e96'
   const r = Math.min(g.width, g.height) / 2
-  const status = STATUSES.find(s => s.value === m.status)
+  const cx = g.width / 2, cy = g.height / 2
+  const statuses = stack ? stack.statuses : [m.status ?? '']
+  const distinct = [...new Set(statuses)]
+  const mixed = distinct.length > 1
+  const status = mixed ? undefined : STATUSES.find(s => s.value === distinct[0])
   const fontSize = Math.max(4, r * 0.7)
-  const label = m.tag || set?.tag_prefix || '?'
+  const label = (stack ? stack.label : m.tag) || set?.tag_prefix || '?'
+  const bx = cx + r * 0.75, by = cy - r * 0.75, br = r * 0.3
+  const mixColors = distinct.map(v => STATUSES.find(s => s.value === v)?.color ?? '#adb5bd')
+  // Quantity pill: sized in screen pixels so it stays readable at any zoom
+  const qfs = Math.max(r * 0.6, 11 / zoom)
+  const qtext = stack ? `\u00d7${stack.count}` : ''
+  const qw = qfs * (0.62 * qtext.length + 0.9), qh = qfs * 1.45
+  const qx = cx + r * 0.8, qy = cy + r * 0.8
   return (
     <>
-      <Circle x={g.width / 2} y={g.height / 2} radius={r} fill={color} stroke="#fff" strokeWidth={r * 0.12} />
-      {icon && <KImage image={icon} x={g.width / 2 - r * 0.62} y={g.height / 2 - r * 0.62} width={r * 1.24} height={r * 1.24} />}
-      {status && (
-        <Circle x={g.width / 2 + r * 0.75} y={g.height / 2 - r * 0.75} radius={r * 0.3}
-          fill={status.color} stroke="#fff" strokeWidth={r * 0.08} />
+      <Circle x={cx} y={cy} radius={r} fill={color} stroke="#fff" strokeWidth={r * 0.12} />
+      {icon && <KImage image={icon} x={cx - r * 0.62} y={cy - r * 0.62} width={r * 1.24} height={r * 1.24} />}
+      {status && <Circle x={bx} y={by} radius={br} fill={status.color} stroke="#fff" strokeWidth={r * 0.08} />}
+      {mixed && (
+        <>
+          <Wedge x={bx} y={by} radius={br} angle={180} rotation={90} fill={mixColors[0]} />
+          <Wedge x={bx} y={by} radius={br} angle={180} rotation={-90} fill={mixColors[1]} />
+          <Circle x={bx} y={by} radius={br} stroke="#fff" strokeWidth={r * 0.08} />
+        </>
       )}
-      <Text text={label} x={g.width / 2 - 100} y={g.height / 2 + r + r * 0.12} width={200} align="center"
+      <Text text={label} x={cx - 100} y={cy + r + r * 0.12} width={200} align="center"
         fontSize={fontSize} fontStyle="bold" fill={color} stroke="#fff" strokeWidth={fontSize * 0.18}
         fillAfterStrokeEnabled fontFamily="system-ui, sans-serif" listening={false} />
+      {stack && (
+        <>
+          <Rect x={qx - qw / 2} y={qy - qh / 2} width={qw} height={qh} cornerRadius={qh / 2} fill={color}
+            stroke="#fff" strokeWidth={qfs * 0.12} listening={false} />
+          <Text text={qtext} x={qx - qw / 2} y={qy - qh / 2} width={qw} height={qh} align="center" verticalAlign="middle"
+            fontSize={qfs} fontStyle="bold" fill="#fff" fontFamily="system-ui, sans-serif" listening={false} />
+        </>
+      )}
     </>
   )
 }
@@ -307,7 +337,7 @@ function AreaBody({ m, g, zoom, path }: { m: Markup; g: PathGeometry; zoom: numb
     if (v < best) { best = v; ax = g.points[i]; ay = g.points[i + 1] }
   }
   const fs = 14 / zoom, small = 10.5 / zoom, pad = 5 / zoom
-  const crumbText = crumbs.length ? `${crumbs.join(' › ')} ›` : ''
+  const crumbText = crumbs.length ? `${crumbs.join(' â€º ')} â€º` : ''
   const halo = { stroke: '#fff', fillAfterStrokeEnabled: true, fontFamily: 'system-ui, sans-serif', lineHeight: 1.15 }
   return (
     <>

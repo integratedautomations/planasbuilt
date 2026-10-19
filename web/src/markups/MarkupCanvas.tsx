@@ -1,11 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Layer, Rect, Stage, Transformer } from 'react-konva'
+import { Circle, Layer, Rect, Stage, Transformer } from 'react-konva'
 import type Konva from 'konva'
 import { bakeBox, bakePath, boxFromDrag, pathFromPoints, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
 import { MarkupShape } from './MarkupShape'
 import type { Change } from './useMarkups'
 import { isSheetArea } from './areas'
+import { deviceRadius, findSnapTarget, stackTop, tagRange } from './stacks'
+import type { StackIndex } from './stacks'
+import { deviceCenter } from './geometry'
 import { markupsInBox, rectFromCorners } from './selection'
 import type { Rect as Box } from './selection'
 import { AREA_STYLE, isBoxType } from './types'
@@ -50,6 +53,8 @@ interface Props {
   multiSelect: boolean
   /** Global coverage cone switch. */
   showCones: boolean
+  /** Device stacks on this page (same-set devices on one spot). */
+  stacks: StackIndex
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
@@ -61,7 +66,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -73,6 +78,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const [marquee, setMarquee] = useState<Box | null>(null)
   const marqueeStart = useRef<{ p: Pt; add: boolean } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
+  const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
   const [fovOverride, setFovOverride] = useState<{ id: string; fov: Fov } | null>(null)
 
   const byId = new Map(markups.map(m => [m.id, m]))
@@ -128,7 +134,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }))
 
   // Leaving a tool abandons its half-drawn markup
-  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
     while (node && node !== stageRef.current) {
@@ -149,8 +155,12 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (onTransformer || target.name() === 'point-handle') { consumedRef.current = true; return }
       if (hitId) {
         consumedRef.current = true
-        if (e.evt.shiftKey || multiSelect) onSelect(selectedIds.includes(hitId) ? selectedIds.filter(i => i !== hitId) : [...selectedIds, hitId])
-        else if (!selectedIds.includes(hitId)) onSelect([hitId])
+        // Tapping a stack acts on all of its members (locked ones excluded)
+        const hitStack = stacks.byId.get(hitId)
+        const group = hitStack ? hitStack.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId]
+        if (e.evt.shiftKey || multiSelect) {
+          onSelect(group.every(i => selectedIds.includes(i)) ? selectedIds.filter(i => !group.includes(i)) : [...selectedIds, ...group.filter(i => !selectedIds.includes(i))])
+        } else if (!group.every(i => selectedIds.includes(i))) onSelect(group)
       } else if (boxSelect || e.evt.shiftKey) {
         consumedRef.current = true // empty space with Shift / box mode: marquee
         const p = pointer()
@@ -181,6 +191,17 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
       if (!set) return
       const size = 24
+      // Close to a device of the same set: land exactly on it so it joins its stack
+      const snap = findSnapTarget(markups, p, set.id)
+      setSnapHint(null)
+      if (snap) {
+        const sg = snap.geometry as BoxGeometry
+        finish(newMarkup('device', {
+          x: sg.x, y: sg.y, width: sg.width, height: sg.height, rotation: sg.rotation,
+          ...(set.has_fov ? { fov: { direction: -90, angle: 90, range: 150 } } : {}),
+        }))
+        return
+      }
       finish(newMarkup('device', {
         x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0,
         ...(set.has_fov ? { fov: { direction: -90, angle: 90, range: 150 } } : {}),
@@ -224,6 +245,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (marqueeStart.current) {
       marqueeRect.current = rectFromCorners(marqueeStart.current.p, pointer())
       setMarquee(marqueeRect.current)
+      return
+    }
+    if (tool === 'device' && !draft && !readOnly) {
+      const t = findSnapTarget(markups, pointer(), newBase.symbolSetId)
+      if (t) {
+        const c = deviceCenter(t.geometry as BoxGeometry)
+        setSnapHint(h => (h && h.x === c.x && h.y === c.y ? h : { ...c, r: deviceRadius(t.geometry as BoxGeometry) }))
+      } else setSnapHint(h => (h ? null : h))
       return
     }
     if (!draft) return
@@ -313,18 +342,21 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const stage = stageRef.current
     const id = markupIdOf(e.target)
     if (!stage || !id || e.target.name() !== 'markup') return
-    // Transformer drags every attached node together; save them all
-    const ids = selectedIds.includes(id) ? selectedIds : [id]
+    // Everything selected moves rigidly with the dragged node (a stack's members move as one step)
+    const dragged = byId.get(id)
+    if (!dragged) return
+    const dx = e.target.x() - dragged.geometry.x, dy = e.target.y() - dragged.geometry.y
+    if (dx === 0 && dy === 0) return
+    const grp = stacks.byId.get(id)
+    const ids = selectedIds.includes(id) ? selectedIds : grp ? grp.members.map(x => x.id) : [id]
     const change: Change = []
     for (const mid of ids) {
       const m = byId.get(mid)
-      const node = stage.findOne<Konva.Group>('#' + mid)
-      if (!m || !node) continue
-      if (node.x() === m.geometry.x && node.y() === m.geometry.y) continue
-      change.push({ before: m, after: { ...m, geometry: { ...m.geometry, x: node.x(), y: node.y() } } })
+      if (!m || lockedIds.has(mid)) continue
+      change.push({ before: m, after: { ...m, geometry: { ...m.geometry, x: m.geometry.x + dx, y: m.geometry.y + dy } } })
     }
     commit(change)
-    if (!selectedIds.includes(id)) onSelect([id])
+    if (!selectedIds.includes(id)) onSelect(grp ? grp.members.map(x => x.id) : [id])
   }
 
   // Konva reports two quick clicks anywhere as a double-click; only finish when both
@@ -367,8 +399,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
             ? { ...m, geometry: { ...m.geometry, fov: fovOverride.fov } } : m
           const editable = single?.id === m.id && !readOnly && tool === 'select'
             && 'points' in m.geometry && m.type !== 'freehand' && !lockedIds.has(m.id) && !isSheetArea(m)
+          const stk = stacks.byId.get(m.id)
           return (
-            <MarkupShape key={m.id} markup={shown} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
+            <MarkupShape key={m.id} markup={shown}
+              ghost={!!stk && stackTop(stk).id !== m.id}
+              stack={stk && stackTop(stk).id === m.id ? { count: stk.members.length, label: tagRange(stk.members.map(x => x.tag ?? '')), statuses: stk.members.map(x => x.status ?? '') } : undefined} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
               areaPath={m.type === 'area' ? areaPaths.get(m.id) : undefined}
               symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
               showCones={showCones}
@@ -391,6 +426,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         })}
         {marquee && <Rect x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} listening={false}
           stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} fill="rgba(25,113,194,0.12)" />}
+        {snapHint && <Circle x={snapHint.x} y={snapHint.y} radius={snapHint.r * 1.2} listening={false}
+          stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[4 / zoom, 3 / zoom]} opacity={0.7} />}
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}

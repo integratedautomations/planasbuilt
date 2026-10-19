@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
+import { STATUSES } from './types'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
 import { DeviceFields } from './DeviceFields'
 import { Attribution, HistorySection } from './MarkupInfo'
@@ -7,6 +8,8 @@ import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
 import { summarize } from './measure'
 import type { MeasureTotal } from './measure'
+import { tagRange } from './stacks'
+import type { Stack, StackIndex } from './stacks'
 
 export type PanelTab = 'props' | 'measure' | 'layers' | 'areas'
 
@@ -83,6 +86,12 @@ interface Props {
   symbolSets: Map<string, SymbolSet>
   /** Per-viewer display options shown at the top of the Layers tab. */
   display: { showCones: boolean; onShowCones: (v: boolean) => void }
+  /** Device stacks on this page and the actions the stack panel needs. */
+  stacks: StackIndex
+  onSelectIds: (ids: string[]) => void
+  onAddToStack: (stack: Stack) => void
+  onPullOut: (m: Markup) => void
+  onDeleteStack: (stack: Stack) => void
 }
 
 export function SidePanel(p: Props) {
@@ -146,18 +155,63 @@ function Properties(p: Props) {
   if (selected.length && selected.every(m => m.type === 'device')) {
     const first = selected[0]
     const sameSet = selected.every(m => m.symbol_set_id === first.symbol_set_id)
+    const stack = p.stacks.byId.get(first.id)
+    // Whole stack selected -> stack panel; one member of a stack -> back link + pull out
+    const whole = !!stack && selected.length === stack.members.length && selected.every(m => p.stacks.byId.get(m.id) === stack)
+    const one = selected.length === 1 && !!stack
+    const set = sameSet && first.symbol_set_id ? symbolSets.get(first.symbol_set_id) : undefined
     return (
       <div className="panel-body">
-        <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate}
-          set={sameSet && first.symbol_set_id ? symbolSets.get(first.symbol_set_id) : undefined}
+        {one && <button className="stack-back" onClick={() => p.onSelectIds(stack.members.map(m => m.id))}>{'‹'} Back to stack ({stack.members.length})</button>}
+        {whole && <StackMembers stack={stack} set={set} onPick={id => p.onSelectIds([id])} />}
+        <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate} set={set}
+          heading={whole ? `Stack ×${selected.length} · ${tagRange(selected.map(m => m.tag ?? ''))}` : undefined}
           areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
         <LayerSelect {...p} />
-        {!readOnly && <button className="danger" onClick={onDelete}>Delete {selected.length > 1 ? `${selected.length} devices` : 'device'}</button>}
+        {!readOnly && stack && (one || whole) && (
+          <div className="stack-actions">
+            <button onClick={() => p.onAddToStack(stack)}>+1 to stack</button>
+            {one && <button onClick={() => p.onPullOut(first)}>Pull out</button>}
+          </div>
+        )}
+        {!readOnly && whole && (
+          <button className="danger stack-delete" onClick={() => {
+            if (window.confirm(`Delete this stack of ${stack.members.length} devices (${tagRange(stack.members.map(m => m.tag ?? ''))})?`)) p.onDeleteStack(stack)
+          }}>Delete stack</button>
+        )}
+        {!readOnly && !whole && <button className="danger" onClick={onDelete}>Delete {selected.length > 1 ? `${selected.length} devices` : 'device'}</button>}
       </div>
     )
   }
   if (selected.length === 1 && selected[0].type === 'area') return <AreaProperties {...p} />
   return <StyleProperties {...p} />
+}
+
+/** Key field shown beside a stacked device: an IP/address field if filled in, else the serial number. */
+function keyPreview(m: Markup, set?: SymbolSet): string {
+  const pick = (set?.fields ?? []).find(f => (f.type === 'ip' || /address|ip/i.test(f.key)) && m.fields?.[f.key] !== undefined && m.fields[f.key] !== '')
+  const v = pick ? m.fields?.[pick.key] : m.fields?.serial
+  return v === undefined || v === '' ? '' : `${pick ? `${pick.label}: ` : 'S/N '}${v}`
+}
+
+function StackMembers({ stack, set, onPick }: { stack: Stack; set?: SymbolSet; onPick: (id: string) => void }) {
+  return (
+    <ul className="layer-list stack-members" aria-label="Devices in this stack">
+      {stack.members.map(m => {
+        const st = STATUSES.find(s => s.value === m.status)
+        return (
+          <li key={m.id} style={{ display: 'block' }}>
+            <button className="stack-row" onClick={() => onPick(m.id)}>
+              <span className="dot" title={st?.label ?? 'No status'} style={{ background: st?.color ?? '#adb5bd' }} />
+              <span className="stack-tag">{m.tag || 'New'}</span>
+              <span className="muted small stack-key">{keyPreview(m, set)}</span>
+              <span className="muted" aria-hidden>{'›'}</span>
+            </button>
+          </li>
+        )
+      })}
+    </ul>
+  )
 }
 
 function AreaProperties(p: Props) {
@@ -319,7 +373,7 @@ function StyleProperties(p: Props) {
               if (first) onUpdate(m => ({ ...m, text: e.target.value }), `text.${first.id}`)
               else onStampText(e.target.value)
             }}>
-              {first && <option value="">Choose…</option>}
+              {first && <option value="">Choose{'…'}</option>}
               {STAMPS.map(s => <option key={s}>{s}</option>)}
             </select>
           </label>
@@ -391,7 +445,7 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
               {hidden.has(l.id) ? '◌' : '●'}
             </button>
             <button className="icon-btn small" title={locked.has(l.id) ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(l.id)}>
-              {locked.has(l.id) ? '🔒' : '🔓'}
+              {locked.has(l.id) ? '\u{1F512}' : '\u{1F513}'}
             </button>
           </li>
         ))}
@@ -407,7 +461,7 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
                 {hidden.has(key) ? '◌' : '●'}
               </button>
               <button className="icon-btn small" title={locked.has(key) ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(key)}>
-                {locked.has(key) ? '🔒' : '🔓'}
+                {locked.has(key) ? '\u{1F512}' : '\u{1F513}'}
               </button>
             </li>
           )

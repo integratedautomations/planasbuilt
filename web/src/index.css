@@ -264,3 +264,12 @@ input.invalid { border-color: var(--danger); }
 @media (max-width: 640px) {
   .selection-bar { top: 6px; padding: 4px; }
 }
+
+/* Device stacks */
+.stack-members { margin: 0 0 8px; }
+.stack-row { display: flex; width: 100%; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px; text-align: left; }
+.stack-row .stack-tag { font-weight: 600; }
+.stack-row .stack-key { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.stack-back { min-height: 44px; border: none; background: transparent; color: var(--accent); font-weight: 600; text-align: left; padding: 0 4px; }
+.stack-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stack-actions button, .stack-delete { min-height: 44px; }

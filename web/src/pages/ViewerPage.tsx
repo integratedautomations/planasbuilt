@@ -10,6 +10,8 @@ import type { View } from '../viewer/usePanZoom'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { SelectionBar } from '../markups/SelectionBar'
+import { detectStacks } from '../markups/stacks'
+import type { Stack } from '../markups/stacks'
 import { ToolRail, TOOLS } from '../markups/ToolRail'
 import { SidePanel, sheetHeight } from '../markups/SidePanel'
 import type { PanelTab, SheetSnap } from '../markups/SidePanel'
@@ -233,6 +235,7 @@ export function ViewerPage() {
   const areaPaths = useMemo(() => new Map(pageAreas.map(a => [a.id, areaPathIn(areaIndex, a)])), [areaIndex, pageAreas])
   const counts = useMemo(() => deviceCounts(areaIndex, store.markups.values()), [areaIndex, store.markups])
   const canvasMarkups = useMemo(() => showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area'), [pageMarkups, showAreas])
+  const stackIndex = useMemo(() => detectStacks(pageMarkups), [pageMarkups])
   const lockedIds = useMemo(
     () => new Set(pageMarkups.filter(m => flagged(locked, m)).map(m => m.id)),
     [pageMarkups, locked]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -331,6 +334,31 @@ export function ViewerPage() {
     store.commit(selected.map(m => ({ before: m, after: null })))
     setSelectedIds([])
   }, [readOnly, selected, store])
+
+  /** Adds one more device of the stack's set at the same spot; the server numbers it. One undo step. */
+  const addToStack = useCallback((stack: Stack) => {
+    if (readOnly) return
+    const top = stack.members[stack.members.length - 1]
+    const m: Markup = {
+      id: uuid(), document_id: top.document_id, page: top.page, type: 'device', geometry: { ...top.geometry },
+      style: { ...top.style }, text: '', layer_id: top.layer_id, symbol_set_id: top.symbol_set_id, tag: '', status: 'planned', fields: {},
+    }
+    store.commit([{ before: null, after: m }])
+    setSelectedIds([m.id])
+  }, [readOnly, store])
+
+  /** Moves one member 1.5 diameters to the right so it stands alone. */
+  const pullOut = useCallback((m: Markup) => {
+    if (readOnly || !('width' in m.geometry)) return
+    const d = Math.min(m.geometry.width, m.geometry.height)
+    store.commit([{ before: m, after: { ...m, geometry: { ...m.geometry, x: m.geometry.x + d * 1.5 } } }])
+  }, [readOnly, store])
+
+  const deleteStack = useCallback((stack: Stack) => {
+    if (readOnly) return
+    store.commit(stack.members.map(m => ({ before: m, after: null })))
+    setSelectedIds([])
+  }, [readOnly, store])
 
   const updateSelected = useCallback((patch: (m: Markup) => Markup, mergeKey: string) => {
     if (readOnly) return
@@ -489,7 +517,7 @@ export function ViewerPage() {
             <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
               zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
               readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
-              consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
+              consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
               onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
               newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
               onCreated={m => {
@@ -515,6 +543,7 @@ export function ViewerPage() {
             layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
             hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
             display={{ showCones, onShowCones: setShowCones }}
+            stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
             onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
             areas={{
               pageAreas, parentOf: id => areaIndex.parents.get(id) ?? null,

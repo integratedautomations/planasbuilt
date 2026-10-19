@@ -17,15 +17,22 @@ interface Props {
   onUpdate: (patch: (m: Markup) => Markup, mergeKey: string) => void
   /** Computed area names (outermost first) for a single device; omitted for multi-select. */
   areaPath?: string[]
+  /** Heading for multi-device mode (default "N devices"), e.g. "Stack of 6". */
+  heading?: string
 }
 
 /** Device data entry: tag, install status, hardware fields and the symbol set's own fields. */
-export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath }: Props) {
+export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, heading }: Props) {
   const d = devices[0]
   const single = devices.length === 1
   const setStatus = (status: Status) => onUpdate(m => ({ ...m, status }), 'status')
   const setField = (key: string, value: string | number | boolean) =>
-    onUpdate(m => ({ ...m, fields: { ...m.fields, [key]: value } }), `field.${key}.${d.id}`)
+    onUpdate(m => ({ ...m, fields: { ...m.fields, [key]: value } }), `field.${key}.${single ? d.id : 'all'}`)
+  /** Multi-device: the shared value when every device agrees, otherwise empty + "Mixed". */
+  const shared = (key: string) => {
+    const vals = devices.map(m => m.fields?.[key] ?? '')
+    return { value: d.fields?.[key], mixed: vals.some(v => v !== vals[0]) }
+  }
   const [scanKey, setScanKey] = useState<string | null>(null)
   const scanProps = (key: string) => (key === 'serial' || key === 'mac') && !readOnly ? { onScan: () => setScanKey(key) } : {}
   const onScanned = (text: string) => {
@@ -45,7 +52,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath }: Pro
       <div className="device-head">
         <span className="set-icon" style={{ background: set?.color ?? '#868e96' }}>{set?.icon && <img src={set.icon} alt="" />}</span>
         <div>
-          <div className="panel-heading">{single ? d.tag || 'New device' : `${devices.length} devices`}</div>
+          <div className="panel-heading">{single ? d.tag || 'New device' : heading ?? `${devices.length} devices`}</div>
           <div className="muted small">{set?.name ?? 'Unknown set'}</div>
           {single && <Attribution markup={d} />}
           {single && areaPath && areaPath.length > 0 && (
@@ -93,6 +100,10 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath }: Pro
           )}
         </>
       )}
+      {!single && set?.fields.map(f => {
+        const sh = shared(f.key)
+        return <FieldInput key={f.key} def={f} value={sh.mixed ? undefined : sh.value} mixed={sh.mixed} onChange={v => setField(f.key, v)} />
+      })}
       {scanKey && <BarcodeScanner onResult={onScanned} onClose={() => setScanKey(null)} />}
     </fieldset>
     {/* Outside the disabled fieldset so viewers can still open and browse photos */}
@@ -107,15 +118,15 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath }: Pro
   )
 }
 
-function FieldInput({ def, value, onChange, onScan }: { def: FieldDef; value: string | number | boolean | undefined; onChange: (v: string | number | boolean) => void; onScan?: () => void }) {
+function FieldInput({ def, value, onChange, onScan, mixed }: { def: FieldDef; value: string | number | boolean | undefined; onChange: (v: string | number | boolean) => void; onScan?: () => void; mixed?: boolean }) {
   if (def.type === 'checkbox') {
-    return <label className="check"><input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} /> {def.label}</label>
+    return <label className="check"><input type="checkbox" checked={!!value} ref={el => { if (el) el.indeterminate = !!mixed }} onChange={e => onChange(e.target.checked)} /> {def.label}{mixed ? ' (Mixed)' : ''}</label>
   }
   if (def.type === 'select') {
     return (
       <label className="field">{def.label}
         <select value={String(value ?? '')} onChange={e => onChange(e.target.value)}>
-          <option value="">—</option>
+          <option value="">{mixed ? 'Mixed' : '—'}</option>
           {(def.options ?? []).map(o => <option key={o}>{o}</option>)}
         </select>
       </label>
@@ -129,7 +140,7 @@ function FieldInput({ def, value, onChange, onScan }: { def: FieldDef; value: st
       <input className={bad ? 'invalid' : ''} value={v}
         type={def.type === 'date' ? 'date' : 'text'}
         inputMode={def.type === 'number' ? 'numeric' : def.type === 'ip' ? 'decimal' : undefined}
-        placeholder={def.type === 'ip' ? '192.168.1.10' : undefined}
+        placeholder={mixed ? 'Mixed' : def.type === 'ip' ? '192.168.1.10' : undefined}
         onChange={e => onChange(def.type === 'number' && e.target.value !== '' && !isNaN(+e.target.value) ? +e.target.value : e.target.value)} />
       {onScan && <button type="button" className="scan-btn" onClick={onScan} aria-label={`Scan ${def.label}`} title="Scan barcode">Scan</button>}
       </span>
