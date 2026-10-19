@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, DocumentSummary, Member, Project, Role, User } from '../api'
 import { loadPdf } from '../pdf'
+import { exportProjectSchedule } from '../schedule/exportProject'
 
 export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
@@ -10,6 +11,7 @@ export function ProjectPage({ user }: { user: User }) {
   const [members, setMembers] = useState<Member[]>([])
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState('')
+  const [exporting, setExporting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -44,6 +46,14 @@ export function ProjectPage({ user }: { user: User }) {
     if (fileInput.current) fileInput.current.value = ''
   }
 
+  async function exportSchedule() {
+    if (!project) return
+    setExporting(true); setError('')
+    try { await exportProjectSchedule(project.id, project.name) }
+    catch (err) { setError(`Export failed: ${(err as Error).message}`) }
+    finally { setExporting(false) }
+  }
+
   async function remove(doc: DocumentSummary) {
     if (!confirm(`Delete "${doc.name}"? This removes the plan and its markups.`)) return
     await api(`/documents/${doc.id}`, { method: 'DELETE' })
@@ -63,6 +73,9 @@ export function ProjectPage({ user }: { user: User }) {
         <div className="row">
           <h2>Plans</h2>
           <span className="spacer" />
+          <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
+            {exporting ? 'Exporting…' : 'Export schedule'}
+          </button>
           {canEdit && (
             <>
               <input ref={fileInput} type="file" accept="application/pdf,.pdf" multiple hidden

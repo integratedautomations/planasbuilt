@@ -44,6 +44,9 @@ export interface Markup {
   updated_by_name?: string | null
   created_at?: string
   updated_at?: string
+  /** Only on rows from the project-wide list endpoint. */
+  document_name?: string
+  photo_count?: number
 }
 
 export type Status = '' | 'planned' | 'installed' | 'tested' | 'punch'

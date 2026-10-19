@@ -273,3 +273,5 @@ input.invalid { border-color: var(--danger); }
 .stack-back { min-height: 44px; border: none; background: transparent; color: var(--accent); font-weight: 600; text-align: left; padding: 0 4px; }
 .stack-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .stack-actions button, .stack-delete { min-height: 44px; }
+
+.list-btn-label { margin-left: 4px; font-size: 14px; }

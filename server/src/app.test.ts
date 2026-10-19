@@ -227,6 +227,57 @@ describe('milestone 1 api', () => {
     })
   })
 
+  describe('project-wide reads', () => {
+    it('aggregates markups across documents, filters by type, counts photos, enforces roles', async () => {
+      const h = { authorization: `Bearer ${admin}` }
+      const doc2 = (await app.inject({ method: 'POST', url: `/api/projects/${projectId}/documents`,
+        headers: { ...h, 'content-type': 'multipart/form-data; boundary=XX' }, payload: multipartBody('XX') })).json().id
+      const m2 = '77777777-7777-4777-8777-777777777777'
+      await app.inject({ method: 'PUT', url: `/api/documents/${doc2}/markups/${m2}`, headers: h,
+        payload: { page: 2, type: 'device', geometry: { x: 0, y: 0, width: 24, height: 24, rotation: 0 } } })
+      const b = 'PB2', jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2])
+      const aid = '77777777-7777-4777-8777-777777777778'
+      const up = await app.inject({ method: 'POST', url: `/api/markups/${m2}/attachments`,
+        headers: { ...h, 'content-type': `multipart/form-data; boundary=${b}` },
+        payload: Buffer.concat([
+          Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="id"\r\n\r\n${aid}\r\n`),
+          Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="photo"; filename="a.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`),
+          jpg, Buffer.from(`\r\n--${b}--\r\n`)]) })
+      expect(up.statusCode).toBe(200)
+
+      const all = (await app.inject({ url: `/api/projects/${projectId}/markups`, headers: h })).json()
+      const docIds = new Set(all.map((m: any) => m.document_id))
+      expect(docIds.has(docId) && docIds.has(doc2)).toBe(true)
+      expect(all.every((m: any) => m.document_name === 'E-101' && typeof m.created_by_name === 'string')).toBe(true)
+      expect(all.find((m: any) => m.id === m2)).toMatchObject({ photo_count: 1, page: 2, type: 'device' })
+      expect(all.filter((m: any) => m.id !== m2).every((m: any) => m.photo_count === 0)).toBe(true)
+
+      const devices = (await app.inject({ url: `/api/projects/${projectId}/markups?type=device`, headers: h })).json()
+      expect(devices.length).toBeGreaterThan(0)
+      expect(devices.length).toBeLessThan(all.length)
+      expect(devices.every((m: any) => m.type === 'device')).toBe(true)
+
+      const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+      const vh = { authorization: `Bearer ${viewer}` }
+      expect((await app.inject({ url: `/api/projects/${projectId}/markups`, headers: vh })).statusCode).toBe(200)
+      expect((await app.inject({ url: `/api/projects/${projectId}/scales`, headers: vh })).statusCode).toBe(200)
+
+      await app.inject({ method: 'POST', url: '/api/users', headers: h,
+        payload: { email: 'out@x.com', name: 'Out', password: 'password1' } })
+      const out = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'out@x.com', password: 'password1' } })).json().token
+      const oh = { authorization: `Bearer ${out}` }
+      expect((await app.inject({ url: `/api/projects/${projectId}/markups`, headers: oh })).statusCode).toBe(403)
+      expect((await app.inject({ url: `/api/projects/${projectId}/scales`, headers: oh })).statusCode).toBe(403)
+
+      // scales
+      await app.inject({ method: 'PUT', url: `/api/documents/${doc2}/scales/2`, headers: h, payload: { points_per_foot: 12, label: '1/6' } })
+      await app.inject({ method: 'PUT', url: `/api/documents/${docId}/scales/1`, headers: h, payload: { points_per_foot: 6 } })
+      const scales = (await app.inject({ url: `/api/projects/${projectId}/scales`, headers: h })).json()
+      expect(scales).toContainEqual({ document_id: doc2, page: 2, points_per_foot: 12, label: '1/6' })
+      expect(scales).toContainEqual({ document_id: docId, page: 1, points_per_foot: 6, label: '' })
+    })
+  })
+
   describe('photo attachments', () => {
     const mk = '11111111-1111-4111-8111-111111111111'
     const aid = '44444444-4444-4444-8444-444444444444'

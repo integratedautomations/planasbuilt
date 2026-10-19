@@ -412,6 +412,32 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
        WHERE m.document_id = $1 AND NOT m.deleted ORDER BY m.created_at`, [doc.id])
   })
 
+  app.get('/api/projects/:id/markups', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    const type = (req.query as any)?.type
+    const params: any[] = [id]
+    let typeClause = ''
+    if (typeof type === 'string' && type) { params.push(type); typeClause = ' AND m.type = $2' }
+    const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
+    return db.query(
+      `SELECT ${cols}, cu.name AS created_by_name, uu.name AS updated_by_name, d.name AS document_name,
+              (SELECT count(*)::int FROM attachments a WHERE a.markup_id = m.id) AS photo_count
+       FROM markups m JOIN documents d ON d.id = m.document_id
+       LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
+       WHERE d.project_id = $1 AND NOT m.deleted${typeClause}
+       ORDER BY d.name, m.page, m.created_at`, params)
+  })
+
+  app.get('/api/projects/:id/scales', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    return db.query(
+      `SELECT s.document_id, s.page, s.points_per_foot, s.label
+       FROM page_scales s JOIN documents d ON d.id = s.document_id
+       WHERE d.project_id = $1 ORDER BY d.name, s.page`, [id])
+  })
+
   // ---- Change history ----
   const stable = (v: any): string => {
     if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']'

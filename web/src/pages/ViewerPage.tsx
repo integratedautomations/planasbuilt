@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, documentFileUrl, post } from '../api'
 import type { Project } from '../api'
 import { clampRenderScale, loadPdf } from '../pdf'
@@ -24,6 +24,8 @@ import { useMarkups } from '../markups/useMarkups'
 import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
+import { MarkupsList } from '../schedule/MarkupsList'
+import type { JumpTarget } from '../schedule/MarkupsList'
 
 interface ScaleRow { page: number; points_per_foot: number; label: string; updated_at: string }
 interface DocMeta { id: string; name: string; revisions: { revision: number; page_count: number }[] }
@@ -108,6 +110,13 @@ export function ViewerPage() {
   const [meta, setMeta] = useState<DocMeta | null>(null)
   const [project, setProject] = useState<Project | null>(null)
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
+  /** Which document `pdf` was loaded for, and which pdf `page` came from (both lag a document switch). */
+  const [pdfFor, setPdfFor] = useState('')
+  const [pageSrc, setPageSrc] = useState<PDFDocumentProxy | null>(null)
+  const [showList, setShowList] = useState(false)
+  const [jumpTick, setJumpTick] = useState(0)
+  const pendingJump = useRef<{ id: string; page: number } | null>(null)
+  const navigate = useNavigate()
   const [pageNum, setPageNum] = useState(1)
   const [page, setPage] = useState<PDFPageProxy | null>(null)
   const [error, setError] = useState('')
@@ -183,14 +192,14 @@ export function ViewerPage() {
       setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {})
     let cancelled = false
     const task = loadPdf(documentFileUrl(documentId))
-    task.promise.then(setPdf).catch(e => { if (!cancelled) setError(`Could not open PDF: ${e.message}`) })
+    task.promise.then(p => { setPdf(p); setPdfFor(documentId) }).catch(e => { if (!cancelled) setError(`Could not open PDF: ${e.message}`) })
     return () => { cancelled = true; task.destroy() }
   }, [documentId, projectId])
 
   useEffect(() => {
     if (!pdf) return
     let cancelled = false
-    pdf.getPage(pageNum).then(p => { if (!cancelled) setPage(p) })
+    pdf.getPage(pageNum).then(p => { if (!cancelled) { setPage(p); setPageSrc(pdf) } })
     setSelectedIds([])
     return () => { cancelled = true }
   }, [pdf, pageNum])
@@ -242,6 +251,25 @@ export function ViewerPage() {
   const selected = useMemo(
     () => selectedIds.map(id => store.markups.get(id)).filter((m): m is Markup => !!m),
     [selectedIds, store.markups])
+
+  /** Jump to a markup from the list: switch document/page if needed, then select and center it. */
+  const jumpTo = useCallback((t: JumpTarget) => {
+    pendingJump.current = { id: t.id, page: t.page }
+    if (t.documentId !== documentId) navigate(`/projects/${projectId}/documents/${t.documentId}`)
+    else { setPageNum(t.page); setJumpTick(n => n + 1) }
+    if (isPhone) setShowList(false)
+  }, [documentId, projectId, navigate, isPhone])
+
+  useEffect(() => {
+    const j = pendingJump.current
+    if (!j || !page || !pdf || pageSrc !== pdf || pdfFor !== documentId || pageNum !== j.page || page.pageNumber !== j.page || !store.loaded) return
+    const m = store.markups.get(j.id)
+    if (!m || m.document_id !== documentId) return
+    pendingJump.current = null
+    setSelectedIds([m.id])
+    const a = anchorOf(m)
+    centerOn(a.x, a.y, Math.max(view.current.zoom, 1))
+  }, [page, pageSrc, pdf, pdfFor, documentId, pageNum, store.loaded, store.markups, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Phones: the properties sheet follows the selection.
   const hasSelection = selectedIds.length > 0
@@ -411,6 +439,7 @@ export function ViewerPage() {
       else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
       else if (e.key === 'Escape') { markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select') }
       else if (e.key === 'Enter') markupRef.current?.finishDraft()
+      else if (k === 'q') setShowList(s => !s)
       else if (k === 'x') { setBoxMode(b => !b); setTool('select') }
       else if (e.key === ' ' && !e.repeat) { e.preventDefault(); setSpaceHeld(true) }
       else if (e.key === 'PageDown') goTo(pageNum + 1)
@@ -466,6 +495,8 @@ export function ViewerPage() {
         <button className={`scale-badge hide-sm${pageScale ? '' : ' warn'}`} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
           {pageScale ? pageScale.label : 'No scale'}
         </button>
+        <button className={`icon-btn${showList ? ' active' : ''}`} title="Markups list (Q)" aria-label="List" aria-pressed={showList}
+          onClick={() => setShowList(s => !s)}>☷<span className="hide-sm list-btn-label">List</span></button>
         <button className={`icon-btn${showPanel ? ' active' : ''}`} title="Properties & layers" onClick={() => setShowPanel(s => !s)}>⚙</button>
       </header>
       <div className="viewer-body">
@@ -561,6 +592,12 @@ export function ViewerPage() {
             sheet={isPhone ? { snap, onSnap: setSnap, onClose: () => setShowPanel(false) } : undefined} />
         )}
       </div>
+      {showList && (
+        <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
+          pageNum={pageNum} markups={store.markups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
+          selectedIds={selectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone}
+          onJump={jumpTo} onClose={() => setShowList(false)} />
+      )}
     </div>
   )
 }
