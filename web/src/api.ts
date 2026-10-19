@@ -51,7 +51,15 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const post = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
-export const documentFileUrl = (id: string) => `/api/documents/${id}/file?token=${encodeURIComponent(getToken() ?? '')}`
+export const documentFileUrl = (id: string, revisionId?: string) =>
+  `/api/documents/${id}/file?token=${encodeURIComponent(getToken() ?? '')}` + (revisionId ? `&revision=${encodeURIComponent(revisionId)}` : '')
+
+export interface DocumentRevision {
+  id: string; revision: number; page_count: number; created_at: string
+  uploaded_by?: string | null; uploaded_by_name?: string | null
+}
+/** Answer to uploading a new revision: markups on pages the new file doesn't have are kept and reported. */
+export type RevisionUpload = DocumentRevision & { orphaned_markups: number; orphaned_pages: number[] }
 
 export interface Attachment {
   id: string; markup_id: string; caption: string; width: number; height: number

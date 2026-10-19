@@ -1,0 +1,119 @@
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFString } from 'pdf-lib'
+import type { PDFObject } from 'pdf-lib'
+import { pageBoxOf } from './writer'
+import type { PageBox } from './coords'
+
+/** A PDF annotation reduced to the fields the importer cares about (all coordinates in user space). */
+export interface RawAnnot {
+  /** 1-based page number. */
+  page: number
+  subtype: string
+  rect: number[]
+  /** /RD margins (left, bottom, right, top). */
+  rd?: number[]
+  contents: string
+  author: string
+  name: string
+  subject: string
+  color: number[] | null
+  interior: number[] | null
+  opacity: number
+  borderWidth: number
+  dash?: number[]
+  vertices?: number[]
+  line?: number[]
+  inkList?: number[][]
+  quadPoints?: number[]
+  lineEnds?: string[]
+  intent?: string
+  cloud?: boolean
+  da?: string
+  stampName?: string
+  flags: number
+  /** Our custom /PlanAsBuilt key (full markup JSON). */
+  payload?: string
+}
+
+type Dict = PDFDict
+
+function numbers(doc: PDFDocument, d: Dict, key: string): number[] | undefined {
+  const a = doc.context.lookupMaybe(d.get(PDFName.of(key)), PDFArray)
+  if (!a) return undefined
+  const out: number[] = []
+  for (let i = 0; i < a.size(); i++) {
+    const n = doc.context.lookupMaybe(a.get(i), PDFNumber)
+    if (!n) return undefined
+    out.push(n.asNumber())
+  }
+  return out
+}
+
+function str(doc: PDFDocument, d: Dict, key: string): string {
+  const o = doc.context.lookup(d.get(PDFName.of(key)))
+  if (o instanceof PDFString || o instanceof PDFHexString) { try { return o.decodeText() } catch { return '' } }
+  if (o instanceof PDFName) return o.decodeText()
+  return ''
+}
+
+function nameOf(doc: PDFDocument, v: PDFObject | undefined): string {
+  const o = v ? doc.context.lookup(v) : undefined
+  return o instanceof PDFName ? o.decodeText() : ''
+}
+
+/** Reads every markup-type annotation of the document (links, widgets and popups are skipped). */
+export function readAnnotations(doc: PDFDocument): { page: number; box: PageBox; annots: RawAnnot[] }[] {
+  const out: { page: number; box: PageBox; annots: RawAnnot[] }[] = []
+  doc.getPages().forEach((page, i) => {
+    const list = page.node.Annots()
+    const annots: RawAnnot[] = []
+    for (let k = 0; list && k < list.size(); k++) {
+      const d = doc.context.lookupMaybe(list.get(k), PDFDict)
+      if (!d) continue
+      const subtype = nameOf(doc, d.get(PDFName.of('Subtype')))
+      if (!subtype || ['Link', 'Widget', 'Popup'].includes(subtype)) continue
+      const rect = numbers(doc, d, 'Rect')
+      if (!rect || rect.length < 4) continue
+      const bs = doc.context.lookupMaybe(d.get(PDFName.of('BS')), PDFDict)
+      const border = numbers(doc, d, 'Border')
+      let borderWidth = border && border.length >= 3 ? border[2] : 1
+      let dash: number[] | undefined
+      if (bs) {
+        const w = doc.context.lookupMaybe(bs.get(PDFName.of('W')), PDFNumber)
+        if (w) borderWidth = w.asNumber()
+        if (nameOf(doc, bs.get(PDFName.of('S'))) === 'D') dash = numbers(doc, bs, 'D') ?? [3]
+      }
+      const ink: number[][] = []
+      const inkArr = doc.context.lookupMaybe(d.get(PDFName.of('InkList')), PDFArray)
+      for (let j = 0; inkArr && j < inkArr.size(); j++) {
+        const sub = doc.context.lookupMaybe(inkArr.get(j), PDFArray)
+        if (!sub) continue
+        const pts: number[] = []
+        for (let q = 0; q < sub.size(); q++) { const n = doc.context.lookupMaybe(sub.get(q), PDFNumber); if (n) pts.push(n.asNumber()) }
+        ink.push(pts)
+      }
+      const le = doc.context.lookupMaybe(d.get(PDFName.of('LE')), PDFArray)
+      const lineEnds: string[] = []
+      for (let q = 0; le && q < le.size(); q++) lineEnds.push(nameOf(doc, le.get(q)))
+      const be = doc.context.lookupMaybe(d.get(PDFName.of('BE')), PDFDict)
+      const ca = doc.context.lookupMaybe(d.get(PDFName.of('CA')), PDFNumber)
+      const f = doc.context.lookupMaybe(d.get(PDFName.of('F')), PDFNumber)
+      const payload = str(doc, d, 'PlanAsBuilt')
+      annots.push({
+        page: i + 1, subtype, rect, rd: numbers(doc, d, 'RD'),
+        contents: str(doc, d, 'Contents'), author: str(doc, d, 'T'), name: str(doc, d, 'NM'), subject: str(doc, d, 'Subj'),
+        color: numbers(doc, d, 'C') ?? null, interior: numbers(doc, d, 'IC') ?? null,
+        opacity: ca ? ca.asNumber() : 1, borderWidth, dash,
+        vertices: numbers(doc, d, 'Vertices'), line: numbers(doc, d, 'L'),
+        inkList: ink.length ? ink : undefined, quadPoints: numbers(doc, d, 'QuadPoints'),
+        lineEnds: lineEnds.length ? lineEnds : undefined, intent: nameOf(doc, d.get(PDFName.of('IT'))) || undefined,
+        cloud: !!be && nameOf(doc, be.get(PDFName.of('S'))) === 'C',
+        da: str(doc, d, 'DA') || undefined,
+        stampName: nameOf(doc, d.get(PDFName.of('Name'))) || undefined,
+        flags: f ? f.asNumber() : 0,
+        payload: payload || undefined,
+      })
+    }
+    out.push({ page: i + 1, box: pageBoxOf(page), annots })
+  })
+  return out
+}

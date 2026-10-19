@@ -14,7 +14,8 @@ import type { Attachment, DocumentSummary, Project } from '../api'
 import type { Layer, Markup, SymbolSet } from '../markups/types'
 
 export type DocumentRow = DocumentSummary & { project_id: string }
-export interface PdfRow { id: string; data: ArrayBuffer; size: number; cachedAt: number }
+/** `revisionId` = which revision of the document these bytes are; a newer revision on the server makes the copy stale. */
+export interface PdfRow { id: string; data: ArrayBuffer; size: number; cachedAt: number; revisionId?: string }
 export interface ScaleRow {
   /** `${document_id}:${page}` */
   key: string; document_id: string; page: number; points_per_foot: number; label: string; updated_at?: string

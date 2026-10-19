@@ -123,6 +123,9 @@ export class Realtime {
   scalesChanged(documentId: string, by: string, clientId?: string | null) {
     this.toRoom(documentId, { type: 'scales', by }, clientId)
   }
+  revisionChanged(documentId: string, revisionId: string, revision: number, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'revision', revisionId, revision, by }, clientId)
+  }
   layersChanged(documentIds: string[], by: string, clientId?: string | null) {
     for (const id of documentIds) this.toRoom(id, { type: 'layers', by }, clientId)
   }

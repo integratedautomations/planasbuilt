@@ -342,3 +342,56 @@ describe('milestone 1 api', () => {
     })
   })
 })
+
+describe('document revisions', () => {
+  const pdf2 = Buffer.from('%PDF-1.4\n%%EOF\n% revision two\n')
+  const body = (pages: number, bytes: Buffer, b = 'RV') => Buffer.concat([
+    Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="pageCount"\r\n\r\n${pages}\r\n`),
+    Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="E-101-B.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    bytes, Buffer.from(`\r\n--${b}--\r\n`)])
+  const send = (url: string, token: string, payload: Buffer) => app.inject({ method: 'POST', url,
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'multipart/form-data; boundary=RV' }, payload })
+  let admin = '', viewer = '', doc = '', rev1 = ''
+
+  it('creates a document, then adds a revision that becomes current while the old one stays', async () => {
+    admin = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'boss@x.com', password: 'password1' } })).json().token
+    viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    const h = { authorization: `Bearer ${admin}` }
+    const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: h, payload: { name: 'Rev project' } })).json().id
+    await app.inject({ method: 'PUT', url: `/api/projects/${project}/members`, headers: h, payload: { email: 'tech@x.com', role: 'viewer' } })
+    const created = (await send(`/api/projects/${project}/documents`, admin, body(3, pdf))).json()
+    doc = created.id; rev1 = created.revision_id
+    // a markup on page 3 will be orphaned by a 2-page revision
+    const put = await app.inject({ method: 'PUT', url: `/api/documents/${doc}/markups/abababab-5555-4555-8555-555555555555`, headers: h,
+      payload: { page: 3, type: 'rect', geometry: { x: 1, y: 1, width: 5, height: 5, rotation: 0 } } })
+
+    expect(put.statusCode, put.body).toBe(200)
+    const res = await send(`/api/documents/${doc}/revisions`, admin, body(2, pdf2))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ revision: 2, page_count: 2, orphaned_markups: 1, orphaned_pages: [3] })
+
+    const list = (await app.inject({ url: `/api/documents/${doc}/revisions`, headers: h })).json()
+    expect(list.map((r: any) => r.revision)).toEqual([2, 1])
+    expect(list[0].uploaded_by_name).toBe('Boss')
+
+    const cur = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}` })
+    expect(cur.rawPayload.equals(pdf2)).toBe(true)
+    const old = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}&revision=${rev1}` })
+    expect(old.rawPayload.equals(pdf)).toBe(true)
+    // markups survive (flagged by page count on the client)
+    expect((await app.inject({ url: `/api/documents/${doc}/markups`, headers: h })).json()).toHaveLength(1)
+    const docs = (await app.inject({ url: `/api/projects/${project}/documents`, headers: h })).json()
+    expect(docs[0]).toMatchObject({ revision: 2, page_count: 2 })
+  })
+
+  it('rejects viewers, non-PDFs, unknown documents and bad revision ids', async () => {
+    expect((await send(`/api/documents/${doc}/revisions`, viewer, body(1, pdf2))).statusCode).toBe(403)
+    expect((await app.inject({ url: `/api/documents/${doc}/revisions`, headers: { authorization: `Bearer ${viewer}` } })).statusCode).toBe(200)
+    const txt = Buffer.concat([
+      Buffer.from('--RV\r\nContent-Disposition: form-data; name="file"; filename="x.txt"\r\nContent-Type: text/plain\r\n\r\nhi\r\n--RV--\r\n')])
+    expect((await send(`/api/documents/${doc}/revisions`, admin, txt)).statusCode).toBe(400)
+    expect((await send('/api/documents/99999999-9999-4999-8999-999999999999/revisions', admin, body(1, pdf2))).statusCode).toBe(404)
+    expect((await app.inject({ url: `/api/documents/${doc}/file?token=${admin}&revision=nope` })).statusCode).toBe(404)
+    expect((await app.inject({ url: `/api/documents/${doc}/file?token=${admin}&revision=99999999-9999-4999-8999-999999999999` })).statusCode).toBe(404)
+  })
+})

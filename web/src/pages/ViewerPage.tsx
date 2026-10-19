@@ -21,7 +21,7 @@ import { pathFromPoints } from '../markups/geometry'
 import type { Pt } from '../markups/geometry'
 import { areaBounds, areaPathIn, buildAreaIndex, deviceCounts, isArea, isSheetArea, parentChoices } from '../markups/areas'
 import { useMarkups } from '../markups/useMarkups'
-import { loadDocMeta, loadLayers, loadPdfBytes, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
+import { invalidatePdf, loadDocMeta, loadLayers, loadPdfBytes, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
 import { OfflineMissError } from '../offline/classify'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { SyncIndicator } from '../offline/SyncIndicator'
@@ -33,6 +33,7 @@ import { Avatars } from '../realtime/Avatars'
 import { deletedToast } from '../realtime/handlers'
 import { usePeers } from '../realtime/hooks'
 import { joinDocument, on as onSocket, sendPresence } from '../realtime/socket'
+import { PdfMenu } from '../pdfio/PdfMenu'
 import { MarkupsList } from '../schedule/MarkupsList'
 import type { JumpTarget } from '../schedule/MarkupsList'
 
@@ -128,6 +129,9 @@ export function ViewerPage() {
   const [pageNum, setPageNum] = useState(1)
   const [page, setPage] = useState<PDFPageProxy | null>(null)
   const [error, setError] = useState('')
+  /** Bumped when a new revision of this plan was uploaded: reloads the PDF. */
+  const [reloadTick, setReloadTick] = useState(0)
+  const loadedRevision = useRef<string | undefined>(undefined)
   const [notCached, setNotCached] = useState(false)
   const [showThumbs, setShowThumbs] = useState(() => window.innerWidth >= 1025)
   const [showPanel, setShowPanel] = useState(() => window.innerWidth >= 1025)
@@ -231,23 +235,39 @@ export function ViewerPage() {
     let cancelled = false
     let task: ReturnType<typeof loadPdf> | null = null
     setNotCached(false)
-    loadPdfBytes(documentId).then(bytes => {
+    loadDocMeta(documentId).then(r => r.data.revisions[0]?.id, () => undefined).then(revisionId => {
+      loadedRevision.current = revisionId
+      return loadPdfBytes(documentId, revisionId)
+    }).then(bytes => {
       if (cancelled) return
       task = loadPdf(bytes)
-      return task.promise.then(p => { if (!cancelled) { setPdf(p); setPdfFor(documentId) } })
+      return task.promise.then(p => {
+        if (cancelled) return
+        setPdf(p); setPdfFor(documentId)
+        setPageNum(n => Math.min(n, p.numPages))
+      })
     }).catch(e => {
       if (cancelled) return
       if (e instanceof OfflineMissError) setNotCached(true)
       else setError(`Could not open PDF: ${e.message}`)
     })
     return () => { cancelled = true; task?.destroy() }
-  }, [documentId, projectId])
+  }, [documentId, projectId, reloadTick])
 
   // Things other people changed (or that we missed while disconnected): refetch the lists we show.
   useEffect(() => {
     const offs = [
       onSocket('scales', () => { loadScales(documentId).then(({ data: rows }) =>
         setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {}) }),
+      // A new revision was uploaded (or we missed one while offline): drop the stored PDF and reload.
+      onSocket('revision', () => {
+        loadDocMeta(documentId).then(r => {
+          const latest = r.data.revisions[0]
+          if (r.fromCache || !latest || latest.id === loadedRevision.current) return
+          setToast(`Revision ${latest.revision} was uploaded; reloading the plan.`)
+          void invalidatePdf(documentId).then(() => setReloadTick(t => t + 1))
+        }).catch(() => {})
+      }),
       onSocket('layers', () => { loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {}) }),
       onSocket('symbol_sets', () => { loadSymbolSets().then(r => setSymbolSetList(r.data)).catch(() => {}) }),
       onSocket('markup', msg => {
@@ -313,6 +333,13 @@ export function ViewerPage() {
   const areaPaths = useMemo(() => new Map(pageAreas.map(a => [a.id, areaPathIn(areaIndex, a)])), [areaIndex, pageAreas])
   const counts = useMemo(() => deviceCounts(areaIndex, store.markups.values()), [areaIndex, store.markups])
   const canvasMarkups = useMemo(() => showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area'), [pageMarkups, showAreas])
+  /** Markups kept from an earlier revision whose pages the current PDF no longer has. */
+  const orphaned = useMemo(() => {
+    const pages = new Set<number>()
+    let count = 0
+    if (pdf) for (const m of store.markups.values()) if (m.page > pdf.numPages) { pages.add(m.page); count++ }
+    return { count, pages: [...pages].sort((a, b) => a - b) }
+  }, [pdf, store.markups])
   const stackIndex = useMemo(() => detectStacks(pageMarkups), [pageMarkups])
   const lockedIds = useMemo(
     () => new Set(pageMarkups.filter(m => flagged(locked, m)).map(m => m.id)),
@@ -578,6 +605,8 @@ export function ViewerPage() {
         <button className={`scale-badge hide-sm${pageScale ? '' : ' warn'}`} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
           {pageScale ? pageScale.label : 'No scale'}
         </button>
+        <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={store.markups} symbolSets={symbolSets}
+          scales={scales} readOnly={readOnly} commit={store.commit} />
         <button className={`icon-btn${showList ? ' active' : ''}`} title="Markups list (Q)" aria-label="List" aria-pressed={showList}
           onClick={() => setShowList(s => !s)}>☷<span className="hide-sm list-btn-label">List</span></button>
         <button className={`icon-btn${showPanel ? ' active' : ''}`} title="Properties & layers" onClick={() => setShowPanel(s => !s)}>⚙</button>
@@ -585,6 +614,12 @@ export function ViewerPage() {
       <OfflineBanner always={notCached}>{notCached
         ? "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page."
         : undefined}</OfflineBanner>
+      {orphaned.count > 0 && (
+        <div className="rev-banner" role="status">
+          {orphaned.count} markup{orphaned.count === 1 ? ' is' : 's are'} on page{orphaned.pages.length === 1 ? '' : 's'} {orphaned.pages.join(', ')},
+          which Rev {meta?.revisions[0]?.revision ?? ''} of this plan no longer has. They are kept in the Markups list.
+        </div>
+      )}
       <div className="viewer-body">
         {showThumbs && pdf && (
           <>

@@ -270,13 +270,50 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   app.get('/api/documents/:id/file', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'viewer')
     if (!doc) return
-    const [rev] = await db.query(
-      'SELECT file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+    const rid = (req.query as any)?.revision
+    const [rev] = rid
+      ? (UUID_RE.test(String(rid)) ? await db.query(
+        'SELECT id, file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : [])
+      : await db.query('SELECT id, file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+    if (!rev) return reply.code(404).send({ error: 'Revision not found' })
     const filePath = path.join(filesDir, rev.file_key)
     if (!existsSync(filePath)) return reply.code(404).send({ error: 'File missing' })
     reply.header('Content-Type', 'application/pdf')
-    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    // Current-revision URL changes meaning on upload, so only explicit revisions are immutable.
+    reply.header('Cache-Control', rid ? 'private, max-age=31536000, immutable' : 'private, no-cache')
     return reply.send(createReadStream(filePath))
+  })
+
+  const REVISION_SQL = `SELECT r.id, r.revision, r.page_count, r.created_at, r.uploaded_by, u.name AS uploaded_by_name
+    FROM document_revisions r LEFT JOIN users u ON u.id = r.uploaded_by WHERE r.document_id = $1 ORDER BY r.revision DESC`
+
+  app.get('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'viewer')
+    if (!doc) return
+    return db.query(REVISION_SQL, [doc.id])
+  })
+
+  // New revision: becomes current, old ones are kept. Markups stay keyed to document+page, so they carry forward;
+  // those on pages beyond the new page count are kept and reported as orphaned.
+  app.post('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const file = await req.file()
+    if (!file) return reply.code(400).send({ error: 'No file' })
+    if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf'))
+      return reply.code(400).send({ error: 'Only PDF files are supported' })
+    const fileKey = `${randomUUID()}.pdf`
+    await pipeline(file.file, createWriteStream(path.join(filesDir, fileKey)))
+    if (file.file.truncated) return reply.code(413).send({ error: 'File too large' })
+    const pageCount = Math.max(1, Math.floor(Number((file.fields as any).pageCount?.value)) || 1)
+    const [rev] = await db.query(
+      `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by)
+       VALUES ($1, (SELECT coalesce(max(revision), 0) + 1 FROM document_revisions WHERE document_id = $1), $2, $3, $4)
+       RETURNING id, revision, page_count, created_at, uploaded_by`, [doc.id, fileKey, pageCount, req.user.id])
+    const orphans = await db.query<{ id: string; page: number }>(
+      'SELECT id, page FROM markups WHERE document_id = $1 AND NOT deleted AND page > $2 ORDER BY page', [doc.id, pageCount])
+    realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
+    return { ...rev, orphaned_markups: orphans.length, orphaned_pages: [...new Set(orphans.map(o => o.page))] }
   })
 
   // ---- Page scales ----

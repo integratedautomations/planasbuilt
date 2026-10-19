@@ -55,7 +55,7 @@ const listeners = new Map<string, Set<Fn>>()
 const statusSubs = new Set<() => void>()
 const peerSubs = new Set<() => void>()
 
-/** Subscribe to a server message type ('markup', 'attachments', 'scales', 'layers', 'symbol_sets', 'error') or the synthetic 'resync'. */
+/** Subscribe to a server message type ('markup', 'attachments', 'scales', 'layers', 'symbol_sets', 'revision', 'error') or the synthetic 'resync'. */
 export function on(type: string, fn: Fn): () => void {
   let set = listeners.get(type)
   if (!set) listeners.set(type, (set = new Set()))
@@ -168,6 +168,7 @@ function enterDocument(id: string, gen: number) {
     emit('scales', { type: 'scales', by: '' })
     emit('layers', { type: 'layers', by: '' })
     emit('symbol_sets', { type: 'symbol_sets', by: '' })
+    emit('revision', { type: 'revision', by: '' })
     emit('attachments', { type: 'attachments', markupId: '*', by: '' })
   }).catch(e => console.warn('realtime catch-up failed', e))
   chain = chain.then(() => catchUp)

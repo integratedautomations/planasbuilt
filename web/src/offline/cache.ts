@@ -13,7 +13,8 @@ import { db } from './db'
 import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
 import { mergeServerMarkups } from './sync'
 
-export interface DocMeta { id: string; name: string; revisions: { revision: number; page_count: number }[] }
+/** revisions are newest first. */
+export interface DocMeta { id: string; name: string; revisions: { id?: string; revision: number; page_count: number }[] }
 export interface ServerScale { page: number; points_per_foot: number; label: string; updated_at?: string }
 
 export interface Loaded<T> { data: T; fromCache: boolean }
@@ -150,7 +151,7 @@ export const loadAttachments = (markupId: string) => readThrough(
 
 /** Fetch a PDF's bytes; throws ApiError / network errors. */
 async function fetchPdf(docId: string, onBytes?: (n: number) => void): Promise<ArrayBuffer> {
-  const res = await fetch(documentFileUrl(docId))
+  const res = await fetch(documentFileUrl(docId), { cache: 'no-cache' })
   if (!res.ok) throw new ApiError(res.status, `Could not download the plan (${res.status})`)
   if (!res.body || !onBytes) return res.arrayBuffer()
   const reader = res.body.getReader()
@@ -169,21 +170,34 @@ async function fetchPdf(docId: string, onBytes?: (n: number) => void): Promise<A
 
 /**
  * PDF bytes for a document: stored copy if present, otherwise download and store.
+ * Pass the current `revisionId` (from the doc's metadata) so a copy of an older revision is replaced;
+ * if that refresh can't happen because we're offline, the stored copy is used.
  * The returned buffer is a COPY (pdf.js transfers buffers to its worker and would detach ours).
  */
-export async function loadPdfBytes(docId: string): Promise<ArrayBuffer> {
+export async function loadPdfBytes(docId: string, revisionId?: string): Promise<ArrayBuffer> {
   const hit = await db.pdfs.get(docId)
-  if (hit) return hit.data.slice(0)
+  const stale = !!hit && !!revisionId && hit.revisionId !== revisionId
+  if (hit && !stale) return hit.data.slice(0)
   let data: ArrayBuffer
   try { data = await fetchPdf(docId) } catch (e) {
-    if (isOfflineError(e)) throw new OfflineMissError('This plan')
+    if (isOfflineError(e)) {
+      if (hit) return hit.data.slice(0) // offline: an older revision beats nothing
+      throw new OfflineMissError('This plan')
+    }
     throw e
   }
   try {
-    await db.pdfs.put({ id: docId, data, size: data.byteLength, cachedAt: Date.now() })
+    await db.pdfs.put({ id: docId, data, size: data.byteLength, cachedAt: Date.now(), revisionId })
     await markDocCached(docId, { pdfBytes: data.byteLength })
   } catch (e) { console.warn('could not store PDF offline', e) }
   return data.slice(0)
+}
+
+/** Forget the stored PDF (a new revision was uploaded); the next load downloads it again. */
+export async function invalidatePdf(docId: string) {
+  await db.pdfs.delete(docId)
+  const cur = ((await db.kv.get(`cache:${docId}`))?.value ?? {}) as DocCacheState
+  await db.kv.put({ key: `cache:${docId}`, value: { ...cur, pdfBytes: 0 } })
 }
 
 // ---------------------------------------------------------------- photos
@@ -256,10 +270,10 @@ export async function makeProjectOffline(projectId: string, onProgress: (p: Prog
     await loadScales(d.id); done++
     await loadMarkups(d.id); done++
     const have = await db.pdfs.get(d.id)
-    if (!have) {
+    if (!have || have.revisionId !== d.revision_id) { // missing, or a copy of an older revision
       let got = 0
       const data = await fetchPdf(d.id, n => { got += n; report(done + Math.min(0.95, got / (got + 4_000_000)), total, d.name) })
-      await db.pdfs.put({ id: d.id, data, size: data.byteLength, cachedAt: Date.now() })
+      await db.pdfs.put({ id: d.id, data, size: data.byteLength, cachedAt: Date.now(), revisionId: d.revision_id })
       await markDocCached(d.id, { pdfBytes: data.byteLength })
     }
     done++
