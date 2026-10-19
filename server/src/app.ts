@@ -151,6 +151,25 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return user
   })
 
+  // ---- Per-user preferences (hotkeys, layout, favorites...): any signed-in user, their own row only ----
+  app.get('/api/me/prefs', { preHandler: auth }, async (req) => {
+    const [row] = await db.query('SELECT prefs, updated_at FROM user_prefs WHERE user_id = $1', [req.user.id])
+    return row ? { prefs: row.prefs, updated_at: row.updated_at } : { prefs: {}, updated_at: null }
+  })
+
+  app.put('/api/me/prefs', { preHandler: auth }, async (req, reply) => {
+    const prefs = (req.body as any)?.prefs
+    if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs))
+      return reply.code(400).send({ error: 'prefs must be an object' })
+    const json = JSON.stringify(prefs)
+    if (json.length > 256 * 1024) return reply.code(413).send({ error: 'Preferences are too large' })
+    const [row] = await db.query(
+      `INSERT INTO user_prefs (user_id, prefs, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (user_id) DO UPDATE SET prefs = EXCLUDED.prefs, updated_at = now()
+       RETURNING prefs, updated_at`, [req.user.id, json])
+    return row
+  })
+
   // ---- Users (app admins) ----
   app.get('/api/users', { preHandler: auth }, async (req, reply) => {
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })

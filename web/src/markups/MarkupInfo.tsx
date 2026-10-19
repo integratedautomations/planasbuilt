@@ -3,6 +3,7 @@ import { api } from '../api'
 import { describeEvent, formatWhen } from './history'
 import type { HistoryEvent } from './history'
 import type { Markup, SymbolSet } from './types'
+import { popupFieldOptions, popupRows } from './popupFields'
 
 /** "Placed by Dana · Oct 19" / "Last edited by Sam · 2h ago". Markups made this session show "you" until reload. */
 export function Attribution({ markup: m }: { markup: Markup }) {
@@ -60,6 +61,44 @@ export function HistorySection({ markup: m, set }: { markup: Markup; set?: Symbo
             </ul>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+/** Floating card for the selected markup. The user ticks which fields it shows (saved with their prefs). */
+export function MarkupPopup({ markup: m, set, sets, areaPath, fields, onFields }: {
+  markup: Markup
+  set?: SymbolSet
+  sets: SymbolSet[]
+  areaPath?: string[]
+  fields: string[]
+  onFields: (ids: string[]) => void
+}) {
+  const [picking, setPicking] = useState(false)
+  const [closedFor, setClosedFor] = useState('')
+  const options = popupFieldOptions(sets)
+  if (closedFor === m.id) return null
+  const rows = popupRows(m, fields, options, { set, areaPath })
+  const toggle = (id: string) => onFields(fields.includes(id) ? fields.filter(f => f !== id) : [...fields, id])
+  return (
+    <div className="markup-popup" data-no-pan role="region" aria-label="Markup info" onPointerDown={e => e.stopPropagation()}>
+      <div className="popup-head">
+        <strong className="ellipsis">{m.tag || (m.type === 'device' ? set?.name : m.type) || 'Markup'}</strong>
+        <button className={`icon-btn small${picking ? ' active' : ''}`} title="Choose fields to show" aria-label="Choose popup fields" aria-expanded={picking} onClick={() => setPicking(p => !p)}>⚙</button>
+        <button className="icon-btn small" title="Close" aria-label="Close popup" onClick={() => setClosedFor(m.id)}>✕</button>
+      </div>
+      {picking ? (
+        <div className="popup-picker" role="group" aria-label="Fields to show">
+          {options.map(o => (
+            <label key={o.id} className="check small"><input type="checkbox" checked={fields.includes(o.id)} onChange={() => toggle(o.id)} /> {o.label}</label>
+          ))}
+        </div>
+      ) : (
+        <dl className="popup-rows">
+          {rows.map(r => <div key={r.id}><dt className="muted small">{r.label}</dt><dd>{r.value}</dd></div>)}
+          {rows.length === 0 && <div className="muted small">Nothing to show. Use the gear to choose fields.</div>}
+        </dl>
       )}
     </div>
   )

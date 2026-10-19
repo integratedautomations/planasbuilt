@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { post } from '../api'
 import type { Project } from '../api'
@@ -12,7 +13,22 @@ import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { SelectionBar } from '../markups/SelectionBar'
 import { detectStacks } from '../markups/stacks'
 import type { Stack } from '../markups/stacks'
-import { ToolRail, TOOLS } from '../markups/ToolRail'
+import { ToolRail } from '../markups/ToolRail'
+import { ToolChest } from '../markups/ToolChest'
+import { buildToolEntries, activeEntryId } from '../markups/toolEntries'
+import type { ToolEntry } from '../markups/toolEntries'
+import { ContextMenu } from '../markups/ContextMenu'
+import type { MenuItem } from '../markups/ContextMenu'
+import { MarkupPopup } from '../markups/MarkupInfo'
+import { copyMarkup } from '../markups/copy'
+import { markupBounds } from '../markups/selection'
+import { DockZone } from '../viewer/DockZone'
+import { usePrefs, setPref, getPrefs } from '../prefs/store'
+import { pushRecent, toggleFavorite } from '../prefs/prefs'
+import { commandForEvent, isTypingTarget, keyName, parseCombo, resolveHotkeys } from '../prefs/hotkeys'
+import { HotkeyDialog } from '../prefs/HotkeyDialog'
+import { movePanel, panelsIn, PANEL_TITLES, setPanelOpen, setZoneSize } from '../prefs/layout'
+import type { Dock, PanelId } from '../prefs/layout'
 import { SidePanel, sheetHeight } from '../markups/SidePanel'
 import type { PanelTab, SheetSnap } from '../markups/SidePanel'
 import { CalibrateDialog } from '../markups/ScaleControl'
@@ -140,6 +156,14 @@ export function ViewerPage() {
 
   const [tool, setTool] = useState<Tool>('select')
   const [spaceHeld, setSpaceHeld] = useState(false)
+  const prefs = usePrefs()
+  const hotkeys = useMemo(() => resolveHotkeys(prefs.hotkeys), [prefs.hotkeys])
+  const layout = prefs.layout
+  /** Square / Circle tools are the rectangle / ellipse tools with the shape locked. */
+  const [shapeLock, setShapeLock] = useState<'square' | 'circle' | null>(null)
+  const [ctx, setCtx] = useState<{ x: number; y: number; hitId: string | null; point: Pt } | null>(null)
+  const [showHotkeys, setShowHotkeys] = useState(false)
+  const [zoneTab, setZoneTab] = useState<Partial<Record<Dock, PanelId>>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [defaultStyle, setDefaultStyle] = useState<MarkupStyle>(DEFAULT_STYLE)
   const [stampText, setStampText] = useState('APPROVED')
@@ -427,7 +451,7 @@ export function ViewerPage() {
       setScales(prev => { const next = new Map(prev); next.delete(pageNum); return next })
     } catch (e) { setScaleError((e as Error).message) } finally { setScaleBusy(false) }
   }
-  const openMeasure = () => { setPanelTab('measure'); setShowPanel(true); setSnap(s => (s === 'peek' ? 'half' : s)) }
+  const openMeasure = () => { setPanelTab('measure'); openPanel('props'); setSnap(s => (s === 'peek' ? 'half' : s)) }
   /** Select an area and zoom the plan to fit it (above the phone sheet, if open). */
   const selectArea = (id: string) => {
     const a = areaIndex.byId.get(id)
@@ -508,26 +532,36 @@ export function ViewerPage() {
 
   const copySelected = useCallback(() => { setClip(selected.map(m => structuredClone(m))) }, [selected, setClip])
 
-  /** Pastes the clipboard (+20pt offset, fresh device tags, sheet area skipped) onto the current page. */
-  const paste = useCallback(() => {
+  /**
+   * Pastes the clipboard onto the current page (sheet area skipped). Default: +20pt offset; inPlace: same spot;
+   * at: top-left of the group lands on that point. Copies get no tag and lose IP/MAC/serial (see markups/copy.ts).
+   */
+  const paste = useCallback((opts: { inPlace?: boolean; at?: Pt } = {}) => {
     if (readOnly || !clipboard.current.length) return
-    const copies = clipboard.current.filter(m => !isSheetArea(m)).map(m => ({
-      ...m, id: uuid(), page: pageNum, tag: m.type === 'device' ? '' : m.tag, // pasted devices get fresh numbers
-      geometry: { ...m.geometry, x: m.geometry.x + 20, y: m.geometry.y + 20 },
-      // The copy belongs to this session, not to whoever placed the original
-      created_by: undefined, created_by_name: undefined, created_at: undefined,
-      updated_by: undefined, updated_by_name: undefined, updated_at: undefined, version: undefined,
-    }))
-    if (!copies.length) return
-    setClip(copies) // paste again cascades
+    const src = clipboard.current.filter(m => !isSheetArea(m))
+    if (!src.length) return
+    let dx = 20, dy = 20
+    if (opts.inPlace) { dx = 0; dy = 0 } else if (opts.at) {
+      const bs = src.map(markupBounds)
+      dx = opts.at.x - Math.min(...bs.map(b => b.x))
+      dy = opts.at.y - Math.min(...bs.map(b => b.y))
+    }
+    const copies = src.map(m => copyMarkup(m, { page: pageNum, dx, dy, set: m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined }))
+    if (!opts.inPlace) setClip(copies) // paste again cascades
     store.commit(copies.map(m => ({ before: null, after: m })))
     setSelectedIds(copies.map(m => m.id))
-  }, [pageNum, readOnly, store, setClip])
+  }, [pageNum, readOnly, store, setClip, symbolSets])
 
   const duplicateSelected = useCallback(() => { copySelected(); paste() }, [copySelected, paste])
 
-  const chooseTool = useCallback((t: Tool) => {
+  const cutSelected = useCallback(() => { if (readOnly) return; copySelected(); deleteSelected() }, [readOnly, copySelected, deleteSelected])
+
+  const toolEntries = useMemo(() => buildToolEntries(symbolSetList), [symbolSetList])
+  const entryMap = useMemo(() => new Map(toolEntries.map(e => [e.id, e])), [toolEntries])
+
+  const chooseTool = useCallback((t: Tool, shape: 'square' | 'circle' | null = null) => {
     setTool(t)
+    setShapeLock(shape)
     setCalLine(null)
     if (t !== 'select' && t !== 'pan') {
       setSelectedIds([])
@@ -535,39 +569,84 @@ export function ViewerPage() {
     }
   }, [])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      const mod = e.ctrlKey || e.metaKey
-      const k = e.key.toLowerCase()
-      if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); setSelectedIds([]) }
-      else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); setSelectedIds([]) }
-      else if (mod && k === 'c') copySelected()
-      else if (mod && k === 'v') { e.preventDefault(); paste() }
-      else if (mod && k === 'a') { e.preventDefault(); setSelectedIds(pageMarkups.filter(m => m.type !== 'area' && !lockedIds.has(m.id)).map(m => m.id)) }
-      else if (mod) return
-      else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
-      else if (e.key === 'Escape') { markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select') }
-      else if (e.key === 'Enter') markupRef.current?.finishDraft()
-      else if (k === 'q') setShowList(s => !s)
-      else if (k === 'x') { setBoxMode(b => !b); setTool('select') }
-      else if (e.key === ' ' && !e.repeat) { e.preventDefault(); setSpaceHeld(true) }
-      else if (e.key === 'PageDown') goTo(pageNum + 1)
-      else if (e.key === 'PageUp') goTo(pageNum - 1)
-      else if (e.key === '+' || e.key === '=') zoomBy(1.25)
-      else if (e.key === '-') zoomBy(0.8)
-      else if (e.key === '0') fit()
-      else {
-        const t = TOOLS.find(t => t.key.toLowerCase() === k)
-        if (t && (!readOnly || t.tool === 'select' || t.tool === 'pan')) chooseTool(t.tool)
-      }
+  /** Picks a Tool chest entry (from the chest, a favorite, the context menu or a hotkey) and remembers it as recent. */
+  const pickEntry = useCallback((e: ToolEntry) => {
+    if (e.setId) setActiveSetId(e.setId)
+    chooseTool(e.tool, e.shape ?? null)
+    if (e.tool !== 'select' && e.tool !== 'pan') setPref('recent', pushRecent(getPrefs().recent, e.id))
+  }, [chooseTool])
+
+  const setPanel = useCallback((id: PanelId, open: boolean) => {
+    if (isPhone) {
+      if (id === 'pages') setShowThumbs(open); else if (id === 'props') setShowPanel(open); else if (id === 'markups') setShowList(open)
+      return
     }
-    const onKeyUp = (e: KeyboardEvent) => { if (e.key === ' ') setSpaceHeld(false) }
+    const l = getPrefs().layout
+    setPref('layout', setPanelOpen(l, id, open))
+    if (open) setZoneTab(z => ({ ...z, [l.panels[id].dock]: id }))
+  }, [isPhone])
+  const panelOpen = (id: PanelId) =>
+    isPhone ? (id === 'pages' ? showThumbs : id === 'props' ? showPanel : id === 'markups' ? showList : false) : layout.panels[id].open
+  const openPanel = (id: PanelId) => setPanel(id, true)
+  const togglePanel = (id: PanelId) => setPanel(id, !panelOpen(id))
+  const closeCtx = useCallback(() => setCtx(null), [])
+
+  /** Runs a hotkey command. Returns false when the id is not handled. */
+  const runCommand = (cmd: string): boolean => {
+    if (cmd.startsWith('tool.')) {
+      const entry = toolEntries.find(e => e.command === cmd)
+      const allowed = (t: Tool) => !readOnly || t === 'select' || t === 'pan'
+      if (entry) { if (allowed(entry.tool)) pickEntry(entry); return true }
+      if (cmd === 'tool.device') { if (allowed('device')) chooseTool('device'); return true }
+      return false
+    }
+    switch (cmd) {
+      case 'edit.undo': store.undo(); setSelectedIds([]); return true
+      case 'edit.redo': case 'edit.redoAlt': store.redo(); setSelectedIds([]); return true
+      case 'edit.cut': cutSelected(); return true
+      case 'edit.copy': copySelected(); return true
+      case 'edit.paste': paste(); return true
+      case 'edit.pasteInPlace': paste({ inPlace: true }); return true
+      case 'edit.duplicate': if (!readOnly && selected.length) duplicateSelected(); return true
+      case 'edit.delete': case 'edit.deleteAlt': deleteSelected(); return true
+      case 'edit.selectAll': setSelectedIds(pageMarkups.filter(m => m.type !== 'area' && !lockedIds.has(m.id)).map(m => m.id)); return true
+      case 'edit.escape': markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select'); setShapeLock(null); return true
+      case 'edit.finish': markupRef.current?.finishDraft(); return true
+      case 'select.boxMode': setBoxMode(b => !b); setTool('select'); return true
+      case 'view.zoomIn': zoomBy(1.25); return true
+      case 'view.zoomOut': zoomBy(0.8); return true
+      case 'view.fit': fit(); return true
+      case 'view.nextPage': goTo(pageNum + 1); return true
+      case 'view.prevPage': goTo(pageNum - 1); return true
+      case 'panel.markups': togglePanel('markups'); return true
+      case 'panel.tools': togglePanel('tools'); return true
+      case 'panel.props': togglePanel('props'); return true
+      case 'panel.pages': togglePanel('pages'); return true
+      default: return false
+    }
+  }
+
+  // One key listener for every command in the hotkey registry; ignored while typing or while a menu/dialog is open
+  const runRef = useRef(runCommand)
+  runRef.current = runCommand
+  const modalOpen = showHotkeys || !!ctx
+  useEffect(() => {
+    if (modalOpen) return
+    const panKey = parseCombo(hotkeys['view.panHold'])?.key
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return
+      const cmd = commandForEvent(e, hotkeys)
+      if (!cmd) return
+      if (cmd === 'view.panHold') { e.preventDefault(); if (!e.repeat) setSpaceHeld(true); return }
+      if (runRef.current(cmd)) e.preventDefault()
+    }
+    const onKeyUp = (e: KeyboardEvent) => { if (panKey && keyName(e) === panKey) setSpaceHeld(false) }
+    const onBlur = () => setSpaceHeld(false)
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyUp)
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp) }
-  }, [pageNum, goTo, zoomBy, fit, store, selected, paste, copySelected, deleteSelected, pageMarkups, lockedIds, readOnly, chooseTool])
+    window.addEventListener('blur', onBlur)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); window.removeEventListener('blur', onBlur) }
+  }, [hotkeys, modalOpen])
 
   async function addLayer(name: string) {
     const layer = await post<Layer>(`/projects/${projectId}/layers`, { name })
@@ -575,19 +654,179 @@ export function ViewerPage() {
     setActiveLayerId(layer.id)
   }
 
+  const viewportEl = (
+    <div className={'viewport tool-' + activeTool} ref={viewportRef} onContextMenu={e => e.preventDefault()}>
+      {error && <div className="error floating">{error}</div>}
+      {!page && !error && !notCached && <div className="center muted">Loading plan…</div>}
+      {notCached && <div className="center muted">Plan not available offline.</div>}
+      {activeTool === 'calibrate' && !calLine && (
+        <div className="tool-hint">Drag a line along a known dimension (Shift snaps 45°)</div>
+      )}
+      {(activeTool === 'area' || activeTool === 'area-rect') && (
+        <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
+      )}
+      {activeTool === 'device' && (
+        <div className="symbol-palette" onPointerDown={e => e.stopPropagation()}>
+          {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
+          {symbolSetList.map(set => (
+            <button key={set.id} className={'palette-item' + (set.id === activeSetId ? ' on' : '')}
+              title={set.name} onClick={() => setActiveSetId(set.id)}>
+              <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
+              <span className="hide-sm">{set.name}</span>
+            </button>
+          ))}
+          <button className={'palette-item cone-toggle' + (showCones ? ' on' : '')} aria-pressed={showCones}
+            title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
+            <span className="cone-icon" aria-hidden>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fillOpacity={showCones ? 0.3 : 0} stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 20L4 6a12 12 0 0116 0z" /></svg>
+            </span>
+            <span className="hide-sm">Cones</span>
+          </button>
+        </div>
+      )}
+      {!readOnly && activeTool === 'select' && (selectedIds.length > 0 || clipCount > 0) && (
+        <SelectionBar count={selected.length} canPaste={clipCount > 0} multi={multiSelect} onMulti={setMultiSelect}
+          onCopy={copySelected} onPaste={() => paste()} onDuplicate={duplicateSelected} onDelete={deleteSelected} />
+      )}
+      {!isPhone && activeTool === 'select' && selected.length === 1 && (
+        <MarkupPopup key={selected[0].id} markup={selected[0]} sets={symbolSetList}
+          set={selected[0].symbol_set_id ? symbolSets.get(selected[0].symbol_set_id) : undefined}
+          areaPath={selected[0].type === 'area' ? undefined : areaPathIn(areaIndex, selected[0])}
+          fields={prefs.popupFields} onFields={ids => setPref('popupFields', ids)} />
+      )}
+      <div className="stage" ref={stageRef}
+        style={pageSize ? { width: pageSize.width, height: pageSize.height } : { display: 'none' }}>
+        <canvas ref={canvasRef} className="page-canvas" />
+      </div>
+      {page && viewportSize.width > 0 && (
+        <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
+          zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
+          readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
+          peers={peersHere} onCursor={canHover ? onCursor : undefined}
+          onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
+          constrain={!!shapeLock}
+          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
+          onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
+          newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
+          onCreated={m => {
+            if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
+            if (m.type === 'text') { openPanel('props'); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
+          }} />
+      )}
+    </div>
+  )
+
+  const dialogs = (
+    <>
+      {calLine && (
+        <CalibrateDialog pageCount={pageCount} onCancel={() => setCalLine(null)}
+          onApply={async (feet, all) => {
+            const ppf = Math.hypot(calLine[1].x - calLine[0].x, calLine[1].y - calLine[0].y) / feet
+            await saveScale({ pointsPerFoot: ppf, label: 'Calibrated' }, all)
+            setCalLine(null)
+          }} />
+      )}
+      {naming && <NamePrompt title={naming.sheet ? 'Name this sheet' : 'Name this area'}
+        hint={naming.sheet ? 'Everything on this page will be listed under it, e.g. First Floor.' : 'e.g. Living Room'}
+        initial={naming.initial} onSave={saveName} onCancel={() => setNaming(null)} />}
+    </>
+  )
+
+  const sidePanelEl = (
+    <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
+      stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
+      layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
+      hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
+      display={{ showCones, onShowCones: setShowCones }}
+      stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
+      onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
+      areas={{
+        pageAreas, parentOf: id => areaIndex.parents.get(id) ?? null,
+        pathOf: m => areaPathIn(areaIndex, m), deviceCount: id => counts.get(id) ?? 0,
+        parentChoices: a => parentChoices(areaIndex, a), show: showAreas, onShow: setShowAreas,
+        onSelectArea: selectArea, onDraw: drawArea, onNameSheet: nameSheet,
+      }}
+      measure={{
+        scale: pageScale, pageMarkups, scaleBusy, scaleError, onSelectIds: setSelectedIds,
+        onPreset: s => { saveScale(s, false).catch(() => {}) },
+        onApplyAll: () => { if (pageScale) saveScale(pageScale, true).catch(() => {}) },
+        onClearScale: clearScale,
+        onCalibrate: () => { if (isPhone) setShowPanel(false); chooseTool('calibrate') },
+      }}
+      sheet={isPhone ? { snap, onSnap: setSnap, onClose: () => setShowPanel(false) } : undefined} />
+  )
+
+  const markupsListEl = (docked: boolean) => (
+    <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
+      pageNum={pageNum} markups={store.markups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
+      selectedIds={selectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone} docked={docked}
+      visibleColumns={prefs.listColumns} onVisibleColumns={ids => setPref('listColumns', ids)}
+      onJump={jumpTo} onClose={() => (docked ? setPanel('markups', false) : setShowList(false))} />
+  )
+
+  const panelNodes: Record<PanelId, ReactNode> = {
+    tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeSetId)} favorites={prefs.favorites} recent={prefs.recent}
+      hotkeys={hotkeys} readOnly={readOnly} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
+      onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))} />,
+    pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} /> : <div className="muted small dock-empty">Loading…</div>,
+    props: sidePanelEl,
+    markups: markupsListEl(true),
+  }
+
+  const zone = (d: Dock) => {
+    const ids = panelsIn(layout, d)
+    if (!ids.length) return null
+    const wanted = zoneTab[d]
+    return (
+      <DockZone side={d} panels={ids.map(id => ({ id, title: PANEL_TITLES[id], node: panelNodes[id] }))}
+        active={wanted && ids.includes(wanted) ? wanted : ids[0]} onActive={id => setZoneTab(z => ({ ...z, [d]: id }))}
+        size={layout.sizes[d]} onSize={n => setPref('layout', setZoneSize(getPrefs().layout, d, n))}
+        onMove={(id, to) => { setPref('layout', movePanel(getPrefs().layout, id, to)); setZoneTab(z => ({ ...z, [to]: id })) }}
+        onHide={id => setPanel(id, false)} />
+    )
+  }
+
+  const ctxItems = (c: { hitId: string | null; point: Pt }): MenuItem[] => {
+    const hint = (id: string) => hotkeys[id] || undefined
+    const sub = (ids: string[]): MenuItem[] => ids.map(id => entryMap.get(id))
+      .filter((e): e is ToolEntry => !!e && (!readOnly || e.tool === 'select' || e.tool === 'pan'))
+      .map(e => ({ label: e.label, hint: e.command ? hint(e.command) : undefined, onClick: () => pickEntry(e) }))
+    const tools: MenuItem[] = [{ label: 'Favorites', sub: sub(prefs.favorites) }, { label: 'Recent tools', sub: sub(prefs.recent) }]
+    const canPaste = clipCount > 0 && !readOnly
+    if (c.hitId) {
+      return [
+        { label: 'Cut', hint: hint('edit.cut'), disabled: readOnly, onClick: cutSelected },
+        { label: 'Copy', hint: hint('edit.copy'), onClick: copySelected },
+        { label: 'Paste', hint: hint('edit.paste'), disabled: !canPaste, onClick: () => paste() },
+        { label: 'Paste in place', hint: hint('edit.pasteInPlace'), disabled: !canPaste, onClick: () => paste({ inPlace: true }) },
+        { label: 'Delete', hint: hint('edit.delete'), disabled: readOnly, onClick: deleteSelected },
+        { label: 'Duplicate', hint: hint('edit.duplicate'), disabled: readOnly, onClick: duplicateSelected },
+        { label: '', separator: true },
+        ...tools,
+      ]
+    }
+    return [
+      ...tools,
+      { label: '', separator: true },
+      { label: 'Paste', hint: hint('edit.paste'), disabled: !canPaste, onClick: () => paste({ at: c.point }) },
+      { label: 'Paste in place', hint: hint('edit.pasteInPlace'), disabled: !canPaste, onClick: () => paste({ inPlace: true }) },
+    ]
+  }
+
   return (
     <div className="viewer">
       <header className="topbar toolbar">
-        <Link to={`/projects/${projectId}`} className="icon-btn" title="Back to plans">←</Link>
-        <button className="icon-btn" title="Pages" onClick={() => setShowThumbs(s => !s)}>☰</button>
+        <Link to={'/projects/' + projectId} className="icon-btn" title="Back to plans">←</Link>
+        <button className={'icon-btn' + (!isPhone && panelOpen('pages') ? ' active' : '')} title="Pages" aria-pressed={panelOpen('pages')} onClick={() => togglePanel('pages')}>☰</button>
+        {!isPhone && <button className={'icon-btn' + (panelOpen('tools') ? ' active' : '')} title={'Tool chest (' + (hotkeys['panel.tools'] || 'no key') + ')'} aria-label="Tool chest" aria-pressed={panelOpen('tools')} onClick={() => togglePanel('tools')}>🧰</button>}
         <span className="crumb ellipsis">{meta?.name ?? '…'}</span>
         <SyncIndicator />
         <span className="spacer" />
         <Avatars peers={peers} max={isPhone ? 2 : 4} onJump={jumpToPeer} />
         {!readOnly && (
           <>
-            <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title="Undo (Ctrl+Z)">↶</button>
-            <button className="icon-btn" onClick={() => { store.redo(); setSelectedIds([]) }} disabled={!store.canRedo} title="Redo (Ctrl+Y)">↷</button>
+            <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title={'Undo (' + hotkeys['edit.undo'] + ')'}>↶</button>
+            <button className="icon-btn" onClick={() => { store.redo(); setSelectedIds([]) }} disabled={!store.canRedo} title={'Redo (' + hotkeys['edit.redo'] + ')'}>↷</button>
             <span className="divider hide-sm" />
           </>
         )}
@@ -600,16 +839,17 @@ export function ViewerPage() {
         <button className="icon-btn hide-sm" onClick={() => goTo(pageNum + 1)} disabled={pageNum >= pageCount} title="Next page">›</button>
         <span className="divider hide-sm" />
         <button className="icon-btn hide-sm" onClick={() => zoomBy(0.8)} title="Zoom out">−</button>
-        <button className="zoom-label hide-sm" onClick={fit} title="Fit page (0)">{Math.round(zoom * 100)}%</button>
+        <button className="zoom-label hide-sm" onClick={fit} title={'Fit page (' + hotkeys['view.fit'] + ')'}>{Math.round(zoom * 100)}%</button>
         <button className="icon-btn hide-sm" onClick={() => zoomBy(1.25)} title="Zoom in">+</button>
-        <button className={`scale-badge hide-sm${pageScale ? '' : ' warn'}`} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
+        <button className={'scale-badge hide-sm' + (pageScale ? '' : ' warn')} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
           {pageScale ? pageScale.label : 'No scale'}
         </button>
         <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={store.markups} symbolSets={symbolSets}
           scales={scales} readOnly={readOnly} commit={store.commit} />
-        <button className={`icon-btn${showList ? ' active' : ''}`} title="Markups list (Q)" aria-label="List" aria-pressed={showList}
-          onClick={() => setShowList(s => !s)}>☷<span className="hide-sm list-btn-label">List</span></button>
-        <button className={`icon-btn${showPanel ? ' active' : ''}`} title="Properties & layers" onClick={() => setShowPanel(s => !s)}>⚙</button>
+        <button className="icon-btn hide-sm" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShowHotkeys(true)}>⌨</button>
+        <button className={'icon-btn' + (panelOpen('markups') ? ' active' : '')} title={'Markups list (' + (hotkeys['panel.markups'] || 'no key') + ')'} aria-label="List" aria-pressed={panelOpen('markups')}
+          onClick={() => togglePanel('markups')}>☷<span className="hide-sm list-btn-label">List</span></button>
+        <button className={'icon-btn' + (panelOpen('props') ? ' active' : '')} title="Properties & layers" aria-pressed={panelOpen('props')} onClick={() => togglePanel('props')}>⚙</button>
       </header>
       <OfflineBanner always={notCached}>{notCached
         ? "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page."
@@ -620,108 +860,40 @@ export function ViewerPage() {
           which Rev {meta?.revisions[0]?.revision ?? ''} of this plan no longer has. They are kept in the Markups list.
         </div>
       )}
-      <div className="viewer-body">
-        {showThumbs && pdf && (
-          <>
-            <div className="scrim" onClick={() => setShowThumbs(false)} />
-            <Thumbnails pdf={pdf} current={pageNum}
-              onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
-          </>
-        )}
-        <ToolRail tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />
-        <div className={`viewport tool-${activeTool}`} ref={viewportRef}>
-          {error && <div className="error floating">{error}</div>}
-          {!page && !error && !notCached && <div className="center muted">Loading plan…</div>}
-          {notCached && <div className="center muted">Plan not available offline.</div>}
-          {activeTool === 'calibrate' && !calLine && (
-            <div className="tool-hint">Drag a line along a known dimension (Shift snaps 45°)</div>
-          )}
-          {(activeTool === 'area' || activeTool === 'area-rect') && (
-            <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
-          )}
-          {activeTool === 'device' && (
-            <div className="symbol-palette" onPointerDown={e => e.stopPropagation()}>
-              {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
-              {symbolSetList.map(set => (
-                <button key={set.id} className={`palette-item${set.id === activeSetId ? ' on' : ''}`}
-                  title={set.name} onClick={() => setActiveSetId(set.id)}>
-                  <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
-                  <span className="hide-sm">{set.name}</span>
-                </button>
-              ))}
-              <button className={`palette-item cone-toggle${showCones ? ' on' : ''}`} aria-pressed={showCones}
-                title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
-                <span className="cone-icon" aria-hidden>
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fillOpacity={showCones ? 0.3 : 0} stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 20L4 6a12 12 0 0116 0z" /></svg>
-                </span>
-                <span className="hide-sm">Cones</span>
-              </button>
-            </div>
-          )}
-          {!readOnly && activeTool === 'select' && (selectedIds.length > 0 || clipCount > 0) && (
-            <SelectionBar count={selected.length} canPaste={clipCount > 0} multi={multiSelect} onMulti={setMultiSelect}
-              onCopy={copySelected} onPaste={paste} onDuplicate={duplicateSelected} onDelete={deleteSelected} />
-          )}
-          <div className="stage" ref={stageRef}
-            style={pageSize ? { width: pageSize.width, height: pageSize.height } : { display: 'none' }}>
-            <canvas ref={canvasRef} className="page-canvas" />
+      {isPhone ? (
+        <>
+          <div className="viewer-body">
+            {showThumbs && pdf && (
+              <>
+                <div className="scrim" onClick={() => setShowThumbs(false)} />
+                <Thumbnails pdf={pdf} current={pageNum}
+                  onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
+              </>
+            )}
+            <ToolRail hotkeys={hotkeys} tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />
+            {viewportEl}
+            {dialogs}
+            {showPanel && sidePanelEl}
           </div>
-          {page && viewportSize.width > 0 && (
-            <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
-              zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
-              readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
-              peers={peersHere} onCursor={canHover ? onCursor : undefined}
-              consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
-              onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
-              newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
-              onCreated={m => {
-                if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
-                if (m.type === 'text') { setShowPanel(true); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
-              }} />
-          )}
-        </div>
-        {calLine && (
-          <CalibrateDialog pageCount={pageCount} onCancel={() => setCalLine(null)}
-            onApply={async (feet, all) => {
-              const ppf = Math.hypot(calLine[1].x - calLine[0].x, calLine[1].y - calLine[0].y) / feet
-              await saveScale({ pointsPerFoot: ppf, label: 'Calibrated' }, all)
-              setCalLine(null)
-            }} />
-        )}
-        {naming && <NamePrompt title={naming.sheet ? 'Name this sheet' : 'Name this area'}
-          hint={naming.sheet ? 'Everything on this page will be listed under it, e.g. First Floor.' : 'e.g. Living Room'}
-          initial={naming.initial} onSave={saveName} onCancel={() => setNaming(null)} />}
-        {showPanel && (
-          <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
-            stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
-            layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
-            hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
-            display={{ showCones, onShowCones: setShowCones }}
-            stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
-            onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
-            areas={{
-              pageAreas, parentOf: id => areaIndex.parents.get(id) ?? null,
-              pathOf: m => areaPathIn(areaIndex, m), deviceCount: id => counts.get(id) ?? 0,
-              parentChoices: a => parentChoices(areaIndex, a), show: showAreas, onShow: setShowAreas,
-              onSelectArea: selectArea, onDraw: drawArea, onNameSheet: nameSheet,
-            }}
-            measure={{
-              scale: pageScale, pageMarkups, scaleBusy, scaleError, onSelectIds: setSelectedIds,
-              onPreset: s => { saveScale(s, false).catch(() => {}) },
-              onApplyAll: () => { if (pageScale) saveScale(pageScale, true).catch(() => {}) },
-              onClearScale: clearScale,
-              onCalibrate: () => { if (isPhone) setShowPanel(false); chooseTool('calibrate') },
-            }}
-            sheet={isPhone ? { snap, onSnap: setSnap, onClose: () => setShowPanel(false) } : undefined} />
-        )}
-      </div>
-      {toast && <div className="live-toast" role="status">{toast}</div>}
-      {showList && (
-        <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
-          pageNum={pageNum} markups={store.markups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
-          selectedIds={selectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone}
-          onJump={jumpTo} onClose={() => setShowList(false)} />
+          {toast && <div className="live-toast" role="status">{toast}</div>}
+          {showList && markupsListEl(false)}
+        </>
+      ) : (
+        <>
+          <div className="viewer-body docked">
+            {zone('left')}
+            <div className="dock-center">
+              <div className="dock-main">{viewportEl}</div>
+              {zone('bottom')}
+            </div>
+            {zone('right')}
+            {dialogs}
+          </div>
+          {toast && <div className="live-toast" role="status">{toast}</div>}
+        </>
       )}
+      {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems(ctx)} onClose={closeCtx} />}
+      {showHotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setShowHotkeys(false)} />}
     </div>
   )
 }

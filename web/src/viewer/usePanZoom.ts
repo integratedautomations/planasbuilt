@@ -142,12 +142,17 @@ export function usePanZoom(
       if (pointers.size === 0) el.classList.remove('panning')
     }
 
+    // Middle button: no browser autoscroll / paste-on-Linux, whatever the page does with the press
+    const onMouseDown = (e: MouseEvent) => { if (e.button === 1) e.preventDefault() }
+
+    el.addEventListener('mousedown', onMouseDown)
     el.addEventListener('wheel', onWheel, { passive: false })
     el.addEventListener('pointerdown', onDown)
     el.addEventListener('pointermove', onMove)
     el.addEventListener('pointerup', onUp)
     el.addEventListener('pointercancel', onUp)
     return () => {
+      el.removeEventListener('mousedown', onMouseDown)
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)

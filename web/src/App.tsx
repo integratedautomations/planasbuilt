@@ -6,6 +6,7 @@ import { cacheUser, cachedUser } from './offline/user'
 import { resumeSync, setSyncUser } from './offline/sync'
 import { ForeignNotice } from './offline/ForeignNotice'
 import { connect as connectRealtime } from './realtime/socket'
+import { setPrefsUser } from './prefs/store'
 import { AuthPage } from './pages/AuthPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectPage } from './pages/ProjectPage'
@@ -31,6 +32,7 @@ export default function App() {
 
   useEffect(() => {
     setSyncUser(user ? { id: user.id, name: user.name } : null)
+    setPrefsUser(user?.id ?? null)
     if (user) connectRealtime()
   }, [user])
 

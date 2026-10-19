@@ -403,3 +403,36 @@ describe('health', () => {
     expect(res.json()).toEqual({ status: 'ok', db: 'ok' })
   })
 })
+
+describe('user prefs', () => {
+  let a = '', b = ''
+  it('stores prefs per user and replaces them on PUT', async () => {
+    const setup = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'boss@x.com', password: 'password1' } })
+    a = setup.json().token
+    await app.inject({ method: 'POST', url: '/api/users', headers: { authorization: `Bearer ${a}` },
+      payload: { email: 'prefs@x.com', name: 'Prefs', password: 'password1' } })
+    b = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'prefs@x.com', password: 'password1' } })).json().token
+    const ha = { authorization: `Bearer ${a}` }, hb = { authorization: `Bearer ${b}` }
+    expect((await app.inject({ url: '/api/me/prefs', headers: ha })).json()).toEqual({ prefs: {}, updated_at: null })
+    const body = { prefs: { hotkeys: { 'tool.rect': 'Shift+R' }, favorites: ['tool:line'], listColumns: null } }
+    const put = await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: ha, payload: body })
+    expect(put.statusCode).toBe(200)
+    expect(put.json().prefs).toEqual(body.prefs)
+    expect((await app.inject({ url: '/api/me/prefs', headers: ha })).json().prefs).toEqual(body.prefs)
+    // another user's row is separate
+    expect((await app.inject({ url: '/api/me/prefs', headers: hb })).json().prefs).toEqual({})
+    await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: ha, payload: { prefs: { favorites: [] } } })
+    expect((await app.inject({ url: '/api/me/prefs', headers: ha })).json().prefs).toEqual({ favorites: [] })
+  })
+
+  it('requires auth and an object body', async () => {
+    expect((await app.inject('/api/me/prefs')).statusCode).toBe(401)
+    expect((await app.inject({ method: 'PUT', url: '/api/me/prefs', payload: { prefs: {} } })).statusCode).toBe(401)
+    const h = { authorization: `Bearer ${a}` }
+    expect((await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: h, payload: { prefs: [1] } })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: h, payload: { prefs: 'x' } })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: h, payload: {} })).statusCode).toBe(400)
+    const big = { prefs: { blob: 'x'.repeat(300 * 1024) } }
+    expect((await app.inject({ method: 'PUT', url: '/api/me/prefs', headers: h, payload: big })).statusCode).toBe(413)
+  })
+})

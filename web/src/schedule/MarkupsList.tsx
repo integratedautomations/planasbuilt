@@ -29,6 +29,11 @@ interface Props {
   readOnly: boolean
   canImport: boolean
   isPhone: boolean
+  /** Inside a dock zone: fills it, no own resize handle. */
+  docked?: boolean
+  /** Columns the user chose to show (null = all); the Tag column always stays. */
+  visibleColumns?: string[] | null
+  onVisibleColumns?: (ids: string[] | null) => void
   onJump: (t: JumpTarget) => void
   onClose: () => void
 }
@@ -80,8 +85,9 @@ export function MarkupsList(p: Props) {
   const allRows = useMemo(
     () => buildRows(source, { symbolSets: sets, docNames, photoCounts, scaleFor, showAll }),
     [source, sets, docNames, photoCounts, scaleFor, showAll])
-  const columns = useMemo(() => listColumns(allRows, sets, filter.setId, showAll), [allRows, sets, filter.setId, showAll])
-  const rows = useMemo(() => sortRows(filterRows(allRows, filter), columns, sort.col, sort.dir), [allRows, filter, columns, sort])
+  const allColumns = useMemo(() => listColumns(allRows, sets, filter.setId, showAll), [allRows, sets, filter.setId, showAll])
+  const columns = useMemo(() => p.visibleColumns ? allColumns.filter(c => c.id === 'tag' || p.visibleColumns!.includes(c.id)) : allColumns, [allColumns, p.visibleColumns])
+  const rows = useMemo(() => sortRows(filterRows(allRows, filter), allColumns, sort.col, sort.dir), [allRows, filter, allColumns, sort])
   const areas = useMemo(() => areaOptions(allRows), [allRows])
   useEffect(() => setLimit(PAGE), [scope, filter, showAll, sort])
 
@@ -131,9 +137,9 @@ export function MarkupsList(p: Props) {
   const selected = new Set(p.selectedIds)
 
   return (
-    <section className={`markups-list${p.isPhone ? ' full' : ''}`} style={p.isPhone ? undefined : { height }} aria-label="Markups list"
+    <section className={`markups-list${p.isPhone ? ' full' : ''}${p.docked ? ' docked' : ''}`} style={p.isPhone || p.docked ? undefined : { height }} aria-label="Markups list"
       onPointerDown={e => e.stopPropagation()}>
-      {!p.isPhone && (
+      {!p.isPhone && !p.docked && (
         <div className="list-handle" role="separator" aria-orientation="horizontal" aria-label="Resize list"
           onPointerDown={onHandleDown} onPointerMove={onHandleMove} onPointerUp={onHandleUp} onPointerCancel={onHandleUp} />
       )}
@@ -159,11 +165,30 @@ export function MarkupsList(p: Props) {
           {areas.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
         <label className="check small"><input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} /> Show all markups</label>
+        {p.onVisibleColumns && (
+          <details className="col-picker">
+            <summary title="Choose columns">Columns</summary>
+            <div className="col-picker-menu" role="group" aria-label="Visible columns">
+              {allColumns.map(c => {
+                const on = c.id === 'tag' || !p.visibleColumns || p.visibleColumns.includes(c.id)
+                return (
+                  <label key={c.id} className="check small">
+                    <input type="checkbox" checked={on} disabled={c.id === 'tag'} onChange={() => {
+                      const cur = p.visibleColumns ?? allColumns.map(x => x.id)
+                      p.onVisibleColumns!(cur.includes(c.id) ? cur.filter(x => x !== c.id) : [...cur, c.id])
+                    }} /> {c.label}
+                  </label>
+                )
+              })}
+              {p.visibleColumns && <button className="small" onClick={() => p.onVisibleColumns!(null)}>Show all</button>}
+            </div>
+          </details>
+        )}
         <span className="spacer" />
         <span className="muted small">{rows.length} row{rows.length === 1 ? '' : 's'}</span>
         <button onClick={exportExcel} disabled={busy}>{busy ? 'Exporting…' : 'Export Excel'}</button>
         {p.canImport && <button onClick={() => setImporting(true)} disabled={projectMarkups === null}>Import…</button>}
-        <button className="icon-btn" onClick={p.onClose} aria-label="Close list" title="Close (Q)">✕</button>
+        <button className="icon-btn" onClick={p.onClose} aria-label="Close list" title="Close">✕</button>
       </div>
       {(loadError || exportError) && <div className="error small list-msg">{loadError ? `Could not load the project: ${loadError}` : `Export failed: ${exportError}`}</div>}
       <div className="list-scroll">

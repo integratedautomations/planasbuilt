@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text, Transformer } from 'react-konva'
-import type Konva from 'konva'
+import Konva from 'konva'
 import { bakeBox, bakePath, boxFromDrag, pathFromPoints, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
 import { MarkupShape } from './MarkupShape'
@@ -9,12 +9,19 @@ import { isSheetArea } from './areas'
 import { deviceRadius, findSnapTarget, stackTop, tagRange } from './stacks'
 import type { StackIndex } from './stacks'
 import { deviceCenter } from './geometry'
-import { markupBounds, markupsInBox, rectFromCorners } from './selection'
+import { markupBounds, markupsInBox, rectFromCorners, rectsIntersect } from './selection'
+import { copyMarkup } from './copy'
 import type { Rect as Box } from './selection'
 import { AREA_STYLE, isBoxType } from './types'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 import type { Peer } from '../realtime/presence'
+
+// Only the left button drags markups: middle pans the plan and right box-selects.
+Konva.dragButtons = [0]
+
+/** A plain right-click: where it happened and which markup (if any) is under it. */
+export interface ContextInfo { clientX: number; clientY: number; hitId: string | null; point: Pt }
 
 export interface MarkupCanvasHandle {
   stage: () => Konva.Stage | null
@@ -60,6 +67,10 @@ interface Props {
   peers?: Peer[]
   /** Pointer position in page coordinates, or null when it left the canvas. Omitted when cursors are not broadcast. */
   onCursor?: (p: Pt | null) => void
+  /** Right-click without dragging. */
+  onContextMenu?: (info: ContextInfo) => void
+  /** Drawn rectangles/ellipses are forced to squares/circles (Square and Circle tools). */
+  constrain?: boolean
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
@@ -71,7 +82,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks, peers, onCursor } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks, peers, onCursor, onContextMenu, constrain } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -81,7 +92,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const [pointOverride, setPointOverride] = useState<{ id: string; points: number[] } | null>(null)
   const countGroup = useRef<{ id: string; n: number } | null>(null)
   const [marquee, setMarquee] = useState<Box | null>(null)
-  const marqueeStart = useRef<{ p: Pt; add: boolean } | null>(null)
+  const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean } } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
   const [fovOverride, setFovOverride] = useState<{ id: string; fov: Fov } | null>(null)
@@ -149,7 +160,25 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     return null
   }
 
+  /** The markup under a point: the one Konva hit, else the topmost non-area markup whose bounds contain it (draw tools don't hit-test). */
+  function markupAt(p: Pt, hit: string | null): string | null {
+    if (hit) return hit
+    const probe = { x: p.x - 2 / zoom, y: p.y - 2 / zoom, width: 4 / zoom, height: 4 / zoom }
+    for (let i = markups.length - 1; i >= 0; i--) {
+      const m = markups[i]
+      if (m.type !== 'area' && !lockedIds.has(m.id) && rectsIntersect(markupBounds(m), probe)) return m.id
+    }
+    return null
+  }
+
   function onPointerDown(e: Konva.KonvaEventObject<PointerEvent>) {
+    if (e.evt.button === 2) {
+      // Right button: box-select in any tool; released without dragging it is a context-menu click
+      const p = pointer()
+      marqueeStart.current = { p, add: e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey, right: { cx: e.evt.clientX, cy: e.evt.clientY, hitId: markupIdOf(e.target), moved: false } }
+      marqueeRect.current = rectFromCorners(p, p)
+      return
+    }
     if (e.evt.button !== 0) return
     const target = e.target
     const onTransformer = target.getParent()?.getClassName?.() === 'Transformer'
@@ -249,6 +278,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   function onPointerMove(e: Konva.KonvaEventObject<PointerEvent>) {
     if (onCursor) onCursor(stageRef.current?.getRelativePointerPosition() ?? null)
     if (marqueeStart.current) {
+      const r = marqueeStart.current.right
+      if (r && !r.moved) {
+        if (Math.hypot(e.evt.clientX - r.cx, e.evt.clientY - r.cy) < 4) return
+        r.moved = true
+      }
       marqueeRect.current = rectFromCorners(marqueeStart.current.p, pointer())
       setMarquee(marqueeRect.current)
       return
@@ -281,14 +315,31 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       freehandPts.current.push(p)
       setDraft({ ...draft, geometry: pathFromPoints(freehandPts.current) })
     } else if (isBoxType(draft.type)) {
-      setDraft({ ...draft, geometry: boxFromDrag(a, p, shift) })
+      setDraft({ ...draft, geometry: boxFromDrag(a, p, shift || !!constrain) })
     } else {
       setDraft({ ...draft, geometry: pathFromPoints([a, shift ? snap45(a, p) : p]) })
     }
   }
 
-  function onPointerUp() {
+  function onPointerUp(e: Konva.KonvaEventObject<PointerEvent>) {
     const ms = marqueeStart.current, box = marqueeRect.current
+    if (ms?.right) {
+      if (e.evt.button !== 2) return
+      cancelMarquee()
+      if (!ms.right.moved) {
+        const hitId = markupAt(ms.p, ms.right.hitId)
+        if (hitId && !selectedIds.includes(hitId)) {
+          const stk = stacks.byId.get(hitId)
+          onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
+        }
+        onContextMenu?.({ clientX: ms.right.cx, clientY: ms.right.cy, hitId, point: ms.p })
+        return
+      }
+      const ids = box ? markupsInBox(markups, box, lockedIds) : []
+      onSelect(ms.add ? [...selectedIds, ...ids.filter(i => !selectedIds.includes(i))] : ids)
+      return
+    }
+    if (e.evt.button !== 0) return
     if (ms && box) {
       cancelMarquee()
       if (box.width < 4 / zoom && box.height < 4 / zoom) { if (!ms.add) onSelect([]); return }
@@ -354,6 +405,19 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const dx = e.target.x() - dragged.geometry.x, dy = e.target.y() - dragged.geometry.y
     if (dx === 0 && dy === 0) return
     const grp = stacks.byId.get(id)
+    if (e.evt.ctrlKey || e.evt.metaKey) {
+      // Ctrl+drag: the original stays and a copy lands at the drop point (one device when dragging out of a stack)
+      e.target.position({ x: dragged.geometry.x, y: dragged.geometry.y })
+      e.target.getLayer()?.batchDraw()
+      if (readOnly) return
+      const srcIds = grp ? [id] : selectedIds.includes(id) ? selectedIds : [id]
+      const copies = srcIds.map(i => byId.get(i)).filter((m): m is Markup => !!m && !lockedIds.has(m.id) && !isSheetArea(m))
+        .map(m => copyMarkup(m, { dx, dy, set: m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined }))
+      if (!copies.length) return
+      commit(copies.map(after => ({ before: null, after })))
+      onSelect(copies.map(c => c.id))
+      return
+    }
     const ids = selectedIds.includes(id) ? selectedIds : grp ? grp.members.map(x => x.id) : [id]
     const change: Change = []
     for (const mid of ids) {

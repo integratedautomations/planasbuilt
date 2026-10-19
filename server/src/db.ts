@@ -145,7 +145,12 @@ CREATE TABLE IF NOT EXISTS markup_events (
   action text NOT NULL,
   changes jsonb NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS markup_events_markup ON markup_events(markup_id, at)
+CREATE INDEX IF NOT EXISTS markup_events_markup ON markup_events(markup_id, at);
+CREATE TABLE IF NOT EXISTS user_prefs (
+  user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  prefs jsonb NOT NULL DEFAULT '{}',
+  updated_at timestamptz NOT NULL DEFAULT now()
+)
 `
 
 const svg = (body: string) =>
