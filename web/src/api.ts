@@ -1,3 +1,5 @@
+import { getClientId } from './realtime/clientId'
+
 export type Role = 'admin' | 'editor' | 'viewer'
 
 export interface User { id: string; email: string; name: string; is_admin: boolean }
@@ -20,6 +22,12 @@ export function setToken(token: string | null) {
   } catch { /* storage unavailable */ }
 }
 
+/** The session is no longer valid (REST 401 or websocket 4401): forget the token and tell the app. */
+export function signalAuthExpired() {
+  setToken(null)
+  window.dispatchEvent(new Event('planmark:signed-out'))
+}
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) { super(message); this.status = status }
@@ -28,13 +36,13 @@ export class ApiError extends Error {
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   const token = getToken()
+  headers.set('X-Client-Id', getClientId())
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   const res = await fetch(`/api${path}`, { ...init, headers })
   const data = await res.json().catch(() => ({}))
   if (res.status === 401 && token) {
-    setToken(null)
-    window.dispatchEvent(new Event('planmark:signed-out'))
+    signalAuthExpired()
   }
   if (!res.ok) throw new ApiError(res.status, data.error ?? `Request failed (${res.status})`)
   return data as T

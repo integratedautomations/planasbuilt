@@ -1,0 +1,132 @@
+import { createHash } from 'node:crypto'
+import type { WebSocket } from 'ws'
+
+const PALETTE = ['#e8590c', '#1c7ed6', '#2f9e44', '#ae3ec9', '#f08c00', '#0c8599', '#d6336c', '#5c940d']
+export const colorFor = (userId: string) => PALETTE[createHash('sha1').update(userId).digest().readUInt32BE(0) % PALETTE.length]
+
+export interface Peer {
+  clientId: string
+  userId: string
+  name: string
+  color: string
+  page: number | null
+  cursor: { x: number; y: number } | null
+  selection: string[]
+}
+
+export interface Conn extends Peer {
+  socket: WebSocket
+  documentId: string | null
+  alive: boolean
+  windowStart: number
+  windowCount: number
+}
+
+const MAX_PRESENCE_PER_SEC = 15
+
+/** Rooms of websocket connections keyed by document id, plus broadcast helpers. */
+export class Realtime {
+  private conns = new Set<Conn>()
+  private rooms = new Map<string, Set<Conn>>()
+  private timer: NodeJS.Timeout
+
+  constructor(heartbeatMs = 30_000) {
+    this.timer = setInterval(() => {
+      for (const c of this.conns) {
+        if (!c.alive) { c.socket.terminate(); continue }
+        c.alive = false
+        try { c.socket.ping() } catch { /* socket is going away */ }
+      }
+    }, heartbeatMs)
+    this.timer.unref()
+  }
+
+  close() { clearInterval(this.timer) }
+
+  add(socket: WebSocket, info: { clientId: string; userId: string; name: string }): Conn {
+    const c: Conn = {
+      socket, ...info, color: colorFor(info.userId), page: null, cursor: null, selection: [],
+      documentId: null, alive: true, windowStart: 0, windowCount: 0,
+    }
+    this.conns.add(c)
+    socket.on('pong', () => { c.alive = true })
+    return c
+  }
+
+  remove(c: Conn) {
+    this.leave(c)
+    this.conns.delete(c)
+  }
+
+  private send(c: Conn, msg: unknown) {
+    if (c.socket.readyState === 1) c.socket.send(JSON.stringify(msg))
+  }
+
+  private static peerOf(c: Conn): Peer {
+    return { clientId: c.clientId, userId: c.userId, name: c.name, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection }
+  }
+
+  private toRoom(documentId: string, msg: unknown, except?: string | null, exceptConn?: Conn) {
+    for (const c of this.rooms.get(documentId) ?? []) {
+      if (c === exceptConn || (except && c.clientId === except)) continue
+      this.send(c, msg)
+    }
+  }
+
+  error(c: Conn, message: string) { this.send(c, { type: 'error', message }) }
+  pong(c: Conn) { this.send(c, { type: 'pong' }) }
+
+  join(c: Conn, documentId: string) {
+    if (c.documentId === documentId) return
+    this.leave(c)
+    c.documentId = documentId
+    c.page = null; c.cursor = null; c.selection = []
+    let room = this.rooms.get(documentId)
+    if (!room) this.rooms.set(documentId, (room = new Set()))
+    room.add(c)
+    this.send(c, { type: 'peers', peers: [...room].filter(p => p !== c).map(Realtime.peerOf) })
+    this.toRoom(documentId, { type: 'peer', peer: Realtime.peerOf(c) }, null, c)
+  }
+
+  leave(c: Conn) {
+    const id = c.documentId
+    if (!id) return
+    c.documentId = null
+    const room = this.rooms.get(id)
+    room?.delete(c)
+    if (room && !room.size) this.rooms.delete(id)
+    this.toRoom(id, { type: 'leave', clientId: c.clientId })
+  }
+
+  presence(c: Conn, m: any) {
+    if (!c.documentId) return
+    const now = Date.now()
+    if (now - c.windowStart >= 1000) { c.windowStart = now; c.windowCount = 0 }
+    if (++c.windowCount > MAX_PRESENCE_PER_SEC) return
+    c.page = Number.isInteger(m.page) ? m.page : null
+    const cur = m.cursor
+    c.cursor = cur && Number.isFinite(cur.x) && Number.isFinite(cur.y) ? { x: cur.x, y: cur.y } : null
+    c.selection = Array.isArray(m.selection) ? m.selection.filter((s: unknown) => typeof s === 'string').slice(0, 500) : []
+    this.toRoom(c.documentId, { type: 'peer', peer: Realtime.peerOf(c) }, null, c)
+  }
+
+  // ---- Broadcast helpers used by REST handlers (clientId = originating socket to skip) ----
+  markupChanged(documentId: string, markup: unknown, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'markup', op: 'upsert', markup, by }, clientId)
+  }
+  markupDeleted(documentId: string, id: string, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'markup', op: 'delete', id, by }, clientId)
+  }
+  attachmentsChanged(documentId: string, markupId: string, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'attachments', markupId, by }, clientId)
+  }
+  scalesChanged(documentId: string, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'scales', by }, clientId)
+  }
+  layersChanged(documentIds: string[], by: string, clientId?: string | null) {
+    for (const id of documentIds) this.toRoom(id, { type: 'layers', by }, clientId)
+  }
+  symbolSetsChanged(by: string, clientId?: string | null) {
+    for (const c of this.conns) if (!(clientId && c.clientId === clientId)) this.send(c, { type: 'symbol_sets', by })
+  }
+}

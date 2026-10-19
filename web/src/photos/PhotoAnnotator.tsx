@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Arrow, Image as KImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
-import { api, attachmentFileUrl } from '../api'
+import { queuePhotoAnnotated } from '../offline/sync'
 import './photos.css'
 
 type Kind = 'pen' | 'arrow' | 'rect' | 'text'
@@ -11,9 +11,9 @@ const COLORS = [['Red', '#e03131'], ['Yellow', '#ffd43b'], ['White', '#ffffff'],
 const WIDTHS = [['Thin', 3], ['Medium', 6], ['Thick', 12]] as const
 const TOOLS: [Kind, string][] = [['pen', 'Pen'], ['arrow', 'Arrow'], ['rect', 'Box'], ['text', 'Text']]
 
-interface Props { attachmentId: string; onClose: () => void; onSaved: () => void }
+interface Props { attachmentId: string; /** URL of the unannotated original (server or local blob) */ src: string; onClose: () => void; onSaved: () => void }
 
-export function PhotoAnnotator({ attachmentId, onClose, onSaved }: Props) {
+export function PhotoAnnotator({ attachmentId, src, onClose, onSaved }: Props) {
   const box = useRef<HTMLDivElement>(null)
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const [loadErr, setLoadErr] = useState('')
@@ -41,8 +41,8 @@ export function PhotoAnnotator({ attachmentId, onClose, onSaved }: Props) {
     const i = new window.Image()
     i.onload = () => setImg(i)
     i.onerror = () => setLoadErr('Could not load the photo.')
-    i.src = attachmentFileUrl(attachmentId, 'original')
-  }, [attachmentId])
+    i.src = src
+  }, [src])
 
   useEffect(() => {
     const el = box.current
@@ -154,9 +154,7 @@ export function PhotoAnnotator({ attachmentId, onClose, onSaved }: Props) {
       ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.textBaseline = 'top'
       for (const s of shapes) drawShape(ctx, s)
       const blob = await new Promise<Blob>((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('Export failed')), 'image/jpeg', 0.9))
-      const fd = new FormData()
-      fd.append('photo', blob, 'annotated.jpg')
-      await api(`/attachments/${attachmentId}/annotated`, { method: 'PUT', body: fd })
+      await queuePhotoAnnotated(attachmentId, blob)
       onSaved()
     } catch (e) {
       setErr((e as Error).message || 'Save failed')

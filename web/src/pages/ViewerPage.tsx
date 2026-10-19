@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, documentFileUrl, post } from '../api'
+import { post } from '../api'
 import type { Project } from '../api'
 import { clampRenderScale, loadPdf } from '../pdf'
 import type { PDFDocumentProxy, PDFPageProxy } from '../pdf'
@@ -21,14 +21,22 @@ import { pathFromPoints } from '../markups/geometry'
 import type { Pt } from '../markups/geometry'
 import { areaBounds, areaPathIn, buildAreaIndex, deviceCounts, isArea, isSheetArea, parentChoices } from '../markups/areas'
 import { useMarkups } from '../markups/useMarkups'
+import { loadDocMeta, loadLayers, loadPdfBytes, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
+import { OfflineMissError } from '../offline/classify'
+import { OfflineBanner } from '../offline/OfflineBanner'
+import { SyncIndicator } from '../offline/SyncIndicator'
+import { queueScaleDelete, queueScalePut } from '../offline/sync'
 import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
+import { Avatars } from '../realtime/Avatars'
+import { deletedToast } from '../realtime/handlers'
+import { usePeers } from '../realtime/hooks'
+import { joinDocument, on as onSocket, sendPresence } from '../realtime/socket'
 import { MarkupsList } from '../schedule/MarkupsList'
 import type { JumpTarget } from '../schedule/MarkupsList'
 
-interface ScaleRow { page: number; points_per_foot: number; label: string; updated_at: string }
-interface DocMeta { id: string; name: string; revisions: { revision: number; page_count: number }[] }
+type DocMeta = Awaited<ReturnType<typeof loadDocMeta>>['data']
 
 /** Per-viewer layer visibility/lock, remembered per project in this browser. */
 function useLayerFlags(projectId: string, kind: 'hidden' | 'locked') {
@@ -120,6 +128,7 @@ export function ViewerPage() {
   const [pageNum, setPageNum] = useState(1)
   const [page, setPage] = useState<PDFPageProxy | null>(null)
   const [error, setError] = useState('')
+  const [notCached, setNotCached] = useState(false)
   const [showThumbs, setShowThumbs] = useState(() => window.innerWidth >= 1025)
   const [showPanel, setShowPanel] = useState(() => window.innerWidth >= 1025)
   const isPhone = useMediaQuery('(max-width: 640px)')
@@ -160,6 +169,35 @@ export function ViewerPage() {
   const clipboard = useRef<Markup[]>([])
 
   const store = useMarkups(documentId)
+
+  // ---- live sync: presence out, remote changes in
+  const canHover = useMediaQuery('(hover: hover)')
+  const peers = usePeers()
+  const peersHere = useMemo(() => peers.filter(p => p.page === pageNum), [peers, pageNum])
+  const [toast, setToast] = useState('')
+  const cursorRef = useRef<Pt | null>(null)
+  const presenceRef = useRef({ page: 1, selection: [] as string[] })
+  const peersRef = useRef(peers)
+  peersRef.current = peers
+  const knownMarkups = useRef(new Map<string, { tag?: string; type: string }>())
+  for (const m of store.markups.values()) knownMarkups.current.set(m.id, { tag: m.tag, type: m.type })
+  const pendingCenter = useRef<{ page: number; x: number; y: number } | null>(null)
+
+  useEffect(() => { joinDocument(documentId); return () => joinDocument(null) }, [documentId])
+  useEffect(() => {
+    if (presenceRef.current.page !== pageNum) cursorRef.current = null // old page's coordinates
+    presenceRef.current = { page: pageNum, selection: selectedIds }
+    sendPresence({ page: pageNum, cursor: cursorRef.current, selection: selectedIds })
+  }, [pageNum, selectedIds])
+  const onCursor = useCallback((p: Pt | null) => {
+    cursorRef.current = p
+    sendPresence({ ...presenceRef.current, cursor: p })
+  }, [])
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(''), 4000)
+    return () => clearTimeout(t)
+  }, [toast])
   const readOnly = project?.role === 'viewer'
   const activeTool: Tool = spaceHeld ? 'pan' : tool
 
@@ -181,19 +219,50 @@ export function ViewerPage() {
   useEffect(() => { syncStage(view.current) })
 
   useEffect(() => {
-    api<DocMeta>(`/documents/${documentId}`).then(setMeta).catch(e => setError(e.message))
-    api<Project>(`/projects/${projectId}`).then(setProject).catch(() => {})
-    api<Layer[]>(`/projects/${projectId}/layers`).then(setLayers).catch(() => {})
-    api<SymbolSet[]>('/symbol-sets').then(sets => {
+    loadDocMeta(documentId).then(r => setMeta(r.data)).catch(e => setError(e.message))
+    loadProject(projectId).then(r => setProject(r.data)).catch(() => {})
+    loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {})
+    loadSymbolSets().then(({ data: sets }) => {
       setSymbolSetList(sets)
       setActiveSetId(id => id ?? sets[0]?.id ?? null)
     }).catch(() => {})
-    api<ScaleRow[]>(`/documents/${documentId}/scales`).then(rows =>
+    loadScales(documentId).then(({ data: rows }) =>
       setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {})
     let cancelled = false
-    const task = loadPdf(documentFileUrl(documentId))
-    task.promise.then(p => { setPdf(p); setPdfFor(documentId) }).catch(e => { if (!cancelled) setError(`Could not open PDF: ${e.message}`) })
-    return () => { cancelled = true; task.destroy() }
+    let task: ReturnType<typeof loadPdf> | null = null
+    setNotCached(false)
+    loadPdfBytes(documentId).then(bytes => {
+      if (cancelled) return
+      task = loadPdf(bytes)
+      return task.promise.then(p => { if (!cancelled) { setPdf(p); setPdfFor(documentId) } })
+    }).catch(e => {
+      if (cancelled) return
+      if (e instanceof OfflineMissError) setNotCached(true)
+      else setError(`Could not open PDF: ${e.message}`)
+    })
+    return () => { cancelled = true; task?.destroy() }
+  }, [documentId, projectId])
+
+  // Things other people changed (or that we missed while disconnected): refetch the lists we show.
+  useEffect(() => {
+    const offs = [
+      onSocket('scales', () => { loadScales(documentId).then(({ data: rows }) =>
+        setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {}) }),
+      onSocket('layers', () => { loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {}) }),
+      onSocket('symbol_sets', () => { loadSymbolSets().then(r => setSymbolSetList(r.data)).catch(() => {}) }),
+      onSocket('markup', msg => {
+        if (!msg.applied || msg.op !== 'delete') return
+        // The selected markup was deleted by someone else: deselect it and say so.
+        setSelectedIds(ids => {
+          if (!ids.includes(msg.id)) return ids
+          const k = knownMarkups.current.get(msg.id)
+          const who = peersRef.current.find(p => p.userId === msg.by || p.name === msg.by)?.name ?? msg.by
+          setToast(deletedToast(who, k?.tag, k?.type))
+          return ids.filter(i => i !== msg.id)
+        })
+      }),
+    ]
+    return () => offs.forEach(off => off())
   }, [documentId, projectId])
 
   useEffect(() => {
@@ -271,6 +340,22 @@ export function ViewerPage() {
     centerOn(a.x, a.y, Math.max(view.current.zoom, 1))
   }, [page, pageSrc, pdf, pdfFor, documentId, pageNum, store.loaded, store.markups, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** Avatar tap: go to that person's page and centre on their cursor or selection. */
+  const jumpToPeer = useCallback((p: { page: number | null; cursor: Pt | null; selection: string[] }) => {
+    const sel = p.selection.map(id => store.markups.get(id)).find(m => !!m)
+    const at = p.cursor ?? (sel ? anchorOf(sel) : null)
+    const target = p.page ?? pageNum
+    if (at) pendingCenter.current = { page: target, x: at.x, y: at.y }
+    if (target !== pageNum) setPageNum(Math.min(Math.max(1, target), pageCount || target))
+    setJumpTick(n => n + 1)
+  }, [store.markups, pageNum]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const c = pendingCenter.current
+    if (!c || !page || pageSrc !== pdf || page.pageNumber !== c.page) return
+    pendingCenter.current = null
+    centerOn(c.x, c.y, Math.max(view.current.zoom, 0.5))
+  }, [page, pageSrc, pdf, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Phones: the properties sheet follows the selection.
   const hasSelection = selectedIds.length > 0
   useEffect(() => {
@@ -304,15 +389,14 @@ export function ViewerPage() {
     const body = { points_per_foot: s.pointsPerFoot, label: s.label }
     setScaleBusy(true); setScaleError('')
     try {
-      if (allSheets) await api(`/documents/${documentId}/scales`, { method: 'PUT', body: JSON.stringify({ ...body, pages }) })
-      else await api(`/documents/${documentId}/scales/${pageNum}`, { method: 'PUT', body: JSON.stringify(body) })
+      await queueScalePut(documentId, pages, body)
       setScales(prev => { const next = new Map(prev); for (const n of pages) next.set(n, s); return next })
     } catch (e) { setScaleError((e as Error).message); throw e } finally { setScaleBusy(false) }
   }
   async function clearScale() {
     setScaleBusy(true); setScaleError('')
     try {
-      await api(`/documents/${documentId}/scales/${pageNum}`, { method: 'DELETE' })
+      await queueScaleDelete(documentId, pageNum)
       setScales(prev => { const next = new Map(prev); next.delete(pageNum); return next })
     } catch (e) { setScaleError((e as Error).message) } finally { setScaleBusy(false) }
   }
@@ -470,10 +554,9 @@ export function ViewerPage() {
         <Link to={`/projects/${projectId}`} className="icon-btn" title="Back to plans">←</Link>
         <button className="icon-btn" title="Pages" onClick={() => setShowThumbs(s => !s)}>☰</button>
         <span className="crumb ellipsis">{meta?.name ?? '…'}</span>
-        <span className={`save-state${store.saveError ? ' bad' : ''}`} title={store.saveError}>
-          {store.saveError ? 'Not saved' : store.saving ? 'Saving…' : store.loaded ? 'Saved' : ''}
-        </span>
+        <SyncIndicator />
         <span className="spacer" />
+        <Avatars peers={peers} max={isPhone ? 2 : 4} onJump={jumpToPeer} />
         {!readOnly && (
           <>
             <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title="Undo (Ctrl+Z)">↶</button>
@@ -499,6 +582,9 @@ export function ViewerPage() {
           onClick={() => setShowList(s => !s)}>☷<span className="hide-sm list-btn-label">List</span></button>
         <button className={`icon-btn${showPanel ? ' active' : ''}`} title="Properties & layers" onClick={() => setShowPanel(s => !s)}>⚙</button>
       </header>
+      <OfflineBanner always={notCached}>{notCached
+        ? "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page."
+        : undefined}</OfflineBanner>
       <div className="viewer-body">
         {showThumbs && pdf && (
           <>
@@ -510,7 +596,8 @@ export function ViewerPage() {
         <ToolRail tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />
         <div className={`viewport tool-${activeTool}`} ref={viewportRef}>
           {error && <div className="error floating">{error}</div>}
-          {!page && !error && <div className="center muted">Loading plan…</div>}
+          {!page && !error && !notCached && <div className="center muted">Loading plan…</div>}
+          {notCached && <div className="center muted">Plan not available offline.</div>}
           {activeTool === 'calibrate' && !calLine && (
             <div className="tool-hint">Drag a line along a known dimension (Shift snaps 45°)</div>
           )}
@@ -548,6 +635,7 @@ export function ViewerPage() {
             <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
               zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
               readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
+              peers={peersHere} onCursor={canHover ? onCursor : undefined}
               consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
               onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
               newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
@@ -592,6 +680,7 @@ export function ViewerPage() {
             sheet={isPhone ? { snap, onSnap: setSnap, onClose: () => setShowPanel(false) } : undefined} />
         )}
       </div>
+      {toast && <div className="live-toast" role="status">{toast}</div>}
       {showList && (
         <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
           pageNum={pageNum} markups={store.markups} commit={store.commit} symbolSets={symbolSets} localScales={scales}

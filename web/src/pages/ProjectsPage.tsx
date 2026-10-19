@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, post, Project, User } from '../api'
+import { post, Project, User } from '../api'
+import { loadProjects } from '../offline/cache'
+import { OfflineBanner } from '../offline/OfflineBanner'
 import { UsersDialog } from './UsersDialog'
 
 interface Props { user: User; onSignOut: () => void }
@@ -11,7 +13,7 @@ export function ProjectsPage({ user, onSignOut }: Props) {
   const [error, setError] = useState('')
   const [showUsers, setShowUsers] = useState(false)
 
-  useEffect(() => { api<Project[]>('/projects').then(setProjects).catch(e => setError(e.message)) }, [])
+  useEffect(() => { loadProjects().then(r => setProjects(r.data)).catch(e => setError(e.message)) }, [])
 
   async function create(e: FormEvent) {
     e.preventDefault()
@@ -32,6 +34,7 @@ export function ProjectsPage({ user, onSignOut }: Props) {
         <span className="muted hide-sm">{user.name}</span>
         <button onClick={onSignOut}>Sign out</button>
       </header>
+      <OfflineBanner />
       <main className="content">
         <h2>Projects</h2>
         <form className="row" onSubmit={create}>

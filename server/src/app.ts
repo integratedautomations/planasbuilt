@@ -8,7 +8,9 @@ import jwt from '@fastify/jwt'
 import multipart from '@fastify/multipart'
 import fastifyStatic from '@fastify/static'
 import bcrypt from 'bcryptjs'
+import websocket from '@fastify/websocket'
 import { Db } from './db.js'
+import { Realtime } from './realtime.js'
 
 export type Role = 'admin' | 'editor' | 'viewer'
 const ROLE_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 }
@@ -31,6 +33,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   const app = Fastify({ logger: false })
   await app.register(cors)
   await app.register(jwt, { secret: jwtSecret })
+  await app.register(websocket)
   await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } })
 
   const auth = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -43,6 +46,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       return reply.code(401).send({ error: 'Not signed in' })
     }
   }
+
+  const realtime = new Realtime()
+  app.addHook('onClose', async () => realtime.close())
+  const cid = (req: FastifyRequest) => {
+    const h = req.headers['x-client-id']
+    return typeof h === 'string' ? h : null
+  }
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
   const sign = (u: { id: string; email: string; is_admin: boolean }) =>
     app.jwt.sign({ id: u.id, email: u.email, isAdmin: u.is_admin }, { expiresIn: '30d' })
@@ -69,6 +80,36 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const { email, name, password } = body ?? {}
     return email && name && typeof password === 'string' && password.length >= 8
   }
+
+  // ---- Realtime ----
+  app.get('/api/ws', { websocket: true }, async (socket, req) => {
+    const q = (req.query ?? {}) as any
+    let user: AuthUser
+    try { user = app.jwt.verify<AuthUser>(String(q.token ?? '')) } catch { socket.close(4401, 'Invalid token'); return }
+    const [u] = await db.query('SELECT name FROM users WHERE id = $1', [user.id])
+    if (!u) { socket.close(4401, 'Invalid token'); return }
+    const conn = realtime.add(socket, {
+      clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
+      userId: user.id, name: u.name,
+    })
+    socket.on('message', async (data) => {
+      let m: any
+      try { m = JSON.parse(String(data)) } catch { return realtime.error(conn, 'Bad message') }
+      if (!m || typeof m !== 'object') return realtime.error(conn, 'Bad message')
+      if (m.type === 'ping') realtime.pong(conn)
+      else if (m.type === 'presence') realtime.presence(conn, m)
+      else if (m.type === 'join') {
+        try {
+          const id = String(m.documentId ?? '')
+          const [doc] = UUID_RE.test(id) ? await db.query('SELECT project_id FROM documents WHERE id = $1', [id]) : []
+          if (!doc || !(await projectRole(user.id, doc.project_id))) return realtime.error(conn, 'Not allowed')
+          realtime.join(conn, id)
+        } catch { realtime.error(conn, 'Join failed') }
+      }
+    })
+    socket.on('close', () => realtime.remove(conn))
+    socket.on('error', () => socket.terminate())
+  })
 
   // ---- Auth ----
   app.get('/api/auth/status', async () => ({ needsSetup: (await userCount()) === 0 }))
@@ -266,7 +307,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const b = (req.body ?? {}) as any
     if (!validPage(page) || !validPpf(b.points_per_foot))
       return reply.code(400).send({ error: 'A valid page and points_per_foot are required' })
-    return upsertScale(doc.id, page, b.points_per_foot, String(b.label ?? ''), req.user.id)
+    const row = await upsertScale(doc.id, page, b.points_per_foot, String(b.label ?? ''), req.user.id)
+    realtime.scalesChanged(doc.id, req.user.id, cid(req))
+    return row
   })
 
   app.put('/api/documents/:id/scales', { preHandler: auth }, async (req, reply) => {
@@ -278,6 +321,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const pages = [...new Set<number>(b.pages)].sort((x, y) => x - y)
     const rows = []
     for (const p of pages) rows.push(await upsertScale(doc.id, p, b.points_per_foot, String(b.label ?? ''), req.user.id))
+    realtime.scalesChanged(doc.id, req.user.id, cid(req))
     return rows
   })
 
@@ -287,6 +331,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const page = Number((req.params as any).page)
     if (!validPage(page)) return reply.code(400).send({ error: 'Bad page' })
     await db.query('DELETE FROM page_scales WHERE document_id = $1 AND page = $2', [doc.id, page])
+    realtime.scalesChanged(doc.id, req.user.id, cid(req))
     return { ok: true }
   })
 
@@ -297,6 +342,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return db.query('SELECT * FROM layers WHERE project_id = $1 ORDER BY sort, created_at', [id])
   })
 
+  async function layersChanged(projectId: string, req: FastifyRequest) {
+    const docs = await db.query<{ id: string }>('SELECT id FROM documents WHERE project_id = $1', [projectId])
+    realtime.layersChanged(docs.map(d => d.id), req.user.id, cid(req))
+  }
+
   app.post('/api/projects/:id/layers', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
     if (!(await requireRole(req, reply, id, 'editor'))) return
@@ -306,6 +356,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       `INSERT INTO layers (project_id, name, color, sort)
        VALUES ($1, $2, $3, (SELECT coalesce(max(sort), 0) + 1 FROM layers WHERE project_id = $1)) RETURNING *`,
       [id, String(name).trim(), color || '#e8590c'])
+    await layersChanged(id, req)
     return layer
   })
 
@@ -324,6 +375,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const [updated] = await db.query(
       'UPDATE layers SET name = $1, color = $2 WHERE id = $3 RETURNING *',
       [String(name ?? layer.name).trim() || layer.name, color ?? layer.color, layer.id])
+    await layersChanged(layer.project_id, req)
     return updated
   })
 
@@ -331,6 +383,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const layer = await layerWithAccess(req, reply, 'admin')
     if (!layer) return
     await db.query('DELETE FROM layers WHERE id = $1', [layer.id])
+    await layersChanged(layer.project_id, req)
     return { ok: true }
   })
 
@@ -365,6 +418,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       `INSERT INTO symbol_sets (name, color, tag_prefix, icon, fields, has_fov, sort)
        VALUES ($1,$2,$3,$4,$5,$6,(SELECT coalesce(max(sort),0)+1 FROM symbol_sets)) RETURNING *`,
       [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
     return row
   })
 
@@ -376,6 +430,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       `UPDATE symbol_sets SET name=$1, color=$2, tag_prefix=$3, icon=$4, fields=$5, has_fov=$6 WHERE id=$7 RETURNING *`,
       [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, (req.params as any).id])
     if (!row) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req))
     return row
   })
 
@@ -383,6 +438,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   app.delete('/api/symbol-sets/:id', { preHandler: auth }, async (req, reply) => {
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
     await db.query('UPDATE symbol_sets SET archived = true WHERE id = $1', [(req.params as any).id])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
     return { ok: true }
   })
 
@@ -546,6 +602,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       const changes = diffMarkup(existing, row)
       if (Object.keys(changes).length) await recordEvent(markupId, req.user.id, 'updated', changes)
     }
+    const [names] = await db.query(
+      `SELECT (SELECT name FROM users WHERE id = $1) AS created_by_name, (SELECT name FROM users WHERE id = $2) AS updated_by_name`,
+      [row.created_by, row.updated_by])
+    realtime.markupChanged(doc.id, { ...row, ...names }, req.user.id, cid(req))
     return row
   })
 
@@ -556,7 +616,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const gone = await db.query(
       `UPDATE markups SET deleted = true, version = version + 1, updated_by = $1, updated_at = now()
        WHERE id = $2 AND document_id = $3 AND NOT deleted RETURNING id`, [req.user.id, markupId, doc.id])
-    if (gone.length) await recordEvent(markupId, req.user.id, 'deleted')
+    if (gone.length) {
+      await recordEvent(markupId, req.user.id, 'deleted')
+      realtime.markupDeleted(doc.id, markupId, req.user.id, cid(req))
+    }
     return { ok: true }
   })
 
@@ -564,7 +627,6 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   const PHOTO_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }
   const EXT_TYPES: Record<string, string> = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
   const PHOTO_MAX = 15 * 1024 * 1024
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
 
   const removeFile = (key: string | null | undefined) => {
@@ -610,6 +672,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return key
   }
 
+  async function attachmentsChanged(a: { markup_id: string }, req: FastifyRequest) {
+    const [m] = await db.query('SELECT document_id FROM markups WHERE id = $1', [a.markup_id])
+    if (m) realtime.attachmentsChanged(m.document_id, a.markup_id, req.user.id, cid(req))
+  }
+
   const attRow = async (id: string) => (await db.query(`SELECT ${ATT_COLUMNS} FROM attachments WHERE id = $1`, [id]))[0]
 
   app.get('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
@@ -648,6 +715,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       throw e
     }
     await recordEvent(m.id, req.user.id, 'photo_added', { attachment_id: id, caption: String(f.caption?.value ?? '') })
+    realtime.attachmentsChanged(m.document_id, m.id, req.user.id, cid(req))
     return attRow(id)
   })
 
@@ -657,6 +725,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const caption = (req.body as any)?.caption
     if (typeof caption !== 'string') return reply.code(400).send({ error: 'caption is required' })
     await db.query('UPDATE attachments SET caption = $1 WHERE id = $2', [caption, a.id])
+    await attachmentsChanged(a, req)
     return attRow(a.id)
   })
 
@@ -670,6 +739,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     await db.query('UPDATE attachments SET annotated_key = $1 WHERE id = $2', [key, a.id])
     removeFile(a.annotated_key)
     await recordEvent(a.markup_id, req.user.id, 'photo_annotated', { attachment_id: a.id, caption: a.caption })
+    await attachmentsChanged(a, req)
     return attRow(a.id)
   })
 
@@ -680,6 +750,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     await recordEvent(a.markup_id, req.user.id, 'photo_deleted', { attachment_id: a.id, caption: a.caption })
     removeFile(a.file_key)
     removeFile(a.annotated_key)
+    await attachmentsChanged(a, req)
     return { ok: true }
   })
 

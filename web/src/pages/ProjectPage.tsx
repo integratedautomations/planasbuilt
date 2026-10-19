@@ -1,6 +1,9 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, DocumentSummary, Member, Project, Role, User } from '../api'
+import { docCacheStates, loadDocuments, loadProject, makeProjectOffline, projectCacheSize } from '../offline/cache'
+import type { Progress } from '../offline/cache'
+import { OfflineBanner } from '../offline/OfflineBanner'
 import { loadPdf } from '../pdf'
 import { exportProjectSchedule } from '../schedule/exportProject'
 
@@ -13,13 +16,34 @@ export function ProjectPage({ user }: { user: User }) {
   const [uploading, setUploading] = useState('')
   const [exporting, setExporting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const [offlineState, setOfflineState] = useState<Map<string, { offline: boolean }>>(new Map())
+  const [cacheBytes, setCacheBytes] = useState(0)
+  const [progress, setProgress] = useState<Progress | null>(null)
 
   useEffect(() => {
-    api<Project>(`/projects/${projectId}`).then(setProject).catch(e => setError(e.message))
-    api<DocumentSummary[]>(`/projects/${projectId}/documents`).then(setDocs).catch(e => setError(e.message))
+    loadProject(projectId!).then(r => setProject(r.data)).catch(e => setError(e.message))
+    loadDocuments(projectId!).then(r => setDocs(r.data)).catch(e => setError(e.message))
     api<Member[]>(`/projects/${projectId}/members`).then(setMembers).catch(() => {})
   }, [projectId])
 
+  const refreshOffline = async (list: DocumentSummary[]) => {
+    const ids = list.map(d => d.id)
+    setOfflineState(await docCacheStates(ids))
+    setCacheBytes(await projectCacheSize(ids))
+  }
+  useEffect(() => { void refreshOffline(docs) }, [docs])
+
+  async function makeOffline() {
+    setError(''); setProgress({ done: 0, total: 1, label: 'Starting' })
+    try {
+      const list = await makeProjectOffline(projectId!, setProgress)
+      setDocs(list)
+      await refreshOffline(list)
+    } catch (err) { setError(`Could not save for offline: ${(err as Error).message}`) }
+    finally { setProgress(null) }
+  }
+
+  const allOffline = docs.length > 0 && docs.every(d => offlineState.get(d.id)?.offline)
   const canEdit = project?.role === 'admin' || project?.role === 'editor'
   const isAdmin = project?.role === 'admin'
 
@@ -69,10 +93,15 @@ export function ProjectPage({ user }: { user: User }) {
         <span className="spacer" />
         <span className="muted hide-sm">{user.name}</span>
       </header>
+      <OfflineBanner />
       <main className="content">
         <div className="row">
           <h2>Plans</h2>
           <span className="spacer" />
+          <button disabled={!!progress || docs.length === 0} onClick={makeOffline}
+            title="Download every plan, its markups, layers, symbols and scales to this device">
+            {allOffline ? 'Refresh offline copy' : 'Make available offline'}
+          </button>
           <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
             {exporting ? 'Exporting…' : 'Export schedule'}
           </button>
@@ -86,6 +115,15 @@ export function ProjectPage({ user }: { user: User }) {
             </>
           )}
         </div>
+        {progress && (
+          <div>
+            <div className="progress" role="progressbar" aria-valuenow={Math.round(progress.done / progress.total * 100)}>
+              <div style={{ width: `${Math.round(progress.done / progress.total * 100)}%` }} />
+            </div>
+            <span className="muted small">Saving {progress.label}…</span>
+          </div>
+        )}
+        {cacheBytes > 0 && <div className="muted small">{(cacheBytes / 1048576).toFixed(1)} MB saved on this device</div>}
         {error && <div className="error">{error}</div>}
         {docs.length === 0 ? <p className="muted">No plans yet.{canEdit && ' Upload a PDF to start.'}</p> : (
           <ul className="list">
@@ -93,7 +131,8 @@ export function ProjectPage({ user }: { user: User }) {
               <li key={d.id} className="list-row">
                 <Link to={`/projects/${projectId}/documents/${d.id}`} className="list-item grow">
                   <span className="list-title">{d.name}</span>
-                  <span className="muted">{d.page_count} page{d.page_count === 1 ? '' : 's'} · Rev {d.revision}</span>
+                  <span className="muted">{d.page_count} page{d.page_count === 1 ? '' : 's'} · Rev {d.revision}
+                    {offlineState.get(d.id)?.offline && <span className="offline-badge" title="Available offline"> · offline ✓</span>}</span>
                 </Link>
                 {isAdmin && <button className="danger" onClick={() => remove(d)}>Delete</button>}
               </li>

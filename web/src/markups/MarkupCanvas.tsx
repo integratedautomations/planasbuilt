@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Circle, Layer, Rect, Stage, Transformer } from 'react-konva'
+import { Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text, Transformer } from 'react-konva'
 import type Konva from 'konva'
 import { bakeBox, bakePath, boxFromDrag, pathFromPoints, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
@@ -9,11 +9,12 @@ import { isSheetArea } from './areas'
 import { deviceRadius, findSnapTarget, stackTop, tagRange } from './stacks'
 import type { StackIndex } from './stacks'
 import { deviceCenter } from './geometry'
-import { markupsInBox, rectFromCorners } from './selection'
+import { markupBounds, markupsInBox, rectFromCorners } from './selection'
 import type { Rect as Box } from './selection'
 import { AREA_STYLE, isBoxType } from './types'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
+import type { Peer } from '../realtime/presence'
 
 export interface MarkupCanvasHandle {
   stage: () => Konva.Stage | null
@@ -55,6 +56,10 @@ interface Props {
   showCones: boolean
   /** Device stacks on this page (same-set devices on one spot). */
   stacks: StackIndex
+  /** Other people on this page (cursor + selection are drawn in their colour). */
+  peers?: Peer[]
+  /** Pointer position in page coordinates, or null when it left the canvas. Omitted when cursors are not broadcast. */
+  onCursor?: (p: Pt | null) => void
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
@@ -66,7 +71,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks, peers, onCursor } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -242,6 +247,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }
 
   function onPointerMove(e: Konva.KonvaEventObject<PointerEvent>) {
+    if (onCursor) onCursor(stageRef.current?.getRelativePointerPosition() ?? null)
     if (marqueeStart.current) {
       marqueeRect.current = rectFromCorners(marqueeStart.current.p, pointer())
       setMarquee(marqueeRect.current)
@@ -389,7 +395,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
   return (
     <Stage ref={stageRef} width={width} height={height} className="markup-stage"
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => onCursor?.(null)}
       onDblClick={onDoubleClick} onDblTap={onDoubleClick}>
       <Layer>
         {ordered.map(m => {
@@ -431,6 +437,23 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}
+        {peers?.map(p => {
+          const boxes = p.selection.map(id => byId.get(id)).filter((x): x is Markup => !!x).map(x => ({ id: x.id, b: markupBounds(x) }))
+          return boxes.map(({ id, b }) => (
+            <Rect key={`${p.clientId}:${id}`} x={b.x - 3 / zoom} y={b.y - 3 / zoom} width={b.width + 6 / zoom} height={b.height + 6 / zoom}
+              listening={false} stroke={p.color} strokeWidth={2 / zoom} dash={[6 / zoom, 3 / zoom]} cornerRadius={2 / zoom} />
+          ))
+        })}
+        {peers?.map(p => p.cursor && (
+          // Sized in screen pixels: the group is scaled by 1/zoom
+          <Group key={p.clientId} x={p.cursor.x} y={p.cursor.y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
+            <Line points={[0, 0, 0, 16, 4, 12.5, 7.5, 19, 10.5, 17.5, 7, 11.5, 12, 11]} closed fill={p.color} stroke="#fff" strokeWidth={1} lineJoin="round" />
+            <Label x={12} y={18}>
+              <Tag fill={p.color} cornerRadius={3} />
+              <Text text={p.name} fill="#fff" fontSize={11} padding={3} />
+            </Label>
+          </Group>
+        ))}
         <Transformer ref={trRef} rotateEnabled keepRatio={selected.length > 0 && selected.every(m => m.type === 'device')} ignoreStroke flipEnabled={false}
           rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={4}
           anchorSize={11} anchorCornerRadius={2} borderStroke="#1971c2" anchorStroke="#1971c2"

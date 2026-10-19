@@ -1,52 +1,82 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, attachmentFileUrl } from '../api'
-import type { Attachment } from '../api'
+import { attachmentFileUrl } from '../api'
+import { cachePhotoView, loadAttachments } from '../offline/cache'
+import { db } from '../offline/db'
+import type { AttachmentRow } from '../offline/db'
+import { useSyncStatus } from '../offline/hooks'
+import { on as onSocket } from '../realtime/socket'
+import { queuePhotoCaption, queuePhotoCreate, queuePhotoDelete, subscribe } from '../offline/sync'
 import { uuid } from '../uuid'
 import { compressPhoto } from './compress'
 import { PhotoAnnotator } from './PhotoAnnotator'
 import './photos.css'
 
-interface Local { id: string; url: string; blob: Blob; width: number; height: number; status: 'uploading' | 'error'; error?: string }
+type Attachment = AttachmentRow
+/** Where to load a photo from: a local blob while it is unsent/offline, the server otherwise. */
+type SrcFor = (a: Attachment, original?: boolean) => string
 interface Props { markupId: string; readOnly: boolean }
 
 export function DevicePhotos({ markupId, readOnly }: Props) {
   const [items, setItems] = useState<Attachment[]>([])
-  const [locals, setLocals] = useState<Local[]>([])
   const [bump, setBump] = useState<Record<string, number>>({})
   const [loadErr, setLoadErr] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
-  const alive = useRef(true)
-  const localsRef = useRef<Local[]>([])
-  localsRef.current = locals
+  const [blobUrls, setBlobUrls] = useState<Map<string, string>>(new Map())
+  const [queued, setQueued] = useState<Set<string>>(new Set())
+  const { online, pending } = useSyncStatus()
 
-  useEffect(() => {
-    alive.current = true
-    return () => { alive.current = false; localsRef.current.forEach(l => URL.revokeObjectURL(l.url)) }
-  }, [])
+  const [reload, setReload] = useState(0)
+  const shownFor = useRef('')
+  // Someone else added/changed/removed a photo on this markup (or we reconnected: markupId '*').
+  useEffect(() => onSocket('attachments', msg => { if (msg.markupId === markupId || msg.markupId === '*') setReload(n => n + 1) }), [markupId])
 
   useEffect(() => {
     let cancel = false
-    setItems([]); setLoadErr('')
-    api<Attachment[]>(`/markups/${markupId}/attachments`)
-      .then(r => { if (!cancel) setItems(r) })
+    if (shownFor.current !== markupId) { shownFor.current = markupId; setItems([]) }
+    setLoadErr('')
+    loadAttachments(markupId)
+      .then(r => {
+        if (cancel) return
+        setItems(r.data)
+        // Keep a local copy of each photo so it still shows with no signal.
+        if (!r.fromCache) r.data.filter(a => !a.pending).forEach(a => { void cachePhotoView(a) })
+      })
       .catch(e => { if (!cancel) setLoadErr((e as Error).message) })
     return () => { cancel = true }
-  }, [markupId])
+  }, [markupId, reload])
 
-  const upload = useCallback(async (l: Local) => {
-    setLocals(ls => ls.map(x => x.id === l.id ? { ...x, status: 'uploading', error: undefined } : x))
-    try {
-      const fd = new FormData()
-      fd.append('id', l.id); fd.append('caption', ''); fd.append('width', String(l.width)); fd.append('height', String(l.height))
-      fd.append('photo', l.blob, 'photo.jpg') // file part last so the server sees fields first
-      const rec = await api<Attachment>(`/markups/${markupId}/attachments`, { method: 'POST', body: fd })
-      if (!alive.current) return
-      setItems(it => it.some(a => a.id === rec.id) ? it : [...it, rec])
-      setLocals(ls => { ls.filter(x => x.id === l.id).forEach(x => URL.revokeObjectURL(x.url)); return ls.filter(x => x.id !== l.id) })
-    } catch (e) {
-      if (alive.current) setLocals(ls => ls.map(x => x.id === l.id ? { ...x, status: 'error', error: (e as Error).message || 'Upload failed' } : x))
-    }
-  }, [markupId])
+  // The server accepted a photo we uploaded: swap in its row (thumbnail then points at the server).
+  useEffect(() => subscribe(e => {
+    if (e.type === 'attachment-adopted' && e.markupId === markupId)
+      setItems(it => it.map(a => a.id === e.attachment.id ? { ...e.attachment, caption: a.caption, has_annotation: a.has_annotation || e.attachment.has_annotation } : a))
+  }), [markupId])
+
+  // Local blobs (view + original) as object URLs, and which photos still have queued writes.
+  const ids = items.map(a => a.id).join(',')
+  useEffect(() => {
+    let cancel = false
+    const made: string[] = []
+    void (async () => {
+      const urls = new Map<string, string>()
+      for (const id of ids ? ids.split(',') : []) {
+        for (const v of ['view', 'original'] as const) {
+          const row = await db.photoBlobs.get(`${id}:${v}`)
+          if (row) { const u = URL.createObjectURL(row.blob); made.push(u); urls.set(`${id}:${v}`, u) }
+        }
+      }
+      const q = await db.outbox.filter(i => i.kind.startsWith('photo_')).toArray()
+      if (cancel) { made.forEach(URL.revokeObjectURL); return }
+      setBlobUrls(urls)
+      setQueued(new Set(q.map(i => i.targetId)))
+    })()
+    return () => { cancel = true; setTimeout(() => made.forEach(URL.revokeObjectURL), 1000) }
+  }, [ids, pending, bump])
+
+  const srcFor: SrcFor = (a, original) => {
+    const local = blobUrls.get(`${a.id}:${original ? 'original' : 'view'}`)
+    if (local && (a.pending || queued.has(a.id) || !online)) return local
+    return attachmentFileUrl(a.id, original ? 'original' : undefined, `${a.created_at}-${bump[a.id] ?? 0}`)
+  }
 
   const addFiles = async (files: FileList | null) => {
     if (!files) return
@@ -54,21 +84,15 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
       const id = uuid()
       try {
         const { blob, width, height } = await compressPhoto(f)
-        const l: Local = { id, url: URL.createObjectURL(blob), blob, width, height, status: 'uploading' }
-        setLocals(ls => [...ls, l])
-        void upload(l)
+        await queuePhotoCreate({ id, markupId, blob, width, height })
+        const row = await db.attachments.get(id)
+        if (row) setItems(it => [...it, row])
       } catch (e) {
         setLoadErr(`${f.name}: ${(e as Error).message || 'could not process image'}`)
       }
     }
   }
 
-  const discard = (l: Local) => {
-    URL.revokeObjectURL(l.url)
-    setLocals(ls => ls.filter(x => x.id !== l.id))
-  }
-
-  const thumb = (a: Attachment) => attachmentFileUrl(a.id, undefined, `${a.created_at}-${bump[a.id] ?? 0}`)
   const openIdx = items.findIndex(a => a.id === openId)
 
   return (
@@ -77,24 +101,11 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
       <div className="photo-grid">
         {items.map(a => (
           <button key={a.id} type="button" className="photo-thumb" onClick={() => setOpenId(a.id)} aria-label={a.caption || 'Open photo'}>
-            <img src={thumb(a)} alt={a.caption} loading="lazy" />
+            <img src={srcFor(a)} alt={a.caption} loading="lazy" />
+            {a.pending && <span className="badge">Waiting to upload</span>}
             {a.has_annotation && <span className="badge">Marked</span>}
             {a.caption && <span className="cap">{a.caption}</span>}
           </button>
-        ))}
-        {locals.map(l => (
-          <div key={l.id} className="photo-thumb pending">
-            <img src={l.url} alt="" />
-            <div className="photo-overlay">
-              {l.status === 'uploading' ? <span className="spinner" aria-label="Uploading" /> : (
-                <>
-                  <span>{l.error}</span>
-                  <button type="button" onClick={() => upload(l)}>Retry</button>
-                  <button type="button" onClick={() => discard(l)}>Remove</button>
-                </>
-              )}
-            </div>
-          </div>
         ))}
       </div>
       {!readOnly && (
@@ -107,7 +118,7 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
       {readOnly && !items.length && !loadErr && <div className="muted small">No photos.</div>}
 
       {openIdx >= 0 && (
-        <Viewer key={openId} items={items} index={openIdx} readOnly={readOnly} bump={bump}
+        <Viewer key={openId} items={items} index={openIdx} readOnly={readOnly} srcFor={srcFor}
           onIndex={i => setOpenId(items[i].id)} onClose={() => setOpenId(null)}
           onCaption={(id, caption) => setItems(it => it.map(a => a.id === id ? { ...a, caption } : a))}
           onAnnotated={id => {
@@ -126,19 +137,18 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
 }
 
 interface ViewerProps {
-  items: Attachment[]; index: number; readOnly: boolean; bump: Record<string, number>
+  items: Attachment[]; index: number; readOnly: boolean; srcFor: SrcFor
   onIndex: (i: number) => void; onClose: () => void
   onCaption: (id: string, caption: string) => void
   onAnnotated: (id: string) => void
   onDeleted: (id: string) => void
 }
 
-function Viewer({ items, index, readOnly, bump, onIndex, onClose, onCaption, onAnnotated, onDeleted }: ViewerProps) {
+function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, onAnnotated, onDeleted }: ViewerProps) {
   const a = items[index]
   const [caption, setCaption] = useState(a.caption)
   const [orig, setOrig] = useState(false)
   const [annotating, setAnnotating] = useState(false)
-  const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const touch = useRef<{ x: number; y: number } | null>(null)
 
@@ -163,21 +173,21 @@ function Viewer({ items, index, readOnly, bump, onIndex, onClose, onCaption, onA
     if (readOnly || caption === a.caption) return
     setErr('')
     try {
-      await api(`/attachments/${a.id}`, { method: 'PATCH', body: JSON.stringify({ caption }) })
+      await queuePhotoCaption(a.id, caption)
       onCaption(a.id, caption)
     } catch (e) { setErr((e as Error).message || 'Could not save caption') }
   }
 
   const remove = async () => {
     if (!window.confirm('Delete this photo? This cannot be undone.')) return
-    setBusy(true); setErr('')
+    setErr('')
     try {
-      await api(`/attachments/${a.id}`, { method: 'DELETE' })
+      await queuePhotoDelete(a.id)
       onDeleted(a.id)
-    } catch (e) { setErr((e as Error).message || 'Delete failed'); setBusy(false) }
+    } catch (e) { setErr((e as Error).message || 'Delete failed') }
   }
 
-  const src = attachmentFileUrl(a.id, orig ? 'original' : undefined, `${a.created_at}-${bump[a.id] ?? 0}`)
+  const src = srcFor(a, orig)
 
   return (
     <div className="photo-modal" role="dialog" aria-label="Photo viewer">
@@ -185,7 +195,7 @@ function Viewer({ items, index, readOnly, bump, onIndex, onClose, onCaption, onA
         <span className="grow">{index + 1} / {items.length}</span>
         {a.has_annotation && <button className={orig ? 'on' : ''} onClick={() => setOrig(o => !o)}>{orig ? 'Showing original' : 'View original'}</button>}
         {!readOnly && <button onClick={() => setAnnotating(true)}>Annotate</button>}
-        {!readOnly && <button className="danger" onClick={remove} disabled={busy}>Delete</button>}
+        {!readOnly && <button className="danger" onClick={remove}>Delete</button>}
         <button onClick={onClose}>Close</button>
       </div>
       <div className="pm-stage"
@@ -211,7 +221,7 @@ function Viewer({ items, index, readOnly, bump, onIndex, onClose, onCaption, onA
       </div>
       {err && <div className="pm-caption" style={{ color: '#ff8787' }}>{err}</div>}
       {annotating && (
-        <PhotoAnnotator attachmentId={a.id} onClose={() => setAnnotating(false)}
+        <PhotoAnnotator attachmentId={a.id} src={srcFor(a, true)} onClose={() => setAnnotating(false)}
           onSaved={() => { setAnnotating(false); setOrig(false); onAnnotated(a.id) }} />
       )}
     </div>
