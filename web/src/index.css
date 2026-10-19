@@ -109,7 +109,6 @@ a.list-item:hover { border-color: var(--accent); }
 
 @media (max-width: 640px) {
   .hide-sm { display: none; }
-  .thumbs { position: absolute; z-index: 5; top: 52px; bottom: 0; left: 0; box-shadow: 4px 0 16px rgb(0 0 0 / 0.3); }
 }
 
 /* ---- Markup tools ---- */
@@ -148,12 +147,57 @@ a.list-item:hover { border-color: var(--accent); }
 .layer-name { flex: 1; text-align: left; display: flex; align-items: center; gap: 8px; border: none; background: transparent; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
-@media (max-width: 640px) {
-  .viewer-body { flex-direction: column-reverse; position: relative; }
-  .tool-rail { flex-direction: row; border-right: none; border-top: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
-  .side-panel { position: absolute; z-index: 6; left: 0; right: 0; bottom: 57px; width: auto; max-height: 55%; border-left: none; border-top: 1px solid var(--border); box-shadow: 0 -4px 16px rgb(0 0 0 / 0.3); }
-  .thumbs { top: 0; bottom: 57px; }
+/* Tool grid ("More") is phone-only */
+.tool-more, .tool-more-grid { display: none; }
+
+/* Tablet and phone: thumbnails and properties are overlay drawers that never shrink the plan */
+@media (max-width: 1024px) {
+  .viewer-body { position: relative; }
+  .thumbs { position: absolute; z-index: 5; top: 0; bottom: 0; left: 57px; box-shadow: 4px 0 16px rgb(0 0 0 / 0.3); }
+  .scrim { position: absolute; inset: 0; z-index: 4; background: rgb(0 0 0 / 0.35); }
+  .side-panel { position: absolute; z-index: 6; top: 0; bottom: 0; right: 0; width: min(340px, 90%); box-shadow: -4px 0 16px rgb(0 0 0 / 0.3); }
 }
+@media (min-width: 1025px) { .scrim { display: none; } }
+
+/* Phone */
+@media (max-width: 640px) {
+  :root { --rail-h: calc(57px + env(safe-area-inset-bottom)); }
+  .viewer-body { flex-direction: column-reverse; }
+  .tool-rail { position: relative; flex-direction: row; justify-content: space-around; border-right: none; border-top: 1px solid var(--border); overflow: visible; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+  .tool-btn.secondary { display: none; }
+  .tool-more { display: grid; }
+  .tool-more-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; position: absolute; z-index: 7; left: 8px; right: 8px; bottom: calc(100% + 8px); padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); }
+  .tool-grid-btn { min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 4px; font-size: 12px; border-color: transparent; background: transparent; }
+  .tool-grid-btn.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
+  .thumbs, .scrim { bottom: var(--rail-h); }
+  .thumbs { left: 0; }
+
+  /* Properties bottom sheet, sitting above the tool rail */
+  .side-panel { left: 0; right: 0; top: auto; bottom: var(--rail-h); width: auto; border-left: none; border-top: 1px solid var(--border); border-radius: 14px 14px 0 0; box-shadow: 0 -4px 16px rgb(0 0 0 / 0.3); transition: height 0.2s ease; overscroll-behavior: contain; }
+  .side-panel.dragging { transition: none; }
+  .side-panel.snap-peek { height: max(25%, 132px); }
+  .side-panel.snap-half { height: 50%; }
+  .side-panel.snap-full { height: calc(100% - var(--rail-h)); border-radius: 0; }
+  .sheet-handle { flex-shrink: 0; height: 28px; display: grid; place-items: center; touch-action: none; cursor: grab; }
+  .grip { width: 40px; height: 5px; border-radius: 3px; background: var(--border); }
+  .side-panel .tabs { flex-shrink: 0; }
+  .side-panel > .panel-body { flex: 1; min-height: 0; }
+
+  /* Toolbar: fits 375px */
+  .toolbar { gap: 2px; padding: 6px 4px; }
+  .toolbar .icon-btn { min-width: 40px; padding: 6px; }
+  .toolbar .crumb { flex: 1 1 0; min-width: 0; }
+  .toolbar .spacer, .toolbar .divider { display: none; }
+  .save-state:not(.bad) { display: none; }
+  .page-input { width: 40px; padding: 6px 2px; }
+
+  /* 16px+ inputs stop iOS zooming on focus */
+  input, select, textarea { font-size: 16px; }
+}
+
+/* Touch: no accidental selection or double-tap zoom on controls */
+.toolbar, .tool-rail, .sheet-handle, .thumbs { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+button { touch-action: manipulation; }
 
 /* ---- Symbol sets ---- */
 .btn-link { padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); min-height: 40px; display: inline-flex; align-items: center; }

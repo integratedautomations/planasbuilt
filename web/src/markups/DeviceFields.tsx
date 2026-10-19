@@ -1,4 +1,8 @@
 import { HARDWARE_FIELDS, STATUSES } from './types'
+import { useState } from 'react'
+import { DevicePhotos } from '../photos/DevicePhotos'
+import { BarcodeScanner } from '../photos/BarcodeScanner'
+import '../photos/photos.css'
 import type { FieldDef, Markup, Status, SymbolSet } from './types'
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
@@ -19,9 +23,21 @@ export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
   const setStatus = (status: Status) => onUpdate(m => ({ ...m, status }), 'status')
   const setField = (key: string, value: string | number | boolean) =>
     onUpdate(m => ({ ...m, fields: { ...m.fields, [key]: value } }), `field.${key}.${d.id}`)
+  const [scanKey, setScanKey] = useState<string | null>(null)
+  const scanProps = (key: string) => (key === 'serial' || key === 'mac') && !readOnly ? { onScan: () => setScanKey(key) } : {}
+  const onScanned = (text: string) => {
+    if (!scanKey) return
+    const t = text.trim()
+    const hex = t.replace(/[^0-9a-fA-F]/g, '')
+    const value = scanKey === 'mac' && /^([0-9a-fA-F]{2}[:\-.]?){5}[0-9a-fA-F]{2}$|^[0-9a-fA-F]{12}$/.test(t) && hex.length === 12
+      ? hex.toUpperCase().match(/../g)!.join(':') : t
+    setField(scanKey, value)
+    setScanKey(null)
+  }
   const fov = 'width' in d.geometry ? d.geometry.fov : undefined
 
   return (
+    <>
     <fieldset disabled={readOnly} className="stack">
       <div className="device-head">
         <span className="set-icon" style={{ background: set?.color ?? '#868e96' }}>{set?.icon && <img src={set.icon} alt="" />}</span>
@@ -47,9 +63,9 @@ export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
           <label className="field">Tag
             <input value={d.tag ?? ''} onChange={e => onUpdate(m => ({ ...m, tag: e.target.value }), `tag.${d.id}`)} />
           </label>
-          {set?.fields.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} />)}
+          {set?.fields.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} {...scanProps(f.key)} />)}
           <div className="muted small section-label">Hardware</div>
-          {HARDWARE_FIELDS.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} />)}
+          {HARDWARE_FIELDS.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} {...scanProps(f.key)} />)}
           <label className="field">Notes
             <textarea rows={2} value={String(d.fields?.notes ?? '')} onChange={e => setField('notes', e.target.value)} />
           </label>
@@ -68,11 +84,20 @@ export function DeviceFields({ devices, set, readOnly, onUpdate }: Props) {
           )}
         </>
       )}
+      {scanKey && <BarcodeScanner onResult={onScanned} onClose={() => setScanKey(null)} />}
     </fieldset>
+    {/* Outside the disabled fieldset so viewers can still open and browse photos */}
+    {single && (
+      <div className="stack">
+        <div className="muted small section-label">Photos</div>
+        <DevicePhotos markupId={d.id} readOnly={readOnly} />
+      </div>
+    )}
+    </>
   )
 }
 
-function FieldInput({ def, value, onChange }: { def: FieldDef; value: string | number | boolean | undefined; onChange: (v: string | number | boolean) => void }) {
+function FieldInput({ def, value, onChange, onScan }: { def: FieldDef; value: string | number | boolean | undefined; onChange: (v: string | number | boolean) => void; onScan?: () => void }) {
   if (def.type === 'checkbox') {
     return <label className="check"><input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} /> {def.label}</label>
   }
@@ -90,11 +115,14 @@ function FieldInput({ def, value, onChange }: { def: FieldDef; value: string | n
   const bad = def.type === 'ip' && !isValidIp(v)
   return (
     <label className="field">{def.label}
+      <span className="input-row">
       <input className={bad ? 'invalid' : ''} value={v}
         type={def.type === 'date' ? 'date' : 'text'}
         inputMode={def.type === 'number' ? 'numeric' : def.type === 'ip' ? 'decimal' : undefined}
         placeholder={def.type === 'ip' ? '192.168.1.10' : undefined}
         onChange={e => onChange(def.type === 'number' && e.target.value !== '' && !isNaN(+e.target.value) ? +e.target.value : e.target.value)} />
+      {onScan && <button type="button" className="scan-btn" onClick={onScan} aria-label={`Scan ${def.label}`} title="Scan barcode">Scan</button>}
+      </span>
       {bad && <span className="hint-bad">Not a valid IPv4 address</span>}
     </label>
   )

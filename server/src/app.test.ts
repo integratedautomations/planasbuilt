@@ -124,4 +124,68 @@ describe('milestone 1 api', () => {
       headers: { authorization: `Bearer ${viewer}` }, payload: { page: 1, type: 'line', geometry: {} } })
     expect(res.statusCode).toBe(403)
   })
+
+  describe('photo attachments', () => {
+    const mk = '11111111-1111-4111-8111-111111111111'
+    const aid = '44444444-4444-4444-8444-444444444444'
+    const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4])
+    const png2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9])
+    const photoBody = (b: string, fields: Record<string, string>, data: Buffer, type = 'image/jpeg') => Buffer.concat([
+      ...Object.entries(fields).map(([k, v]) => Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`)),
+      Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="photo"; filename="../../x.jpg"\r\nContent-Type: ${type}\r\n\r\n`),
+      data, Buffer.from(`\r\n--${b}--\r\n`),
+    ])
+    const send = (method: 'POST' | 'PUT', url: string, token: string, fields: Record<string, string>, data: Buffer, type?: string) =>
+      app.inject({ method, url, headers: { authorization: `Bearer ${token}`, 'content-type': 'multipart/form-data; boundary=PB' },
+        payload: photoBody('PB', fields, data, type) })
+    const login = async () => (await app.inject({ method: 'POST', url: '/api/auth/login',
+      payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+
+    it('uploads, lists, patches, annotates, serves and deletes', async () => {
+      const h = { authorization: `Bearer ${admin}` }
+      const up = await send('POST', `/api/markups/${mk}/attachments`, admin, { id: aid, caption: 'Before', width: '640', height: '480' }, jpg)
+      expect(up.statusCode).toBe(200)
+      expect(up.json()).toMatchObject({ id: aid, markup_id: mk, caption: 'Before', width: 640, height: 480, has_annotation: false })
+      expect((await app.inject({ url: `/api/markups/${mk}/attachments`, headers: h })).json()).toHaveLength(1)
+      expect((await app.inject({ method: 'PATCH', url: `/api/attachments/${aid}`, headers: h, payload: { caption: 'After' } })).json().caption).toBe('After')
+
+      const file = (q = '') => app.inject({ url: `/api/attachments/${aid}/file?token=${admin}${q}` })
+      const orig = await file()
+      expect(orig.rawPayload.equals(jpg)).toBe(true)
+      expect(orig.headers['content-type']).toBe('image/jpeg')
+      expect(orig.headers['cache-control']).toBe('private, max-age=31536000, immutable')
+
+      const ann = await send('PUT', `/api/attachments/${aid}/annotated`, admin, {}, png2, 'image/png')
+      expect(ann.json().has_annotation).toBe(true)
+      const ann2 = await send('PUT', `/api/attachments/${aid}/annotated`, admin, {}, Buffer.concat([png2, png2]), 'image/png')
+      expect(ann2.statusCode).toBe(200)
+      const def = await file()
+      expect(def.rawPayload.equals(Buffer.concat([png2, png2]))).toBe(true)
+      expect(def.headers['content-type']).toBe('image/png')
+      expect((await file('&variant=original')).rawPayload.equals(jpg)).toBe(true)
+
+      expect((await app.inject({ method: 'DELETE', url: `/api/attachments/${aid}`, headers: h })).json()).toEqual({ ok: true })
+      expect((await app.inject({ url: `/api/markups/${mk}/attachments`, headers: h })).json()).toHaveLength(0)
+      expect((await file()).statusCode).toBe(404)
+    })
+
+    it('is idempotent on re-POST of the same id', async () => {
+      const id = '44444444-4444-4444-8444-444444444445'
+      const a = await send('POST', `/api/markups/${mk}/attachments`, admin, { id, caption: 'one' }, jpg)
+      const b = await send('POST', `/api/markups/${mk}/attachments`, admin, { id, caption: 'two' }, jpg)
+      expect(b.statusCode).toBe(200)
+      expect(b.json()).toEqual(a.json())
+      const list = (await app.inject({ url: `/api/markups/${mk}/attachments`, headers: { authorization: `Bearer ${admin}` } })).json()
+      expect(list).toHaveLength(1)
+    })
+
+    it('rejects viewers, bad mime types and unknown markups', async () => {
+      const viewer = await login()
+      const id = '44444444-4444-4444-8444-444444444446'
+      expect((await send('POST', `/api/markups/${mk}/attachments`, viewer, { id }, jpg)).statusCode).toBe(403)
+      expect((await app.inject({ url: `/api/markups/${mk}/attachments`, headers: { authorization: `Bearer ${viewer}` } })).statusCode).toBe(200)
+      expect((await send('POST', `/api/markups/${mk}/attachments`, admin, { id }, pdf, 'application/pdf')).statusCode).toBe(400)
+      expect((await send('POST', '/api/markups/99999999-9999-4999-8999-999999999999/attachments', admin, { id }, jpg)).statusCode).toBe(404)
+    })
+  })
 })

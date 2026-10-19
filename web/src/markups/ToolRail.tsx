@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Tool } from './types'
 
@@ -24,16 +25,39 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: ReactNode }[
 
 interface Props { tool: Tool; onTool: (t: Tool) => void; readOnly: boolean }
 
+// On phones only these stay in the rail; the rest move into the "More" grid (CSS hides .secondary there).
+const PRIMARY: Tool[] = ['select', 'pan', 'device', 'cable']
+const MORE_ICON = icon(<><circle cx="6" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="18" cy="12" r="1.5" fill="currentColor" /></>)
+
 export function ToolRail({ tool, onTool, readOnly }: Props) {
+  const [more, setMore] = useState(false)
   const tools = readOnly ? TOOLS.slice(0, 2) : TOOLS
+  const secondary = tools.filter(t => !PRIMARY.includes(t.tool))
+  const pick = (t: Tool) => { setMore(false); onTool(t) }
   return (
     <nav className="tool-rail" aria-label="Markup tools">
       {tools.map(t => (
-        <button key={t.tool} className={`tool-btn${tool === t.tool ? ' active' : ''}`}
-          title={`${t.label} (${t.key})`} aria-pressed={tool === t.tool} onClick={() => onTool(t.tool)}>
+        <button key={t.tool} className={`tool-btn${tool === t.tool ? ' active' : ''}${PRIMARY.includes(t.tool) ? '' : ' secondary'}`}
+          title={`${t.label} (${t.key})`} aria-pressed={tool === t.tool} onClick={() => pick(t.tool)}>
           {t.icon}
         </button>
       ))}
+      {secondary.length > 0 && (
+        <button className={`tool-btn tool-more${more || secondary.some(t => t.tool === tool) ? ' active' : ''}`}
+          title="More tools" aria-expanded={more} onClick={() => setMore(m => !m)}>
+          {MORE_ICON}
+        </button>
+      )}
+      {more && (
+        <div className="tool-more-grid">
+          {secondary.map(t => (
+            <button key={t.tool} className={`tool-grid-btn${tool === t.tool ? ' active' : ''}`}
+              aria-pressed={tool === t.tool} onClick={() => pick(t.tool)}>
+              {t.icon}<span>{t.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </nav>
   )
 }

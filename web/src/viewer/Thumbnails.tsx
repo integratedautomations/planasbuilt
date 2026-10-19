@@ -8,7 +8,7 @@ interface Props { pdf: PDFDocumentProxy; current: number; onSelect: (page: numbe
 export function Thumbnails({ pdf, current, onSelect }: Props) {
   const pages = Array.from({ length: pdf.numPages }, (_, i) => i + 1)
   return (
-    <aside className="thumbs">
+    <aside className="thumbs" aria-label="Pages">
       {pages.map(n => (
         <button key={n} className={`thumb${n === current ? ' active' : ''}`} onClick={() => onSelect(n)}>
           <Thumb pdf={pdf} pageNum={n} />

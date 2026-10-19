@@ -1,12 +1,26 @@
-import { useState } from 'react'
-import type { FormEvent } from 'react'
+import { useRef, useState } from 'react'
+import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
 import { DeviceFields } from './DeviceFields'
 
 const SWATCHES = ['#e03131', '#e8590c', '#f59f00', '#2f9e44', '#1971c2', '#7048e8', '#000000', '#868e96']
 const STAMPS = ['APPROVED', 'REVISED', 'VOID', 'FIELD VERIFY', 'AS-BUILT', 'NOT IN SCOPE']
 
+export type SheetSnap = 'peek' | 'half' | 'full'
+const SNAPS: SheetSnap[] = ['peek', 'half', 'full']
+const SNAP_FRACTION: Record<SheetSnap, number> = { peek: 0.25, half: 0.5, full: 1 }
+const PEEK_MIN = 132
+
+/** Pixel height of a snap point inside a container of the given height. */
+export function sheetHeight(snap: SheetSnap, containerH: number) {
+  return Math.min(containerH, Math.max(snap === 'peek' ? PEEK_MIN : 0, containerH * SNAP_FRACTION[snap]))
+}
+
+/** Phone bottom-sheet mode: the panel gets a drag handle and three snap heights. */
+export interface SheetProps { snap: SheetSnap; onSnap: (s: SheetSnap) => void; onClose: () => void }
+
 interface Props {
+  sheet?: SheetProps
   selected: Markup[]
   readOnly: boolean
   /** Style used for new markups when nothing is selected. */
@@ -31,14 +45,55 @@ interface Props {
 
 export function SidePanel(p: Props) {
   const [tab, setTab] = useState<'props' | 'layers'>('props')
+  const ref = useRef<HTMLElement>(null)
   return (
-    <aside className="side-panel">
+    <aside ref={ref} className={`side-panel${p.sheet ? ` sheet snap-${p.sheet.snap}` : ''}`}>
+      {p.sheet && <SheetHandle sheet={p.sheet} asideRef={ref} />}
       <div className="tabs">
         <button className={tab === 'props' ? 'active' : ''} onClick={() => setTab('props')}>Properties</button>
         <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>Layers</button>
       </div>
       {tab === 'props' ? <Properties {...p} /> : <Layers {...p} />}
     </aside>
+  )
+}
+
+function SheetHandle({ sheet, asideRef }: { sheet: SheetProps; asideRef: React.RefObject<HTMLElement | null> }) {
+  const drag = useRef<{ y: number; h: number; moved: boolean } | null>(null)
+  const containerH = () => asideRef.current?.parentElement?.clientHeight ?? window.innerHeight
+
+  const down = (e: RPointerEvent<HTMLDivElement>) => {
+    const el = asideRef.current
+    if (!el) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    drag.current = { y: e.clientY, h: el.offsetHeight, moved: false }
+    el.classList.add('dragging')
+  }
+  const move = (e: RPointerEvent<HTMLDivElement>) => {
+    const d = drag.current, el = asideRef.current
+    if (!d || !el) return
+    if (Math.abs(e.clientY - d.y) > 6) d.moved = true
+    if (d.moved) el.style.height = `${Math.min(containerH(), Math.max(60, d.h + d.y - e.clientY))}px`
+  }
+  const up = (e: RPointerEvent<HTMLDivElement>) => {
+    const d = drag.current, el = asideRef.current
+    drag.current = null
+    if (!d || !el) return
+    const h = el.offsetHeight
+    el.classList.remove('dragging')
+    el.style.height = ''
+    if (!d.moved) { sheet.onSnap(SNAPS[(SNAPS.indexOf(sheet.snap) + 1) % SNAPS.length]); return }
+    if (e.type === 'pointerup' && h < PEEK_MIN * 0.6) { sheet.onClose(); return }
+    const ch = containerH()
+    sheet.onSnap(SNAPS.reduce((best, s) => Math.abs(sheetHeight(s, ch) - h) < Math.abs(sheetHeight(best, ch) - h) ? s : best))
+  }
+
+  return (
+    <div className="sheet-handle" role="button" aria-label="Resize properties sheet" tabIndex={0}
+      onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') sheet.onSnap(SNAPS[(SNAPS.indexOf(sheet.snap) + 1) % SNAPS.length]) }}>
+      <span className="grip" />
+    </div>
   )
 }
 

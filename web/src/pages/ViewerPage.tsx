@@ -10,7 +10,8 @@ import type { View } from '../viewer/usePanZoom'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { ToolRail, TOOLS } from '../markups/ToolRail'
-import { SidePanel } from '../markups/SidePanel'
+import { SidePanel, sheetHeight } from '../markups/SidePanel'
+import type { SheetSnap } from '../markups/SidePanel'
 import { useMarkups } from '../markups/useMarkups'
 import { DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
@@ -33,6 +34,30 @@ function useLayerFlags(projectId: string, kind: 'hidden' | 'locked') {
   return [set, toggle] as const
 }
 
+function useMediaQuery(query: string) {
+  const [match, setMatch] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(query)
+    const on = () => setMatch(mq.matches)
+    on()
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [query])
+  return match
+}
+
+/** Page-space point to keep visible for a markup. */
+function anchorOf(m: Markup) {
+  const g = m.geometry
+  if ('points' in g) {
+    const n = g.points.length / 2 || 1
+    let sx = 0, sy = 0
+    for (let i = 0; i < g.points.length; i += 2) { sx += g.points[i]; sy += g.points[i + 1] }
+    return { x: g.x + sx / n, y: g.y + sy / n }
+  }
+  return { x: g.x + g.width / 2, y: g.y + g.height / 2 }
+}
+
 export function ViewerPage() {
   const { projectId, documentId } = useParams() as { projectId: string; documentId: string }
   const [meta, setMeta] = useState<DocMeta | null>(null)
@@ -41,8 +66,10 @@ export function ViewerPage() {
   const [pageNum, setPageNum] = useState(1)
   const [page, setPage] = useState<PDFPageProxy | null>(null)
   const [error, setError] = useState('')
-  const [showThumbs, setShowThumbs] = useState(() => window.innerWidth >= 900)
-  const [showPanel, setShowPanel] = useState(() => window.innerWidth >= 900)
+  const [showThumbs, setShowThumbs] = useState(() => window.innerWidth >= 1025)
+  const [showPanel, setShowPanel] = useState(() => window.innerWidth >= 1025)
+  const isPhone = useMediaQuery('(max-width: 640px)')
+  const [snap, setSnap] = useState<SheetSnap>('peek')
 
   const [tool, setTool] = useState<Tool>('select')
   const [spaceHeld, setSpaceHeld] = useState(false)
@@ -79,7 +106,7 @@ export function ViewerPage() {
   }, [])
 
   const pageSize = page ? page.getViewport({ scale: 1 }) : null
-  const { zoom, settledZoom, fit, zoomBy, view } = usePanZoom(viewportRef, stageRef,
+  const { zoom, settledZoom, fit, zoomBy, centerOn, view } = usePanZoom(viewportRef, stageRef,
     pageSize ? { width: pageSize.width, height: pageSize.height } : null, {
       shouldPan: () => { const owned = consumedRef.current; consumedRef.current = false; return !owned },
       onPinchStart: () => markupRef.current?.cancelDraft(),
@@ -149,6 +176,29 @@ export function ViewerPage() {
   const selected = useMemo(
     () => selectedIds.map(id => store.markups.get(id)).filter((m): m is Markup => !!m),
     [selectedIds, store.markups])
+
+  // Phones: the properties sheet follows the selection.
+  const hasSelection = selectedIds.length > 0
+  useEffect(() => {
+    if (!isPhone) return
+    setShowPanel(hasSelection)
+    if (hasSelection) setSnap('peek')
+  }, [hasSelection, isPhone])
+
+  // Keep the selected markup visible above the sheet.
+  const selectedKey = selectedIds.join(',')
+  useEffect(() => {
+    const vp = viewportRef.current
+    const m = selected[0]
+    if (!isPhone || !showPanel || selected.length !== 1 || snap === 'full' || !vp || !m) return
+    const sheetH = sheetHeight(snap, vp.parentElement?.clientHeight ?? vp.clientHeight)
+    const a = anchorOf(m)
+    const v = view.current
+    const sx = v.x + a.x * v.zoom, sy = v.y + a.y * v.zoom
+    const margin = 40
+    if (sx > margin && sx < vp.clientWidth - margin && sy > margin && sy < vp.clientHeight - sheetH - margin) return
+    centerOn(a.x, a.y + sheetH / (2 * v.zoom))
+  }, [selectedKey, snap, isPhone, showPanel]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const pageCount = pdf?.numPages ?? meta?.revisions[0]?.page_count ?? 0
   const goTo = useCallback((n: number) => setPageNum(p => Math.min(Math.max(1, n), pageCount || p)), [pageCount])
@@ -238,23 +288,26 @@ export function ViewerPage() {
             <span className="divider hide-sm" />
           </>
         )}
-        <button className="icon-btn" onClick={() => goTo(pageNum - 1)} disabled={pageNum <= 1} title="Previous page">‹</button>
+        <button className="icon-btn hide-sm" onClick={() => goTo(pageNum - 1)} disabled={pageNum <= 1} title="Previous page">‹</button>
         <span className="page-indicator">
           <input className="page-input" inputMode="numeric" value={pageNum}
             onChange={e => { const n = parseInt(e.target.value, 10); if (n) goTo(n) }} aria-label="Page number" />
           <span className="muted">/ {pageCount || '…'}</span>
         </span>
-        <button className="icon-btn" onClick={() => goTo(pageNum + 1)} disabled={pageNum >= pageCount} title="Next page">›</button>
+        <button className="icon-btn hide-sm" onClick={() => goTo(pageNum + 1)} disabled={pageNum >= pageCount} title="Next page">›</button>
         <span className="divider hide-sm" />
         <button className="icon-btn hide-sm" onClick={() => zoomBy(0.8)} title="Zoom out">−</button>
-        <button className="zoom-label" onClick={fit} title="Fit page (0)">{Math.round(zoom * 100)}%</button>
+        <button className="zoom-label hide-sm" onClick={fit} title="Fit page (0)">{Math.round(zoom * 100)}%</button>
         <button className="icon-btn hide-sm" onClick={() => zoomBy(1.25)} title="Zoom in">+</button>
         <button className={`icon-btn${showPanel ? ' active' : ''}`} title="Properties & layers" onClick={() => setShowPanel(s => !s)}>⚙</button>
       </header>
       <div className="viewer-body">
         {showThumbs && pdf && (
-          <Thumbnails pdf={pdf} current={pageNum}
-            onSelect={n => { goTo(n); if (window.innerWidth < 900) setShowThumbs(false) }} />
+          <>
+            <div className="scrim" onClick={() => setShowThumbs(false)} />
+            <Thumbnails pdf={pdf} current={pageNum}
+              onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
+          </>
         )}
         <ToolRail tool={activeTool} onTool={chooseTool} readOnly={readOnly} />
         <div className={`viewport tool-${activeTool}`} ref={viewportRef}>
@@ -290,7 +343,8 @@ export function ViewerPage() {
             stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
             layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
             hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
-            onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets} />
+            onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
+            sheet={isPhone ? { snap, onSnap: setSnap, onClose: () => setShowPanel(false) } : undefined} />
         )}
       </div>
     </div>

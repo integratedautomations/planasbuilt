@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, unlink } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -401,6 +401,139 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       `UPDATE markups SET deleted = true, version = version + 1, updated_by = $1, updated_at = now()
        WHERE id = $2 AND document_id = $3`, [req.user.id, markupId, doc.id])
     return { ok: true }
+  })
+
+  // ---- Photo attachments (belong to markups) ----
+  const PHOTO_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }
+  const EXT_TYPES: Record<string, string> = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
+  const PHOTO_MAX = 15 * 1024 * 1024
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
+
+  const removeFile = (key: string | null | undefined) => {
+    if (key) unlink(path.join(filesDir, path.basename(key)), () => {})
+  }
+  const optInt = (v: unknown) => {
+    const n = Number(v)
+    return v !== undefined && v !== '' && Number.isInteger(n) && n > 0 && n < 100000 ? n : null
+  }
+
+  async function markupWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+    const { markupId } = req.params as any
+    if (!UUID_RE.test(String(markupId))) { reply.code(404).send({ error: 'Not found' }); return null }
+    const [m] = await db.query(
+      'SELECT m.*, d.project_id FROM markups m JOIN documents d ON d.id = m.document_id WHERE m.id = $1', [markupId])
+    if (!m || m.deleted) { reply.code(404).send({ error: 'Not found' }); return null }
+    if (!(await requireRole(req, reply, m.project_id, min))) return null
+    return m
+  }
+
+  async function attachmentWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+    const { id } = req.params as any
+    if (!UUID_RE.test(String(id))) { reply.code(404).send({ error: 'Not found' }); return null }
+    const [a] = await db.query(
+      `SELECT a.*, d.project_id FROM attachments a
+       JOIN markups m ON m.id = a.markup_id JOIN documents d ON d.id = m.document_id WHERE a.id = $1`, [id])
+    if (!a) { reply.code(404).send({ error: 'Not found' }); return null }
+    if (!(await requireRole(req, reply, a.project_id, min))) return null
+    return a
+  }
+
+  /** Writes an uploaded photo to disk. Returns the key, or sends an error and returns null. */
+  async function savePhoto(file: any, reply: FastifyReply) {
+    const ext = PHOTO_TYPES[file.mimetype]
+    if (!ext) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
+    const key = `${randomUUID()}.${ext}`
+    await pipeline(file.file, createWriteStream(path.join(filesDir, key)))
+    if (file.file.truncated) {
+      removeFile(key)
+      reply.code(413).send({ error: 'Photo too large (15 MB max)' })
+      return null
+    }
+    return key
+  }
+
+  const attRow = async (id: string) => (await db.query(`SELECT ${ATT_COLUMNS} FROM attachments WHERE id = $1`, [id]))[0]
+
+  app.get('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
+    const m = await markupWithAccess(req, reply, 'viewer')
+    if (!m) return
+    return db.query(`SELECT ${ATT_COLUMNS} FROM attachments WHERE markup_id = $1 ORDER BY created_at, id`, [m.id])
+  })
+
+  // Text fields (id, caption, width, height) must come before the `photo` file part.
+  app.post('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
+    const m = await markupWithAccess(req, reply, 'editor')
+    if (!m) return
+    const file = await req.file({ limits: { fileSize: PHOTO_MAX } })
+    if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
+    const f = file.fields as any
+    const id = String(f.id?.value ?? '')
+    if (!UUID_RE.test(id)) { file.file.resume(); return reply.code(400).send({ error: 'A valid id is required' }) }
+    const [existing] = await db.query('SELECT markup_id FROM attachments WHERE id = $1', [id])
+    if (existing) {
+      file.file.resume()
+      if (existing.markup_id !== m.id) return reply.code(409).send({ error: 'Attachment belongs to another markup' })
+      return attRow(id)
+    }
+    const key = await savePhoto(file, reply)
+    if (!key) return
+    try {
+      await db.query(
+        `INSERT INTO attachments (id, markup_id, file_key, caption, width, height, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, m.id, key, String(f.caption?.value ?? ''), optInt(f.width?.value), optInt(f.height?.value), req.user.id])
+    } catch (e) {
+      removeFile(key)
+      // lost a race with a concurrent retry of the same id
+      const [again] = await db.query('SELECT markup_id FROM attachments WHERE id = $1', [id])
+      if (again && again.markup_id === m.id) return attRow(id)
+      throw e
+    }
+    return attRow(id)
+  })
+
+  app.patch('/api/attachments/:id', { preHandler: auth }, async (req, reply) => {
+    const a = await attachmentWithAccess(req, reply, 'editor')
+    if (!a) return
+    const caption = (req.body as any)?.caption
+    if (typeof caption !== 'string') return reply.code(400).send({ error: 'caption is required' })
+    await db.query('UPDATE attachments SET caption = $1 WHERE id = $2', [caption, a.id])
+    return attRow(a.id)
+  })
+
+  app.put('/api/attachments/:id/annotated', { preHandler: auth }, async (req, reply) => {
+    const a = await attachmentWithAccess(req, reply, 'editor')
+    if (!a) return
+    const file = await req.file({ limits: { fileSize: PHOTO_MAX } })
+    if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
+    const key = await savePhoto(file, reply)
+    if (!key) return
+    await db.query('UPDATE attachments SET annotated_key = $1 WHERE id = $2', [key, a.id])
+    removeFile(a.annotated_key)
+    return attRow(a.id)
+  })
+
+  app.delete('/api/attachments/:id', { preHandler: auth }, async (req, reply) => {
+    const a = await attachmentWithAccess(req, reply, 'editor')
+    if (!a) return
+    await db.query('DELETE FROM attachments WHERE id = $1', [a.id])
+    removeFile(a.file_key)
+    removeFile(a.annotated_key)
+    return { ok: true }
+  })
+
+  app.get('/api/attachments/:id/file', { preHandler: auth }, async (req, reply) => {
+    const a = await attachmentWithAccess(req, reply, 'viewer')
+    if (!a) return
+    const variant = (req.query as any)?.variant
+    const key = variant === 'original' ? a.file_key : variant === 'annotated' ? a.annotated_key : (a.annotated_key ?? a.file_key)
+    if (!key) return reply.code(404).send({ error: 'No such variant' })
+    const filePath = path.join(filesDir, path.basename(key))
+    if (!existsSync(filePath)) return reply.code(404).send({ error: 'File missing' })
+    reply.header('Content-Type', EXT_TYPES[path.extname(key).slice(1)] ?? 'application/octet-stream')
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    return reply.send(createReadStream(filePath))
   })
 
   // ---- Built web app (production) ----

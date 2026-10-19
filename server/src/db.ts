@@ -115,7 +115,19 @@ CREATE TABLE IF NOT EXISTS symbol_sets (
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS symbol_set_id uuid REFERENCES symbol_sets(id) ON DELETE SET NULL;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS tag text NOT NULL DEFAULT '';
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT '';
-ALTER TABLE markups ADD COLUMN IF NOT EXISTS fields jsonb NOT NULL DEFAULT '{}'
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS fields jsonb NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS attachments (
+  id uuid PRIMARY KEY,
+  markup_id uuid REFERENCES markups(id) ON DELETE CASCADE,
+  file_key text NOT NULL,
+  annotated_key text,
+  caption text NOT NULL DEFAULT '',
+  width int,
+  height int,
+  created_by uuid REFERENCES users(id),
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS attachments_markup ON attachments(markup_id)
 `
 
 const svg = (body: string) =>

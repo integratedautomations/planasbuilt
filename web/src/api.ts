@@ -44,3 +44,11 @@ export const post = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const documentFileUrl = (id: string) => `/api/documents/${id}/file?token=${encodeURIComponent(getToken() ?? '')}`
+
+export interface Attachment {
+  id: string; markup_id: string; caption: string; width: number; height: number
+  created_at: string; created_by: string; has_annotation: boolean
+}
+export const attachmentFileUrl = (id: string, variant?: 'original' | 'annotated', v?: string | number) =>
+  `/api/attachments/${id}/file?token=${encodeURIComponent(getToken() ?? '')}` +
+  (variant ? `&variant=${variant}` : '') + (v !== undefined ? `&v=${encodeURIComponent(String(v))}` : '')
