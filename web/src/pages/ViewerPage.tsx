@@ -11,12 +11,16 @@ import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { ToolRail, TOOLS } from '../markups/ToolRail'
 import { SidePanel, sheetHeight } from '../markups/SidePanel'
-import type { SheetSnap } from '../markups/SidePanel'
+import type { PanelTab, SheetSnap } from '../markups/SidePanel'
+import { CalibrateDialog } from '../markups/ScaleControl'
+import type { PageScale } from '../markups/ScaleControl'
+import type { Pt } from '../markups/geometry'
 import { useMarkups } from '../markups/useMarkups'
 import { DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
 
+interface ScaleRow { page: number; points_per_foot: number; label: string; updated_at: string }
 interface DocMeta { id: string; name: string; revisions: { revision: number; page_count: number }[] }
 
 /** Per-viewer layer visibility/lock, remembered per project in this browser. */
@@ -83,6 +87,11 @@ export function ViewerPage() {
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null)
   const [hidden, toggleHidden] = useLayerFlags(projectId, 'hidden')
   const [locked, toggleLocked] = useLayerFlags(projectId, 'locked')
+  const [panelTab, setPanelTab] = useState<PanelTab>('props')
+  const [scales, setScales] = useState<Map<number, PageScale>>(new Map())
+  const [scaleBusy, setScaleBusy] = useState(false)
+  const [scaleError, setScaleError] = useState('')
+  const [calLine, setCalLine] = useState<[Pt, Pt] | null>(null)
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 })
 
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -122,6 +131,8 @@ export function ViewerPage() {
       setSymbolSetList(sets)
       setActiveSetId(id => id ?? sets[0]?.id ?? null)
     }).catch(() => {})
+    api<ScaleRow[]>(`/documents/${documentId}/scales`).then(rows =>
+      setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {})
     let cancelled = false
     const task = loadPdf(documentFileUrl(documentId))
     task.promise.then(setPdf).catch(e => { if (!cancelled) setError(`Could not open PDF: ${e.message}`) })
@@ -201,6 +212,28 @@ export function ViewerPage() {
   }, [selectedKey, snap, isPhone, showPanel]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const pageCount = pdf?.numPages ?? meta?.revisions[0]?.page_count ?? 0
+  const pageScale = scales.get(pageNum) ?? null
+
+  /** Saves a scale for this sheet, or for every sheet; keeps local state in step with the server. */
+  async function saveScale(s: PageScale, allSheets: boolean) {
+    if (readOnly) return
+    const pages = allSheets ? Array.from({ length: pageCount || 1 }, (_, i) => i + 1) : [pageNum]
+    const body = { points_per_foot: s.pointsPerFoot, label: s.label }
+    setScaleBusy(true); setScaleError('')
+    try {
+      if (allSheets) await api(`/documents/${documentId}/scales`, { method: 'PUT', body: JSON.stringify({ ...body, pages }) })
+      else await api(`/documents/${documentId}/scales/${pageNum}`, { method: 'PUT', body: JSON.stringify(body) })
+      setScales(prev => { const next = new Map(prev); for (const n of pages) next.set(n, s); return next })
+    } catch (e) { setScaleError((e as Error).message); throw e } finally { setScaleBusy(false) }
+  }
+  async function clearScale() {
+    setScaleBusy(true); setScaleError('')
+    try {
+      await api(`/documents/${documentId}/scales/${pageNum}`, { method: 'DELETE' })
+      setScales(prev => { const next = new Map(prev); next.delete(pageNum); return next })
+    } catch (e) { setScaleError((e as Error).message) } finally { setScaleBusy(false) }
+  }
+  const openMeasure = () => { setPanelTab('measure'); setShowPanel(true); setSnap(s => (s === 'peek' ? 'half' : s)) }
   const goTo = useCallback((n: number) => setPageNum(p => Math.min(Math.max(1, n), pageCount || p)), [pageCount])
 
   const deleteSelected = useCallback(() => {
@@ -227,9 +260,10 @@ export function ViewerPage() {
 
   const chooseTool = useCallback((t: Tool) => {
     setTool(t)
+    setCalLine(null)
     if (t !== 'select' && t !== 'pan') {
       setSelectedIds([])
-      setDefaultStyle(s => defaultStyleFor(t as MarkupType, { ...DEFAULT_STYLE, stroke: s.stroke || DEFAULT_STYLE.stroke, strokeWidth: s.strokeWidth }))
+      if (t !== 'calibrate') setDefaultStyle(s => defaultStyleFor(t as MarkupType, { ...DEFAULT_STYLE, stroke: s.stroke || DEFAULT_STYLE.stroke, strokeWidth: s.strokeWidth }))
     }
   }, [])
 
@@ -299,6 +333,9 @@ export function ViewerPage() {
         <button className="icon-btn hide-sm" onClick={() => zoomBy(0.8)} title="Zoom out">−</button>
         <button className="zoom-label hide-sm" onClick={fit} title="Fit page (0)">{Math.round(zoom * 100)}%</button>
         <button className="icon-btn hide-sm" onClick={() => zoomBy(1.25)} title="Zoom in">+</button>
+        <button className={`scale-badge hide-sm${pageScale ? '' : ' warn'}`} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
+          {pageScale ? pageScale.label : 'No scale'}
+        </button>
         <button className={`icon-btn${showPanel ? ' active' : ''}`} title="Properties & layers" onClick={() => setShowPanel(s => !s)}>⚙</button>
       </header>
       <div className="viewer-body">
@@ -313,6 +350,9 @@ export function ViewerPage() {
         <div className={`viewport tool-${activeTool}`} ref={viewportRef}>
           {error && <div className="error floating">{error}</div>}
           {!page && !error && <div className="center muted">Loading plan…</div>}
+          {activeTool === 'calibrate' && !calLine && (
+            <div className="tool-hint">Drag a line along a known dimension (Shift snaps 45°)</div>
+          )}
           {activeTool === 'device' && (
             <div className="symbol-palette" onPointerDown={e => e.stopPropagation()}>
               {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
@@ -333,17 +373,33 @@ export function ViewerPage() {
             <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
               zoom={settledZoom} markups={pageMarkups} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets}
               readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
-              consumedRef={consumedRef}
+              consumedRef={consumedRef} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
+              onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
               newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId }}
               onCreated={m => { if (m.type === 'text') { setShowPanel(true); setTool('select'); setTimeout(() => textRef.current?.select(), 50) } }} />
           )}
         </div>
+        {calLine && (
+          <CalibrateDialog pageCount={pageCount} onCancel={() => setCalLine(null)}
+            onApply={async (feet, all) => {
+              const ppf = Math.hypot(calLine[1].x - calLine[0].x, calLine[1].y - calLine[0].y) / feet
+              await saveScale({ pointsPerFoot: ppf, label: 'Calibrated' }, all)
+              setCalLine(null)
+            }} />
+        )}
         {showPanel && (
-          <SidePanel selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
+          <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
             stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
             layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
             hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
             onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
+            measure={{
+              scale: pageScale, pageMarkups, scaleBusy, scaleError, onSelectIds: setSelectedIds,
+              onPreset: s => { saveScale(s, false).catch(() => {}) },
+              onApplyAll: () => { if (pageScale) saveScale(pageScale, true).catch(() => {}) },
+              onClearScale: clearScale,
+              onCalibrate: () => { if (isPhone) setShowPanel(false); chooseTool('calibrate') },
+            }}
             sheet={isPhone ? { snap, onSnap: setSnap, onClose: () => setShowPanel(false) } : undefined} />
         )}
       </div>

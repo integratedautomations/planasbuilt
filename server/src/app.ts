@@ -238,6 +238,58 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return reply.send(createReadStream(filePath))
   })
 
+  // ---- Page scales ----
+  const SCALE_COLUMNS = 'page, points_per_foot, label, updated_at'
+  const validPpf = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 100000
+  const validPage = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1 && v < 1_000_000
+
+  async function upsertScale(docId: string, page: number, ppf: number, label: string, userId: string) {
+    const [row] = await db.query(
+      `INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (document_id, page) DO UPDATE SET points_per_foot = EXCLUDED.points_per_foot,
+         label = EXCLUDED.label, updated_by = EXCLUDED.updated_by, updated_at = now()
+       RETURNING ${SCALE_COLUMNS}`, [docId, page, ppf, label, userId])
+    return row
+  }
+
+  app.get('/api/documents/:id/scales', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'viewer')
+    if (!doc) return
+    return db.query(`SELECT ${SCALE_COLUMNS} FROM page_scales WHERE document_id = $1 ORDER BY page`, [doc.id])
+  })
+
+  app.put('/api/documents/:id/scales/:page', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const page = Number((req.params as any).page)
+    const b = (req.body ?? {}) as any
+    if (!validPage(page) || !validPpf(b.points_per_foot))
+      return reply.code(400).send({ error: 'A valid page and points_per_foot are required' })
+    return upsertScale(doc.id, page, b.points_per_foot, String(b.label ?? ''), req.user.id)
+  })
+
+  app.put('/api/documents/:id/scales', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const b = (req.body ?? {}) as any
+    if (!validPpf(b.points_per_foot) || !Array.isArray(b.pages) || !b.pages.length || b.pages.length > 5000 || !b.pages.every(validPage))
+      return reply.code(400).send({ error: 'points_per_foot and a list of pages are required' })
+    const pages = [...new Set<number>(b.pages)].sort((x, y) => x - y)
+    const rows = []
+    for (const p of pages) rows.push(await upsertScale(doc.id, p, b.points_per_foot, String(b.label ?? ''), req.user.id))
+    return rows
+  })
+
+  app.delete('/api/documents/:id/scales/:page', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const page = Number((req.params as any).page)
+    if (!validPage(page)) return reply.code(400).send({ error: 'Bad page' })
+    await db.query('DELETE FROM page_scales WHERE document_id = $1 AND page = $2', [doc.id, page])
+    return { ok: true }
+  })
+
   // ---- Layers ----
   app.get('/api/projects/:id/layers', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any

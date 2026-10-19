@@ -21,6 +21,11 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: ReactNode }[
   { tool: 'device', label: 'Device', key: 'D', icon: icon(<><circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="2" fill="currentColor" /></>) },
   { tool: 'cable', label: 'Cable run', key: 'W', icon: icon(<><path d="M4 18c4 0 4-12 8-12s4 12 8 12" strokeDasharray="3 3" /><circle cx="4" cy="18" r="1.5" fill="currentColor" /><circle cx="20" cy="18" r="1.5" fill="currentColor" /></>) },
   { tool: 'stamp', label: 'Stamp', key: 'S', icon: icon(<><rect x="4" y="14" width="16" height="5" rx="1" /><path d="M9 14v-3a3 3 0 116 0v3" /></>) },
+  { tool: 'calibrate', label: 'Calibrate scale', key: 'K', icon: icon(<><path d="M3 15l12-12 6 6-12 12z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
+  { tool: 'measure-length', label: 'Length', key: 'M', icon: icon(<><path d="M4 12h16M4 8v8M20 8v8" /></>) },
+  { tool: 'measure-polylength', label: 'Polylength', key: 'N', icon: icon(<><path d="M4 18l5-8 5 5 6-9" /><path d="M3 15v6M21 3v6" /></>) },
+  { tool: 'measure-area', label: 'Area', key: 'B', icon: icon(<><path d="M5 7l9-3 5 8-4 7-10-2z" fill="currentColor" fillOpacity="0.2" /></>) },
+  { tool: 'count', label: 'Count', key: 'O', icon: icon(<><circle cx="12" cy="12" r="7" fill="currentColor" fillOpacity="0.25" /><path d="M10 10l2-1v6" /></>) },
 ]
 
 interface Props { tool: Tool; onTool: (t: Tool) => void; readOnly: boolean }

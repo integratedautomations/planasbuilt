@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text, Wedge } from 'react-konva'
 import type Konva from 'konva'
 import { cloudArcs, deviceCenter } from './geometry'
+import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from './measure'
 import { STATUSES } from './types'
 import type { BoxGeometry, Fov, Markup, PathGeometry, SymbolSet } from './types'
 import { useImage } from './useImage'
@@ -9,6 +10,10 @@ import { useImage } from './useImage'
 interface Props {
   markup: Markup
   zoom: number
+  /** points_per_foot for this markup's page (null = not calibrated). */
+  scale?: number | null
+  /** 1-based number shown on a count marker. */
+  countNumber?: number
   symbolSet?: SymbolSet
   draggable?: boolean
   listening?: boolean
@@ -30,7 +35,7 @@ interface Props {
  * icon doesn't stretch the cone.
  */
 export function MarkupShape(props: Props) {
-  const { markup: m, zoom, symbolSet, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g ? g.fov : undefined
@@ -52,7 +57,7 @@ export function MarkupShape(props: Props) {
         draggable={draggable} listening={listening} opacity={m.style.opacity}
         onDragMove={fov ? onDragMove : undefined}
         onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
-        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} />
+        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} />
           : m.type === 'device' ? <DeviceBody m={m} g={g} set={symbolSet} />
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
@@ -164,7 +169,26 @@ function BoxBody({ m, g }: { m: Markup; g: BoxGeometry }) {
   }
 }
 
-function PathBody({ m, g, zoom }: { m: Markup; g: PathGeometry; zoom: number }) {
+/** Value label centered on a point, with a white halo, sized to stay readable on screen. */
+function MeasureLabel({ at, text, zoom, fontSize, color, warn }: {
+  at: { x: number; y: number }; text: string; zoom: number; fontSize: number; color: string; warn?: boolean
+}) {
+  const fs = Math.min(80, Math.max(6, (fontSize * 0.7) / zoom))
+  const lines = text.split('\n').length
+  return (
+    <Text text={text} x={at.x - 150} y={at.y - (fs * 1.2 * lines) / 2} width={300} align="center" lineHeight={1.2}
+      fontSize={fs} fontStyle="bold" fill={warn ? '#c92a2a' : color} stroke="#fff" strokeWidth={fs * 0.28}
+      fillAfterStrokeEnabled fontFamily="system-ui, sans-serif" listening={false} />
+  )
+}
+
+function hexAlpha(hex: string, a: number) {
+  const h = hex.replace('#', '')
+  if (!/^[0-9a-f]{6}$/i.test(h)) return hex
+  return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`
+}
+
+function PathBody({ m, g, zoom, scale, countNumber }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number }) {
   const { stroke, fill, strokeWidth, dash } = m.style
   const common = {
     points: g.points, stroke: stroke || '#e03131', strokeWidth,
@@ -179,10 +203,55 @@ function PathBody({ m, g, zoom }: { m: Markup; g: PathGeometry; zoom: number }) 
       return <Line {...common} closed fill={fill || 'transparent'} />
     case 'freehand':
       return <Line {...common} tension={0.4} />
+    case 'measure-length': {
+      const [x0, y0, x1, y1] = g.points
+      const len = Math.hypot(x1 - x0, y1 - y0) || 1
+      const t = Math.max(strokeWidth * 2.5, 7 / zoom)
+      const nx = (-(y1 - y0) / len) * t, ny = ((x1 - x0) / len) * t
+      const mid = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 }
+      return (
+        <>
+          <Line {...common} points={[x0, y0, x1, y1]} />
+          <Line points={[x0 - nx, y0 - ny, x0 + nx, y0 + ny]} stroke={stroke || '#e03131'} strokeWidth={strokeWidth} listening={false} />
+          <Line points={[x1 - nx, y1 - ny, x1 + nx, y1 + ny]} stroke={stroke || '#e03131'} strokeWidth={strokeWidth} listening={false} />
+          <MeasureLabel at={mid} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'} warn={!scale}
+            text={scale ? formatFeetInches(feetOf(g.points, scale)) : 'Set scale'} />
+        </>
+      )
+    }
+    case 'measure-polylength':
+      return (
+        <>
+          <Line {...common} />
+          <MeasureLabel at={pathMidpoint(g.points)} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'} warn={!scale}
+            text={scale ? formatFeetInches(feetOf(g.points, scale)) : 'Set scale'} />
+        </>
+      )
+    case 'measure-area':
+      return (
+        <>
+          <Line {...common} closed fill={hexAlpha(fill || stroke || '#e03131', 0.22)} />
+          <MeasureLabel at={polygonCentroid(g.points)} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'} warn={!scale}
+            text={scale ? `${formatArea(sqftOf(g.points, scale))}\nP${formatFeetInches(polygonPerimeter(g.points) / scale)}` : 'Set scale'} />
+        </>
+      )
+    case 'count': {
+      const r = 9
+      return (
+        <>
+          <Circle x={g.points[0]} y={g.points[1]} radius={r} fill={stroke || '#e03131'} stroke="#fff" strokeWidth={1.5} />
+          <Text text={String(countNumber ?? '')} x={g.points[0] - r} y={g.points[1] - r} width={r * 2} height={r * 2}
+            align="center" verticalAlign="middle" fontSize={r * (countNumber && countNumber > 9 ? 0.95 : 1.2)} fontStyle="bold" fill="#fff"
+            fontFamily="system-ui, sans-serif" listening={false} />
+        </>
+      )
+    }
     case 'cable':
       return (
         <>
           <Line {...common} />
+          {scale && <MeasureLabel at={pathMidpoint(g.points)} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'}
+            text={formatFeetInches(feetOf(g.points, scale))} />}
           <Circle x={g.points[0]} y={g.points[1]} radius={strokeWidth * 1.6} fill={stroke || '#e03131'} />
           <Circle x={g.points[g.points.length - 2]} y={g.points[g.points.length - 1]} radius={strokeWidth * 1.6} fill={stroke || '#e03131'} />
         </>

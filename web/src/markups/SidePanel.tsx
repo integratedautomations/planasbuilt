@@ -2,6 +2,24 @@ import { useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
 import { DeviceFields } from './DeviceFields'
+import { ScaleControl } from './ScaleControl'
+import type { PageScale } from './ScaleControl'
+import { summarize } from './measure'
+import type { MeasureTotal } from './measure'
+
+export type PanelTab = 'props' | 'measure' | 'layers'
+
+export interface MeasureProps {
+  scale: PageScale | null
+  pageMarkups: Markup[]
+  onPreset: (s: PageScale) => void
+  onCalibrate: () => void
+  onApplyAll: () => void
+  onClearScale: () => void
+  scaleBusy: boolean
+  scaleError: string
+  onSelectIds: (ids: string[]) => void
+}
 
 const SWATCHES = ['#e03131', '#e8590c', '#f59f00', '#2f9e44', '#1971c2', '#7048e8', '#000000', '#868e96']
 const STAMPS = ['APPROVED', 'REVISED', 'VOID', 'FIELD VERIFY', 'AS-BUILT', 'NOT IN SCOPE']
@@ -21,6 +39,9 @@ export interface SheetProps { snap: SheetSnap; onSnap: (s: SheetSnap) => void; o
 
 interface Props {
   sheet?: SheetProps
+  tab: PanelTab
+  onTab: (t: PanelTab) => void
+  measure: MeasureProps
   selected: Markup[]
   readOnly: boolean
   /** Style used for new markups when nothing is selected. */
@@ -44,16 +65,17 @@ interface Props {
 }
 
 export function SidePanel(p: Props) {
-  const [tab, setTab] = useState<'props' | 'layers'>('props')
+  const { tab, onTab: setTab } = p
   const ref = useRef<HTMLElement>(null)
   return (
     <aside ref={ref} className={`side-panel${p.sheet ? ` sheet snap-${p.sheet.snap}` : ''}`}>
       {p.sheet && <SheetHandle sheet={p.sheet} asideRef={ref} />}
       <div className="tabs">
         <button className={tab === 'props' ? 'active' : ''} onClick={() => setTab('props')}>Properties</button>
+        <button className={tab === 'measure' ? 'active' : ''} onClick={() => setTab('measure')}>Measure</button>
         <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>Layers</button>
       </div>
-      {tab === 'props' ? <Properties {...p} /> : <Layers {...p} />}
+      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : <Layers {...p} />}
     </aside>
   )
 }
@@ -202,6 +224,39 @@ function StyleProperties(p: Props) {
   )
 }
 
+function Measure({ measure: m, readOnly }: Props) {
+  const sum = summarize(m.pageMarkups, m.scale?.pointsPerFoot ?? null)
+  const row = (t: MeasureTotal) => (
+    <li key={t.key}>
+      <button className="measure-row" onClick={() => m.onSelectIds(t.ids)} title={`Select ${t.ids.length} markup${t.ids.length > 1 ? 's' : ''}`}>
+        <span className="dot" style={{ background: t.color }} />
+        <span className="measure-name">{t.label}{t.ids.length > 1 || t.label.startsWith('Count') ? ` (${t.ids.length})` : ''}</span>
+        <span className="measure-value">{t.value}</span>
+      </button>
+    </li>
+  )
+  const block = (title: string, rows: MeasureTotal[], total: string) => rows.length > 0 && (
+    <>
+      <div className="panel-heading measure-head"><span>{title}</span>{total && <span className="measure-total">{total}</span>}</div>
+      <ul className="layer-list">{rows.map(row)}</ul>
+    </>
+  )
+  const empty = !sum.length.length && !sum.area.length && !sum.cable.length && !sum.count.length
+  return (
+    <div className="panel-body">
+      <ScaleControl scale={m.scale} readOnly={readOnly} busy={m.scaleBusy} error={m.scaleError}
+        onPreset={m.onPreset} onCalibrate={m.onCalibrate} onApplyAll={m.onApplyAll} onClear={m.onClearScale} />
+      <div className="panel-heading">Totals, this sheet</div>
+      {sum.unscaled > 0 && <p className="scale-warn small">{sum.unscaled} measurement{sum.unscaled > 1 ? 's' : ''} need a scale.</p>}
+      {block('Length', sum.length, sum.lengthTotal)}
+      {block('Area', sum.area, sum.areaTotal)}
+      {block('Cable runs', sum.cable, sum.cableTotal)}
+      {block('Counts', sum.count, '')}
+      {empty && sum.unscaled === 0 && <p className="muted small">Use the Length, Polylength, Area and Count tools to see totals here.</p>}
+    </div>
+  )
+}
+
 function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly, symbolSets }: Props) {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
@@ -261,5 +316,6 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
 
 function labelFor(t: Markup['type']) {
   return ({ rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text box', stamp: 'Stamp',
-    line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', cable: 'Cable run' } as const)[t]
+    line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', cable: 'Cable run',
+    'measure-length': 'Length', 'measure-polylength': 'Polylength', 'measure-area': 'Area', count: 'Count marker' } as const)[t]
 }

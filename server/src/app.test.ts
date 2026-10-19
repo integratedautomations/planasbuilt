@@ -125,6 +125,42 @@ describe('milestone 1 api', () => {
     expect(res.statusCode).toBe(403)
   })
 
+  it('stores per-page drawing scales', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    const base = `/api/documents/${docId}/scales`
+    expect((await app.inject({ url: base, headers: h })).json()).toEqual([])
+    const set = await app.inject({ method: 'PUT', url: `${base}/2`, headers: h,
+      payload: { points_per_foot: 9, label: '1/8" = 1\'-0"' } })
+    expect(set.statusCode).toBe(200)
+    expect(set.json()).toMatchObject({ page: 2, points_per_foot: 9, label: '1/8" = 1\'-0"' })
+    expect(set.json().updated_at).toBeTruthy()
+    const over = await app.inject({ method: 'PUT', url: `${base}/2`, headers: h, payload: { points_per_foot: 18 } })
+    expect(over.json()).toMatchObject({ page: 2, points_per_foot: 18, label: '' })
+    const bulk = await app.inject({ method: 'PUT', url: base, headers: h,
+      payload: { points_per_foot: 6, label: 'Calibrated', pages: [3, 1, 2] } })
+    expect(bulk.json().map((r: any) => r.page)).toEqual([1, 2, 3])
+    const all = (await app.inject({ url: base, headers: h })).json()
+    expect(all).toHaveLength(3)
+    expect(all.every((r: any) => r.points_per_foot === 6 && r.label === 'Calibrated')).toBe(true)
+    expect((await app.inject({ method: 'DELETE', url: `${base}/2`, headers: h })).json()).toEqual({ ok: true })
+    expect((await app.inject({ url: base, headers: h })).json().map((r: any) => r.page)).toEqual([1, 3])
+
+    const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login',
+      payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    const vh = { authorization: `Bearer ${viewer}` }
+    expect((await app.inject({ url: base, headers: vh })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'PUT', url: `${base}/1`, headers: vh, payload: { points_per_foot: 5 } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'DELETE', url: `${base}/1`, headers: vh })).statusCode).toBe(403)
+
+    for (const [url, payload] of [
+      [`${base}/0`, { points_per_foot: 5 }], [`${base}/1.5`, { points_per_foot: 5 }], [`${base}/x`, { points_per_foot: 5 }],
+      [`${base}/1`, { points_per_foot: 0 }], [`${base}/1`, { points_per_foot: -1 }], [`${base}/1`, { points_per_foot: 100000 }],
+      [`${base}/1`, { points_per_foot: '5' }], [`${base}/1`, {}], [base, { points_per_foot: 5, pages: [] }],
+      [base, { points_per_foot: 5, pages: [0] }], [base, { points_per_foot: 0, pages: [1] }],
+    ] as [string, any][])
+      expect((await app.inject({ method: 'PUT', url, headers: h, payload })).statusCode, url + JSON.stringify(payload)).toBe(400)
+  })
+
   describe('photo attachments', () => {
     const mk = '11111111-1111-4111-8111-111111111111'
     const aid = '44444444-4444-4444-8444-444444444444'

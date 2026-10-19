@@ -2,6 +2,7 @@
 
 export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device'
 export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand' | 'cable'
+  | 'measure-length' | 'measure-polylength' | 'measure-area' | 'count'
 export type MarkupType = BoxType | PathType
 
 export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp', 'device']
@@ -74,7 +75,7 @@ export interface SymbolSet {
 
 export interface Layer { id: string; project_id: string; name: string; color: string; sort: number }
 
-export type Tool = 'select' | 'pan' | MarkupType
+export type Tool = 'select' | 'pan' | 'calibrate' | MarkupType
 
 export const DEFAULT_STYLE: MarkupStyle = {
   stroke: '#e03131', fill: '', strokeWidth: 3, opacity: 1, fontSize: 18,
@@ -84,5 +85,6 @@ export function defaultStyleFor(type: MarkupType, base: MarkupStyle): MarkupStyl
   if (type === 'highlight') return { ...base, stroke: '', fill: '#ffd43b', opacity: 0.4 }
   if (type === 'stamp') return { ...base, fontSize: 28 }
   if (type === 'cable') return { ...base, strokeWidth: 2, dash: true }
+  if (type === 'measure-length' || type === 'measure-polylength' || type === 'measure-area') return { ...base, strokeWidth: 2 }
   return base
 }

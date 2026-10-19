@@ -33,14 +33,23 @@ interface Props {
   /** Set true when the markup layer owns the current pointer (so the viewport doesn't pan). */
   consumedRef: React.MutableRefObject<boolean>
   onCreated?: (m: Markup) => void
+  /** points_per_foot of the current page, or null when not calibrated. */
+  scale: number | null
+  /** Called with the two page-space endpoints of a finished calibration line. */
+  onCalibrate: (a: Pt, b: Pt) => void
+  /** Temporary calibration line to keep showing while the length prompt is open. */
+  calLine: [Pt, Pt] | null
 }
 
-const TWO_POINT: MarkupType[] = ['line', 'arrow']
-const CLICK_PATHS: MarkupType[] = ['polyline', 'polygon', 'cable']
-const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'rect', 'ellipse', 'cloud', 'highlight', 'text', 'freehand']
+const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
+const CLICK_PATHS: MarkupType[] = ['polyline', 'polygon', 'cable', 'measure-polylength', 'measure-area']
+const CLOSED: MarkupType[] = ['polygon', 'measure-area']
+const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'ellipse', 'cloud', 'highlight', 'text', 'freehand']
+
+const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, consumedRef, onCreated, scale, onCalibrate, calLine } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -48,6 +57,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const freehandPts = useRef<Pt[]>([])
   const clickPts = useRef<Pt[]>([])
   const [pointOverride, setPointOverride] = useState<{ id: string; points: number[] } | null>(null)
+  const countGroup = useRef<{ id: string; n: number } | null>(null)
   const [fovOverride, setFovOverride] = useState<{ id: string; fov: Fov } | null>(null)
 
   const byId = new Map(markups.map(m => [m.id, m]))
@@ -90,7 +100,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (!draft || !CLICK_PATHS.includes(draft.type)) return
     // Drop the rubber-band point and any double-click duplicate
     const pts = clickPts.current.filter((p, i, a) => i === 0 || Math.hypot(p.x - a[i - 1].x, p.y - a[i - 1].y) > 0.5)
-    const min = draft.type === 'polygon' ? 3 : 2
+    const min = CLOSED.includes(draft.type) ? 3 : 2
     finish(pts.length >= min ? newMarkup(draft.type, pathFromPoints(pts)) : null)
   }
 
@@ -101,7 +111,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }))
 
   // Leaving a tool abandons its half-drawn markup
-  useEffect(() => { finish(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { finish(null); countGroup.current = null }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
     while (node && node !== stageRef.current) {
@@ -133,7 +143,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
     consumedRef.current = true
     const p = pointer()
-    const t = tool as MarkupType
+    const cal = tool === 'calibrate'
+    const t = (cal ? 'line' : tool) as MarkupType
     if (t === 'stamp') {
       finish(newMarkup('stamp', { x: p.x - 80, y: p.y - 25, width: 160, height: 50, rotation: 0 }))
       return
@@ -148,13 +159,20 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       }))
       return
     }
+    if (t === 'count') {
+      const grp = countGroup.current ?? (countGroup.current = { id: uuid(), n: 0 })
+      grp.n++
+      const m = newMarkup('count', pathFromPoints([p]))
+      commit([{ before: null, after: { ...m, fields: { group: grp.id, n: grp.n } } }])
+      return
+    }
     if (CLICK_PATHS.includes(t)) {
       const pts = clickPts.current
       if (!pts.length) {
         clickPts.current = [p, p]
       } else {
         const first = pts[0]
-        if (t === 'polygon' && pts.length >= 4 && Math.hypot(p.x - first.x, p.y - first.y) < 10 / zoom) {
+        if (CLOSED.includes(t) && pts.length >= 4 && Math.hypot(p.x - first.x, p.y - first.y) < 10 / zoom) {
           clickPts.current = pts.slice(0, -1)
           setDraft(newMarkup(t, pathFromPoints(clickPts.current)))
           finishClickPath()
@@ -169,7 +187,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (DRAG_TOOLS.includes(t)) {
       dragStart.current = p
       freehandPts.current = [p]
-      setDraft(newMarkup(t, isBoxType(t) ? boxFromDrag(p, p) : pathFromPoints([p, p])))
+      const base = newMarkup(t, isBoxType(t) ? boxFromDrag(p, p) : pathFromPoints([p, p]))
+      setDraft(cal ? { ...base, style: CAL_STYLE } : base)
     }
   }
 
@@ -210,6 +229,12 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       } else finish(draft)
     } else {
       const [, , x1, y1] = g.points
+      if (tool === 'calibrate') {
+        const a = { x: g.x, y: g.y }, b = { x: g.x + x1, y: g.y + y1 }
+        finish(null)
+        if (Math.hypot(x1, y1) >= tiny) onCalibrate(a, b)
+        return
+      }
       finish(Math.hypot(x1, y1) < tiny ? null : draft)
     }
   }
@@ -261,6 +286,20 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (Math.hypot(a.x - b.x, a.y - b.y) < 8 / zoom) finishClickPath()
   }
 
+  // Count markers number 1, 2, 3... within their session group
+  const countNumbers = new Map<string, number>()
+  {
+    const groups = new Map<string, Markup[]>()
+    for (const m of markups) if (m.type === 'count') {
+      const k = String(m.fields?.group ?? m.id)
+      groups.set(k, [...(groups.get(k) ?? []), m])
+    }
+    for (const list of groups.values()) {
+      list.sort((a, b) => Number(a.fields?.n ?? 0) - Number(b.fields?.n ?? 0))
+      list.forEach((m, i) => countNumbers.set(m.id, i + 1))
+    }
+  }
+
   const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id)
 
   return (
@@ -276,7 +315,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const editable = single?.id === m.id && !readOnly && tool === 'select'
             && 'points' in m.geometry && m.type !== 'freehand' && !lockedIds.has(m.id)
           return (
-            <MarkupShape key={m.id} markup={shown} zoom={zoom}
+            <MarkupShape key={m.id} markup={shown} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
               symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
               editFov={single?.id === m.id && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
               onFovChange={(fov, done) => {
@@ -295,7 +334,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               onDragEnd={onDragEnd} />
           )
         })}
-        {draft && <MarkupShape markup={draft} zoom={zoom} listening={false} />}
+        {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
+        {calLine && <MarkupShape zoom={zoom} listening={false}
+          markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}
         <Transformer ref={trRef} rotateEnabled keepRatio={selected.length > 0 && selected.every(m => m.type === 'device')} ignoreStroke flipEnabled={false}
           rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={4}
           anchorSize={11} anchorCornerRadius={2} borderStroke="#1971c2" anchorStroke="#1971c2"

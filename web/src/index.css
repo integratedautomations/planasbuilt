@@ -118,7 +118,7 @@ a.list-item:hover { border-color: var(--accent); }
 .viewport[class*="tool-"]:not(.tool-select):not(.tool-pan) { cursor: crosshair; }
 .viewport.panning { cursor: grabbing; }
 .tool-rail { display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; }
-.tool-btn { width: 44px; height: 44px; min-height: 0; padding: 0; display: grid; place-items: center; border-color: transparent; background: transparent; }
+.tool-btn { flex-shrink: 0; width: 44px; height: 44px; min-height: 0; padding: 0; display: grid; place-items: center; border-color: transparent; background: transparent; }
 .tool-btn.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
 .icon-btn.active { color: var(--accent); }
 .icon-btn.small { min-width: 32px; min-height: 32px; padding: 4px; font-size: 14px; }
@@ -226,3 +226,18 @@ button { touch-action: manipulation; }
 .section-label { text-transform: uppercase; letter-spacing: 0.05em; margin-top: 6px; }
 input.invalid { border-color: var(--danger); }
 .hint-bad { color: var(--danger); font-size: 12px; }
+
+/* ---- Scale & measurement ---- */
+.scale-badge { min-height: 0; padding: 4px 10px; font-size: 13px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.scale-badge.warn, .scale-current.warn { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.scale-control { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.scale-current { font-weight: 600; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
+.scale-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.scale-actions button { flex: 1 1 auto; min-width: 0; }
+.scale-warn { color: var(--danger); margin: 0; }
+.measure-head { display: flex; justify-content: space-between; gap: 8px; }
+.measure-total { font-variant-numeric: tabular-nums; }
+.measure-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border-color: transparent; background: transparent; text-align: left; }
+.measure-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.measure-value { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.tool-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 20px); padding: 6px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); font-size: 13px; pointer-events: none; text-align: center; }

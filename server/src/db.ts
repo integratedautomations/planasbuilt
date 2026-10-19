@@ -127,7 +127,16 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_by uuid REFERENCES users(id),
   created_at timestamptz DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS attachments_markup ON attachments(markup_id)
+CREATE INDEX IF NOT EXISTS attachments_markup ON attachments(markup_id);
+CREATE TABLE IF NOT EXISTS page_scales (
+  document_id uuid REFERENCES documents(id) ON DELETE CASCADE,
+  page int NOT NULL,
+  points_per_foot double precision NOT NULL,
+  label text NOT NULL DEFAULT '',
+  updated_by uuid REFERENCES users(id),
+  updated_at timestamptz DEFAULT now(),
+  PRIMARY KEY (document_id, page)
+)
 `
 
 const svg = (body: string) =>
