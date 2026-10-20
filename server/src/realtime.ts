@@ -14,6 +14,10 @@ export interface Peer {
   page: number | null
   cursor: { x: number; y: number } | null
   selection: string[]
+  /** Visible area in page coordinates. */
+  viewport: { x: number; y: number; w: number; h: number } | null
+  /** Box-select drag in progress. */
+  marquee: { x: number; y: number; w: number; h: number } | null
 }
 
 export interface Conn extends Peer {
@@ -47,7 +51,7 @@ export class Realtime {
 
   add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null }): Conn {
     const c: Conn = {
-      socket, ...info, avatar: info.avatar ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [],
+      socket, ...info, avatar: info.avatar ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
       documentId: null, alive: true, windowStart: 0, windowCount: 0,
     }
     this.conns.add(c)
@@ -76,7 +80,7 @@ export class Realtime {
   }
 
   private static peerOf(c: Conn): Peer {
-    return { clientId: c.clientId, userId: c.userId, name: c.name, avatar: c.avatar, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection }
+    return { clientId: c.clientId, userId: c.userId, name: c.name, avatar: c.avatar, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection, viewport: c.viewport, marquee: c.marquee }
   }
 
   private toRoom(documentId: string, msg: unknown, except?: string | null, exceptConn?: Conn) {
@@ -93,7 +97,7 @@ export class Realtime {
     if (c.documentId === documentId) return
     this.leave(c)
     c.documentId = documentId
-    c.page = null; c.cursor = null; c.selection = []
+    c.page = null; c.cursor = null; c.selection = []; c.viewport = null; c.marquee = null
     let room = this.rooms.get(documentId)
     if (!room) this.rooms.set(documentId, (room = new Set()))
     room.add(c)
@@ -120,6 +124,11 @@ export class Realtime {
     const cur = m.cursor
     c.cursor = cur && Number.isFinite(cur.x) && Number.isFinite(cur.y) ? { x: cur.x, y: cur.y } : null
     c.selection = Array.isArray(m.selection) ? m.selection.filter((s: unknown) => typeof s === 'string').slice(0, 500) : []
+    const v = m.viewport
+    const ok = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e6
+    c.viewport = v && ok(v.x) && ok(v.y) && ok(v.w) && ok(v.h) && v.w > 0 && v.h > 0 ? { x: v.x, y: v.y, w: v.w, h: v.h } : null
+    const q = m.marquee
+    c.marquee = q && ok(q.x) && ok(q.y) && ok(q.w) && ok(q.h) && q.w >= 0 && q.h >= 0 ? { x: q.x, y: q.y, w: q.w, h: q.h } : null
     this.toRoom(c.documentId, { type: 'peer', peer: Realtime.peerOf(c) }, null, c)
   }
 

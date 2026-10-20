@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Tool } from './types'
 
@@ -32,47 +32,90 @@ export const TOOLS: { tool: Tool; label: string; icon: ReactNode }[] = [
   { tool: 'count', label: 'Count', icon: icon(<><circle cx="12" cy="12" r="7" fill="currentColor" fillOpacity="0.25" /><path d="M10 10l2-1v6" /></>) },
 ]
 
-interface Props { hotkeys: Record<string, string>; tool: Tool; onTool: (t: Tool) => void; readOnly: boolean; boxSelect: boolean; onBoxSelect: () => void }
+interface Props {
+  hotkeys: Record<string, string>; tool: Tool; onTool: (t: Tool) => void; readOnly: boolean; boxSelect: boolean; onBoxSelect: () => void
+  onUndo?: () => void; onRedo?: () => void; canUndo?: boolean; canRedo?: boolean
+}
 
 const BOX_ICON = icon(<><rect x="4" y="5" width="16" height="14" rx="1" strokeDasharray="3 2.5" /><path d="M9 12h6M12 9v6" /></>)
 
-// On phones only these stay in the rail; the rest move into the "More" grid (CSS hides .secondary there).
-const PRIMARY: Tool[] = ['select', 'pan', 'device', 'cable']
-const MORE_ICON = icon(<><circle cx="6" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="18" cy="12" r="1.5" fill="currentColor" /></>)
+// On phones the rail holds fixed slots: Select, Pan, Device, the last-used tool from the grid, Tools, Undo, Redo (CSS hides .secondary there).
+const PRIMARY: Tool[] = ['select', 'pan', 'device']
+const MORE_ICON = icon(<><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></>)
+const UNDO_ICON = icon(<><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 010 11H11" /></>)
+const REDO_ICON = icon(<><path d="M15 14l5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 000 11H13" /></>)
 
-export function ToolRail({ hotkeys, tool, onTool, readOnly, boxSelect, onBoxSelect }: Props) {
+const GROUPS: { name: string; tools: Tool[] }[] = [
+  { name: 'Draw', tools: ['line', 'arrow', 'rect', 'ellipse', 'cloud', 'polyline', 'polygon', 'freehand', 'text', 'highlight'] },
+  { name: 'Measure', tools: ['calibrate', 'measure-length', 'measure-radius', 'measure-polylength', 'measure-area', 'count'] },
+  { name: 'Areas', tools: ['area', 'area-rect'] },
+  { name: 'Other', tools: ['cable', 'stamp', 'legend'] },
+]
+
+export function ToolRail({ hotkeys, tool, onTool, readOnly, boxSelect, onBoxSelect, onUndo, onRedo, canUndo, canRedo }: Props) {
   const [more, setMore] = useState(false)
+  const [last, setLast] = useState<Tool>('cable')
+  const swipe = useRef<number | null>(null)
   const tools = readOnly ? TOOLS.slice(0, 2) : TOOLS
   const secondary = tools.filter(t => !PRIMARY.includes(t.tool))
-  const pick = (t: Tool) => { setMore(false); onTool(t) }
+  const slot = secondary.some(t => t.tool === last) ? last : secondary[0]?.tool
+  const pick = (t: Tool) => { setMore(false); if (!PRIMARY.includes(t)) setLast(t); onTool(t) }
+  const isPhone = () => window.matchMedia('(max-width: 640px)').matches
+  const clickTool = (t: Tool) => {
+    // On phones, tapping Select while it is active toggles box-select.
+    if (t === 'select' && tool === 'select' && isPhone() && !readOnly) { setMore(false); onBoxSelect(); return }
+    pick(t)
+  }
   return (
     <nav className="tool-rail" aria-label="Markup tools">
+      {more && <div className="tool-more-scrim" onClick={() => setMore(false)} />}
       {tools.map(t => (
-        <button key={t.tool} className={`tool-btn${tool === t.tool ? ' active' : ''}${PRIMARY.includes(t.tool) ? '' : ' secondary'}${t.tool === 'select' || t.tool === 'pan' ? ' rail-nav' : ''}`}
-          title={hotkeys[`tool.${t.tool}`] ? `${t.label} (${hotkeys[`tool.${t.tool}`]})` : t.label} aria-pressed={tool === t.tool} onClick={() => pick(t.tool)}>
+        <button key={t.tool} className={`tool-btn${tool === t.tool ? ' active' : ''}${PRIMARY.includes(t.tool) || t.tool === slot ? '' : ' secondary'}${t.tool === slot ? ' tool-slot' : ''}${t.tool === 'select' || t.tool === 'pan' ? ' rail-nav' : ''}`}
+          title={hotkeys[`tool.${t.tool}`] ? `${t.label} (${hotkeys[`tool.${t.tool}`]})` : t.label} aria-pressed={tool === t.tool} onClick={() => clickTool(t.tool)}>
           {t.icon}
         </button>
       ))}
-      <button className={`tool-btn${boxSelect ? ' active' : ''}`} title={`Box select (${hotkeys["select.boxMode"] || "no key"}): drag on empty space to select several`}
+      {tool === 'select' && !readOnly && (
+        <button className={`box-chip${boxSelect ? ' on' : ''}`} title="Box select: drag on empty space to select several" aria-label="Box select" aria-pressed={boxSelect}
+          onClick={() => { setMore(false); onBoxSelect() }}>{BOX_ICON}</button>
+      )}
+      <button className={`tool-btn box-btn${boxSelect ? ' active' : ''}`} title={`Box select (${hotkeys['select.boxMode'] || 'no key'}): drag on empty space to select several`}
         aria-pressed={boxSelect} onClick={() => { setMore(false); onBoxSelect() }}>
         {BOX_ICON}
       </button>
       {secondary.length > 0 && (
-        <button className={`tool-btn tool-more${more || secondary.some(t => t.tool === tool) ? ' active' : ''}`}
-          title="More tools" aria-expanded={more} onClick={() => setMore(m => !m)}>
+        <button className={`tool-btn tool-more${more ? ' active' : ''}`}
+          title="Tools" aria-label="Tools" aria-expanded={more} onClick={() => setMore(m => !m)}>
           {MORE_ICON}
         </button>
       )}
+      {!readOnly && onUndo && (
+        <>
+          <button className="tool-btn rail-undo" onClick={onUndo} disabled={!canUndo} title={'Undo (' + (hotkeys['edit.undo'] ?? '') + ')'} aria-label="Undo">{UNDO_ICON}</button>
+          <button className="tool-btn rail-undo" onClick={onRedo} disabled={!canRedo} title={'Redo (' + (hotkeys['edit.redo'] ?? '') + ')'} aria-label="Redo">{REDO_ICON}</button>
+        </>
+      )}
       {more && (
-        <div className="tool-more-grid">
-          {secondary.map(t => (
-            <button key={t.tool} className={`tool-grid-btn${tool === t.tool ? ' active' : ''}`}
-              aria-pressed={tool === t.tool} onClick={() => pick(t.tool)}>
-              {t.icon}<span>{t.label}</span>
-            </button>
-          ))}
+        <div className="tool-more-grid" onTouchStart={e => { swipe.current = e.currentTarget.scrollTop <= 0 ? e.touches[0].clientY : null }}
+          onTouchEnd={e => { if (swipe.current !== null && e.changedTouches[0].clientY - swipe.current > 50) setMore(false); swipe.current = null }}>
+          <div className="tool-grab" aria-hidden="true" />
+          {GROUPS.map(g => {
+            const items = g.tools.map(id => secondary.find(t => t.tool === id)).filter((t): t is NonNullable<typeof t> => !!t)
+            if (!items.length) return null
+            return (
+              <Fragment key={g.name}>
+                <div className="tool-group-head">{g.name}</div>
+                {items.map(t => (
+                  <button key={t.tool} className={`tool-grid-btn${tool === t.tool ? ' active' : ''}`} aria-pressed={tool === t.tool} onClick={() => pick(t.tool)}>
+                    {t.icon}<span>{t.label}</span>
+                  </button>
+                ))}
+              </Fragment>
+            )
+          })}
         </div>
       )}
     </nav>
   )
 }
+

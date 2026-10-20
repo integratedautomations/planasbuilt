@@ -138,7 +138,17 @@
 /* Phone keeps its layout */
 @media (max-width: 640px) {
   .viewer .topbar { gap: 0; padding: 4px; }
-  .plan-btn { max-width: 40vw; font-size: 14px; }
+  .plan-switch { flex: 1 1 0; }
+  .plan-btn { max-width: 100%; font-size: 14px; }
+  .plan-btn .ellipsis { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .page-pill { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; white-space: nowrap; min-height: 28px; height: 28px; padding: 0 10px; margin: 0 4px; border-radius: 14px; font-size: 13px; font-variant-numeric: tabular-nums; background: rgb(255 255 255 / 0.12); border-color: transparent; color: var(--chrome-text); }
+  .viewer .topbar .sync-compact { padding: 0 4px; min-width: 0; flex-shrink: 0; }
+  .viewer .topbar .sync-compact .dot { width: 9px; height: 9px; }
+  .viewer .topbar .sync-compact.st-busy .dot { background: var(--warn); }
+  .viewer .topbar .spacer { display: none; }
+  .vmenu-row { display: flex; align-items: center; gap: 2px; padding: 0 2px; }
+  .vmenu-row .icon-btn { color: var(--text); min-width: 36px; }
+  .vmenu-embed { padding: 4px 8px 8px; }
   .viewer .topbar .sync-ind .live-text { display: none; }
   .chip-stack { max-width: calc(100% - 110px); }
   .selection-bar { max-width: calc(100% - 12px); overflow-x: auto; }

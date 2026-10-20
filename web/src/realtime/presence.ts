@@ -10,12 +10,35 @@ export interface Peer {
   page: number | null
   cursor: { x: number; y: number } | null
   selection: string[]
+  /** Visible area in page coordinates (null/absent = unknown). */
+  viewport?: Rect | null
+  /** Box-select drag in progress (page coordinates); null once released. */
+  marquee?: Rect | null
 }
+
+export interface Rect { x: number; y: number; w: number; h: number }
 
 export interface PresenceOut {
   page: number | null
   cursor: { x: number; y: number } | null
   selection: string[]
+  viewport?: Rect | null
+  marquee?: Rect | null
+}
+
+/** The page-space rectangle visible in a viewport of the given pixel size, for a stage transform. */
+export function viewportRect(view: { x: number; y: number; zoom: number }, box: { width: number; height: number }): Rect | null {
+  if (!(view.zoom > 0) || !(box.width > 0) || !(box.height > 0)) return null
+  const r = (n: number) => Math.round(n * 10) / 10
+  return { x: r(-view.x / view.zoom), y: r(-view.y / view.zoom), w: r(box.width / view.zoom), h: r(box.height / view.zoom) }
+}
+
+/** The stage transform that shows the rectangle (centred, with a little margin) in a viewport of the given size. */
+export function viewForRect(rect: Rect, box: { width: number; height: number }, margin = 16): { x: number; y: number; zoom: number } | null {
+  if (!(rect.w > 0) || !(rect.h > 0) || !(box.width > 0) || !(box.height > 0)) return null
+  const zoom = Math.min((box.width - margin * 2) / rect.w, (box.height - margin * 2) / rect.h)
+  if (!(zoom > 0)) return null
+  return { zoom, x: box.width / 2 - (rect.x + rect.w / 2) * zoom, y: box.height / 2 - (rect.y + rect.h / 2) * zoom }
 }
 
 /** Apply a server message to the peer list (immutable; returns the same array when nothing changed). */
@@ -41,7 +64,9 @@ export function reducePeers(peers: Peer[], msg: any, selfClientId: string): Peer
 
 const samePresence = (a: PresenceOut, b: PresenceOut) =>
   a.page === b.page && a.cursor?.x === b.cursor?.x && a.cursor?.y === b.cursor?.y &&
-  a.selection.length === b.selection.length && a.selection.every((s, i) => s === b.selection[i])
+  a.selection.length === b.selection.length && a.selection.every((s, i) => s === b.selection[i]) &&
+  a.viewport?.x === b.viewport?.x && a.viewport?.y === b.viewport?.y && a.viewport?.w === b.viewport?.w && a.viewport?.h === b.viewport?.h &&
+  a.marquee?.x === b.marquee?.x && a.marquee?.y === b.marquee?.y && a.marquee?.w === b.marquee?.w && a.marquee?.h === b.marquee?.h
 
 /**
  * Leading + trailing throttle for presence updates: the first update goes out at once, later ones inside

@@ -96,7 +96,7 @@ function rawSend(obj: unknown): boolean {
 }
 
 function sendPresenceNow(p: PresenceOut) {
-  rawSend({ type: 'presence', page: p.page, cursor: p.cursor, selection: p.selection })
+  rawSend({ type: 'presence', page: p.page, cursor: p.cursor, selection: p.selection, viewport: p.viewport ?? null, marquee: p.marquee ?? null })
 }
 
 /** Start (or restart after sign-in) the connection if a token exists. Safe to call any time. */

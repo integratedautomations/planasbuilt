@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { avatarStack, createPresenceThrottle, initials, reducePeers, userColor } from './presence'
+import { viewportRect, viewForRect, avatarStack, createPresenceThrottle, initials, reducePeers, userColor } from './presence'
 import type { Peer, PresenceOut } from './presence'
 
 const peer = (clientId: string, over: Partial<Peer> = {}): Peer => ({
@@ -68,5 +68,20 @@ describe('userColor', () => {
   it('is stable per user and always a palette colour', () => {
     expect(userColor('abc')).toBe(userColor('abc'))
     expect(userColor('abc')).toMatch(/^#[0-9a-f]{6}$/)
+  })
+})
+
+describe('viewport helpers', () => {
+  it('converts a stage transform to a page rect and back', () => {
+    const r = viewportRect({ x: -100, y: -50, zoom: 2 }, { width: 800, height: 600 })!
+    expect(r).toEqual({ x: 50, y: 25, w: 400, h: 300 })
+    const v = viewForRect(r, { width: 800, height: 600 }, 0)!
+    expect(v.zoom).toBeCloseTo(2)
+    expect(v.x).toBeCloseTo(-100)
+    expect(v.y).toBeCloseTo(-50)
+  })
+  it('rejects degenerate input', () => {
+    expect(viewportRect({ x: 0, y: 0, zoom: 0 }, { width: 10, height: 10 })).toBeNull()
+    expect(viewForRect({ x: 0, y: 0, w: 0, h: 5 }, { width: 10, height: 10 })).toBeNull()
   })
 })

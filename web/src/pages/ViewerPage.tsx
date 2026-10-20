@@ -70,6 +70,8 @@ import { uuid } from '../uuid'
 import { Avatars } from '../realtime/Avatars'
 import { deletedToast } from '../realtime/handlers'
 import { usePeers } from '../realtime/hooks'
+import { viewportRect, viewForRect } from '../realtime/presence'
+import type { Rect } from '../realtime/presence'
 import { joinDocument, on as onSocket, sendPresence } from '../realtime/socket'
 import { PdfMenu } from '../pdfio/PdfMenu'
 import { PrintDialog } from '../pdfio/PrintDialog'
@@ -95,6 +97,7 @@ import { deletePages, fetchRevisionPdf, insertPages, listRevisions, loadRevision
 import type { PageOpResult, RevisionDetail } from '../revisions/api'
 import { MarkupsList } from '../schedule/MarkupsList'
 import { MoreMenu, PlanSwitcher } from '../viewer/TopBar'
+import { DeviceSizeControl } from '../viewer/DeviceSize'
 import { MenuHeading, MenuItemBtn, MenuSep } from '../viewer/menuParts'
 import { StatusChip } from '../viewer/StatusChip'
 import { FloatingChip } from '../viewer/FloatingChip'
@@ -354,19 +357,24 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const peersHere = useMemo(() => peers.filter(p => p.page === pageNum), [peers, pageNum])
   const [toast, setToast] = useState('')
   const cursorRef = useRef<Pt | null>(null)
-  const presenceRef = useRef({ page: 1, selection: [] as string[] })
+  const presenceRef = useRef({ page: 1, selection: [] as string[], viewport: null as Rect | null, marquee: null as Rect | null })
   const peersRef = useRef(peers)
   peersRef.current = peers
   const knownMarkups = useRef(new Map<string, { tag?: string; type: string }>())
   for (const m of store.markups.values()) knownMarkups.current.set(m.id, { tag: m.tag, type: m.type })
   const pendingCenter = useRef<{ page: number; x: number; y: number } | null>(null)
+  const pendingFit = useRef<{ page: number; rect: Rect } | null>(null)
 
   useEffect(() => { joinDocument(documentId); return () => joinDocument(null) }, [documentId])
   useEffect(() => {
     if (presenceRef.current.page !== pageNum) cursorRef.current = null // old page's coordinates
-    presenceRef.current = { page: pageNum, selection: selectedIds }
-    sendPresence({ page: pageNum, cursor: cursorRef.current, selection: selectedIds })
+    presenceRef.current = { ...presenceRef.current, page: pageNum, selection: selectedIds, marquee: null }
+    sendPresence({ ...presenceRef.current, cursor: cursorRef.current })
   }, [pageNum, selectedIds])
+  const onMarquee = useCallback((r: Rect | null) => {
+    presenceRef.current = { ...presenceRef.current, marquee: r }
+    sendPresence({ ...presenceRef.current, cursor: cursorRef.current })
+  }, [])
   const onCursor = useCallback((p: Pt | null) => {
     cursorRef.current = p
     sendPresence({ ...presenceRef.current, cursor: p })
@@ -381,6 +389,12 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const activeTool: Tool = spaceHeld ? 'pan' : tool
 
   const syncStage = useCallback((v: View) => {
+    const el = viewportRef.current
+    if (el) {
+      const vp = viewportRect(v, { width: el.clientWidth, height: el.clientHeight })
+      presenceRef.current = { ...presenceRef.current, viewport: vp }
+      sendPresence({ ...presenceRef.current, cursor: cursorRef.current })
+    }
     const stage = markupRef.current?.stage()
     if (!stage) return
     stage.position({ x: v.x, y: v.y })
@@ -389,7 +403,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }, [])
 
   const pageSize = page ? page.getViewport({ scale: 1 }) : null
-  const { zoom, settledZoom, fit, zoomBy, centerOn, view } = usePanZoom(viewportRef, stageRef,
+  const { zoom, settledZoom, fit, zoomBy, centerOn, view, setView } = usePanZoom(viewportRef, stageRef,
     pageSize ? { width: pageSize.width, height: pageSize.height } : null, {
       shouldPan: () => { const owned = consumedRef.current; consumedRef.current = false; return !owned },
       onPinchStart: () => markupRef.current?.cancelGesture(),
@@ -574,14 +588,23 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }, [page, pageSrc, pdf, pdfFor, documentId, pageNum, store.loaded, allMarkups, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Avatar tap: go to that person's page and centre on their cursor or selection. */
-  const jumpToPeer = useCallback((p: { page: number | null; cursor: Pt | null; selection: string[] }) => {
+  const jumpToPeer = useCallback((p: { page: number | null; cursor: Pt | null; selection: string[]; viewport?: Rect | null }) => {
     const sel = p.selection.map(id => allMarkups.get(id)).find(m => !!m)
     const at = p.cursor ?? (sel ? anchorOf(sel) : null)
     const target = p.page ?? pageNum
-    if (at) pendingCenter.current = { page: target, x: at.x, y: at.y }
+    if (p.viewport) pendingFit.current = { page: target, rect: p.viewport }
+    else if (at) pendingCenter.current = { page: target, x: at.x, y: at.y }
     if (target !== pageNum) setPageNum(Math.min(Math.max(1, target), pageCount || target))
     setJumpTick(n => n + 1)
   }, [allMarkups, pageNum]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const f = pendingFit.current
+    const el = viewportRef.current
+    if (!f || !el || !page || pageSrc !== pdf || page.pageNumber !== f.page) return
+    pendingFit.current = null
+    const v = viewForRect(f.rect, { width: el.clientWidth, height: el.clientHeight })
+    if (v) setView(v)
+  }, [page, pageSrc, pdf, jumpTick]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const c = pendingCenter.current
     if (!c || !page || pageSrc !== pdf || page.pageNumber !== c.page) return
@@ -1213,7 +1236,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
           zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets} catalog={catalog}
           readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={canvasCommit} deviceScale={deviceScale}
-          peers={peersHere} onCursor={canHover ? onCursor : undefined}
+          peers={peersHere} onMarquee={onMarquee} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
           onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
@@ -1352,17 +1375,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <Link to={'/projects/' + projectId} className="icon-btn" title="Back to plans" aria-label="Back to plans"><Icon name="arrow-left" size={20} /></Link>
         <PlanSwitcher projectId={projectId} documentId={documentId} name={meta?.name ?? '…'}
           onPick={id => navigate(`/projects/${projectId}/documents/${id}`)} />
-        <SyncIndicator />
+        <SyncIndicator compact={isPhone} />
         <span className="spacer" />
         {isPhone && (
-          <span className="page-indicator">
-            <input className="page-input" inputMode="numeric" value={pageNum}
-              onChange={e => { const n = parseInt(e.target.value, 10); if (n) goTo(n) }} aria-label="Page number" />
-            <span className="muted">/ {pageCount || '…'}</span>
-          </span>
+          <button type="button" className="page-pill" aria-haspopup="dialog" aria-expanded={showThumbs} aria-label={`Page ${pageNum} of ${pageCount || '?'}, open page list`}
+            onClick={() => setShowThumbs(v => !v)}>{pageNum}/{pageCount || '…'} <Icon name="chevron-down" size={12} /></button>
         )}
         <Avatars peers={peers} max={isPhone ? 1 : 4} onJump={jumpToPeer} />
-        {!readOnly && (
+        {!readOnly && !isPhone && (
           <>
             <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title={'Undo (' + hotkeys['edit.undo'] + ')'} aria-label="Undo"><Icon name="undo" size={20} /></button>
             <button className="icon-btn" onClick={() => { store.redo(); setSelectedIds([]) }} disabled={!store.canRedo} title={'Redo (' + hotkeys['edit.redo'] + ')'} aria-label="Redo"><Icon name="redo" size={20} /></button>
@@ -1382,6 +1402,28 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <MenuSep />
           <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
             onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
+          {isPhone && (
+            <>
+              <MenuSep />
+              <MenuHeading>Navigate</MenuHeading>
+              <div className="vmenu-row" role="presentation">
+                <button type="button" className="icon-btn" onClick={() => goTo(pageNum - 1)} disabled={pageNum <= 1} aria-label="Previous page"><Icon name="chevron-left" size={18} /></button>
+                <span className="muted small">{pageNum} / {pageCount || '…'}</span>
+                <button type="button" className="icon-btn" onClick={() => goTo(pageNum + 1)} disabled={pageNum >= pageCount} aria-label="Next page"><Icon name="chevron-right" size={18} /></button>
+                <span className="spacer" />
+                <button type="button" className="icon-btn" onClick={() => zoomBy(0.8)} aria-label="Zoom out"><Icon name="minus" size={18} /></button>
+                <span className="muted small">{Math.round(zoom * 100)}%</span>
+                <button type="button" className="icon-btn" onClick={() => zoomBy(1.25)} aria-label="Zoom in"><Icon name="plus" size={18} /></button>
+                <button type="button" className="icon-btn" onClick={fit} aria-label="Fit page"><Icon name="maximize" size={18} /></button>
+              </div>
+              <MenuHeading>Scale</MenuHeading>
+              <div className="vmenu-embed"><ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
+                onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}
+                onClear={clearScale} onCalibrate={() => chooseTool('calibrate')} /></div>
+              <MenuHeading>Device size</MenuHeading>
+              <div className="vmenu-embed"><DeviceSizeControl value={deviceScale} readOnly={readOnly} onChange={changeDeviceScale} /></div>
+            </>
+          )}
           <MenuSep />
           <MenuHeading>Panels</MenuHeading>
           {isPhone && <MenuItemBtn icon="pages" label="Pages" checked={panelOpen('pages')} onClick={() => togglePanel('pages')} />}
@@ -1407,7 +1449,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                   onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
               </>
             )}
-            {!focus && <ToolRail hotkeys={hotkeys} tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />}
+            {!focus && <ToolRail hotkeys={hotkeys} tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }}
+              onUndo={() => { store.undo(); setSelectedIds([]) }} onRedo={() => { store.redo(); setSelectedIds([]) }} canUndo={store.canUndo} canRedo={store.canRedo} />}
             {viewportEl}
             {dialogs}
             {showPanel && !focus && sidePanelEl}

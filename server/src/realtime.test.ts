@@ -98,6 +98,13 @@ describe('realtime', () => {
     await a.next('pong')
   })
 
+  it('relays viewport and marquee, dropping invalid rects', async () => {
+    b.send({ type: 'presence', page: 1, cursor: null, selection: [], viewport: { x: 1, y: 2, w: 300, h: 200 }, marquee: { x: 5, y: 6, w: 10, h: 12 } })
+    expect((await a.next('peer')).peer).toMatchObject({ viewport: { x: 1, y: 2, w: 300, h: 200 }, marquee: { x: 5, y: 6, w: 10, h: 12 } })
+    b.send({ type: 'presence', page: 1, cursor: null, selection: [], viewport: { x: 'a', y: 2, w: 3, h: 4 }, marquee: null })
+    expect((await a.next('peer')).peer).toMatchObject({ viewport: null, marquee: null })
+  })
+
   it('broadcasts markup upserts to others but not the origin', async () => {
     const res = await post(`/api/documents/${docId}/markups/${markupId}`, tokA,
       { type: 'rect', page: 1, geometry: { x: 1 } }, 'PUT', 'client-a')

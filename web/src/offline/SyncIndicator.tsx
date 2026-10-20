@@ -11,7 +11,7 @@ const KIND_LABEL: Record<OutboxItem['kind'], string> = {
 }
 
 /** Connection / sync state for the toolbar. Tap when there are failures to retry or discard them. */
-export function SyncIndicator() {
+export function SyncIndicator({ compact }: { compact?: boolean } = {}) {
   const s = useSyncStatus()
   const live = useSocketStatus()
   const [open, setOpen] = useState(false)
@@ -24,16 +24,18 @@ export function SyncIndicator() {
   else if (s.syncing || s.pending) { text = `Syncing ${s.pending}`; cls = 'busy' }
 
   const clickable = s.failed > 0 || s.authRequired
+  // Phone: one small status dot (red problem, grey offline, amber syncing/reconnecting, green live/online).
+  const state = cls === 'bad' ? 'bad' : cls === 'off' ? 'off' : (cls === 'busy' || live === 'reconnecting') ? 'busy' : 'ok'
   return (
     <span className="sync-wrap">
-      {live !== 'idle' && (
+      {live !== 'idle' && !compact && (
         <span className={`live-dot ${live}`} role="status" title={live === 'live' ? 'Live' : 'Reconnecting…'}
           aria-label={live === 'live' ? 'Live' : 'Reconnecting'} />
       )}
-      <button type="button" className={`sync-ind ${cls}`} disabled={!clickable}
-        onClick={() => setOpen(o => !o)} aria-live="polite" title={text}>
-        <span className="dot" />{text}
-        {live !== 'idle' && s.online && <span className="live-text hide-sm">{live === 'live' ? ' · Live' : ' · Reconnecting…'}</span>}
+      <button type="button" className={`sync-ind ${cls}${compact ? ` sync-compact st-${state}` : ''}`} disabled={!clickable}
+        onClick={() => setOpen(o => !o)} aria-live="polite" title={text} aria-label={text}>
+        <span className="dot" />{!compact && text}
+        {!compact && live !== 'idle' && s.online && <span className="live-text hide-sm">{live === 'live' ? ' · Live' : ' · Reconnecting…'}</span>}
       </button>
       {open && clickable && (
         <div className="sync-pop" role="dialog" aria-label="Sync problems">

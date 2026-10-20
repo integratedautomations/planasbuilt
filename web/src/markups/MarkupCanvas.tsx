@@ -85,6 +85,8 @@ interface Props {
   peers?: Peer[]
   /** Pointer position in page coordinates, or null when it left the canvas. Omitted when cursors are not broadcast. */
   onCursor?: (p: Pt | null) => void
+  /** Box-select drag rectangle (page coordinates) while dragging; null when it ends. Lets others see what is being pointed at. */
+  onMarquee?: (r: { x: number; y: number; w: number; h: number } | null) => void
   /** Right-click without dragging. */
   onContextMenu?: (info: ContextInfo) => void
   /** Drawn rectangles/ellipses are forced to squares/circles (Square and Circle tools). */
@@ -107,7 +109,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-ra
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onContextMenu, constrain, onBoxSelected, onDeviceOverlap } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -119,6 +121,38 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const [marquee, setMarquee] = useState<Box | null>(null)
   const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean } } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
+  useEffect(() => {
+    onMarquee?.(marquee && (marquee.width > 2 || marquee.height > 2) ? { x: marquee.x, y: marquee.y, w: marquee.width, h: marquee.height } : null)
+  }, [marquee]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Peers' box-selects stay on screen ~3s after release, fading over the last second.
+  const [held, setHeld] = useState<Record<string, { r: { x: number; y: number; w: number; h: number }; color: string; name: string; ended: number | null }>>({})
+  const [nowTick, setNowTick] = useState(0)
+  useEffect(() => {
+    setHeld(h => {
+      let next = h, changed = false
+      const ids = new Set<string>()
+      for (const p of peers ?? []) {
+        ids.add(p.clientId)
+        if (p.marquee) { next = { ...next, [p.clientId]: { r: p.marquee, color: p.color, name: p.name, ended: null } }; changed = true }
+        else if (next[p.clientId] && next[p.clientId].ended === null) { next = { ...next, [p.clientId]: { ...next[p.clientId], ended: Date.now() } }; changed = true }
+      }
+      for (const id of Object.keys(next)) if (!ids.has(id)) { next = { ...next }; delete next[id]; changed = true }
+      return changed ? next : h
+    })
+  }, [peers])
+  const anyEnded = Object.values(held).some(h => h.ended !== null)
+  useEffect(() => {
+    if (!anyEnded) return
+    const t = setInterval(() => {
+      setNowTick(n => n + 1)
+      setHeld(h => {
+        const keep = Object.entries(h).filter(([, v]) => v.ended === null || Date.now() - v.ended < 3000)
+        return keep.length === Object.keys(h).length ? h : Object.fromEntries(keep)
+      })
+    }, 100)
+    return () => clearInterval(t)
+  }, [anyEnded])
+  void nowTick
   /** Armed device tool: where the semi-transparent preview of the device follows the pointer (null when hidden). */
   const [devGhost, setDevGhost] = useState<Pt | null>(null)
   // Touch: nothing commits on pointerdown. The arbiter decides tap / drag / pinch; window listeners follow the finger
@@ -746,8 +780,41 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           return boxes.map(({ id, b }) => (
             <Rect key={`${p.clientId}:${id}`} x={b.x - 3 / zoom} y={b.y - 3 / zoom} width={b.width + 6 / zoom} height={b.height + 6 / zoom}
               listening={false} stroke={p.color} strokeWidth={2 / zoom} dash={[6 / zoom, 3 / zoom]} cornerRadius={2 / zoom} />
-          ))
+          )).concat(boxes.length ? [(
+            <Group key={`${p.clientId}:sel-tag`} x={boxes[0].b.x - 3 / zoom} y={boxes[0].b.y - 3 / zoom} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
+              <Label y={-16}>
+                <Tag fill={p.color} cornerRadius={3} />
+                <Text text={p.name} fill="#fff" fontSize={10} padding={2} />
+              </Label>
+            </Group>
+          )] : [])
         })}
+        {Object.entries(held).map(([id, h]) => {
+          const age = h.ended === null ? 0 : Date.now() - h.ended
+          const op = age < 2000 ? 1 : Math.max(0, 1 - (age - 2000) / 1000)
+          return (
+            <Group key={`${id}:mq`} x={h.r.x} y={h.r.y} opacity={op} listening={false}>
+              <Rect width={h.r.w} height={h.r.h} fill={h.color + '26'} stroke={h.color} strokeWidth={1.5 / zoom} dash={[6 / zoom, 3 / zoom]} />
+              <Group scaleX={1 / zoom} scaleY={1 / zoom}>
+                <Label y={-16}>
+                  <Tag fill={h.color} cornerRadius={3} />
+                  <Text text={h.name} fill="#fff" fontSize={10} padding={2} />
+                </Label>
+              </Group>
+            </Group>
+          )
+        })}
+        {peers?.map(p => p.viewport && (
+          <Group key={`${p.clientId}:vp`} x={p.viewport.x} y={p.viewport.y} listening={false}>
+            <Rect width={p.viewport.w} height={p.viewport.h} stroke={p.color} strokeWidth={1.5 / zoom} dash={[8 / zoom, 5 / zoom]} opacity={0.5} />
+            <Group scaleX={1 / zoom} scaleY={1 / zoom}>
+              <Label opacity={0.7}>
+                <Tag fill={p.color} />
+                <Text text={p.name} fill="#fff" fontSize={10} padding={2} />
+              </Label>
+            </Group>
+          </Group>
+        ))}
         {peers?.map(p => p.cursor && (
           // Sized in screen pixels: the group is scaled by 1/zoom
           <Group key={p.clientId} x={p.cursor.x} y={p.cursor.y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
