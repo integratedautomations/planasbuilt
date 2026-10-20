@@ -37,7 +37,7 @@ interface Props {
   onUndo?: () => void; onRedo?: () => void; canUndo?: boolean; canRedo?: boolean
 }
 
-const BOX_ICON = icon(<><rect x="4" y="5" width="16" height="14" rx="1" strokeDasharray="3 2.5" /><path d="M9 12h6M12 9v6" /></>)
+export const BOX_ICON = icon(<><rect x="4" y="5" width="16" height="14" rx="1" strokeDasharray="3 2.5" /><path d="M9 12h6M12 9v6" /></>)
 
 // On phones the rail holds fixed slots: Select, Pan, Device, the last-used tool from the grid, Tools, Undo, Redo (CSS hides .secondary there).
 const PRIMARY: Tool[] = ['select', 'pan', 'device']

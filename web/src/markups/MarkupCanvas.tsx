@@ -280,8 +280,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         if (e.evt.shiftKey || multiSelect) {
           onSelect(group.every(i => selectedIds.includes(i)) ? selectedIds.filter(i => !group.includes(i)) : [...selectedIds, ...group.filter(i => !selectedIds.includes(i))])
         } else if (!group.every(i => selectedIds.includes(i))) onSelect(group)
-      } else if ((boxSelect || e.evt.shiftKey) && !tapMode.current) {
-        consumedRef.current = true // empty space with Shift / box mode: marquee
+      } else if ((boxSelect || e.evt.shiftKey || e.evt.pointerType === 'pen') && !tapMode.current) {
+        consumedRef.current = true // empty space with Shift / box mode / Apple Pencil: marquee
         const p = pointer()
         marqueeStart.current = { p, add: e.evt.shiftKey || multiSelect }
         marqueeRect.current = rectFromCorners(p, p)

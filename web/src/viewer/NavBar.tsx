@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Icon } from '../ui/Icon'
 import { DeviceSizeControl, formatDeviceScale } from './DeviceSize'
-import { TOOLS } from '../markups/ToolRail'
+import { BOX_ICON, TOOLS } from '../markups/ToolRail'
 import type { Tool } from '../markups/types'
 
 interface Props {
@@ -27,12 +27,15 @@ interface Props {
   deviceScale?: number
   onDeviceScale?: (v: number) => void
   deviceScaleReadOnly?: boolean
+  /** Box-select mode (drag on empty space selects) and its toggle. */
+  boxSelect?: boolean
+  onBoxSelect?: () => void
 }
 
 export const ZOOM_PRESETS = [0.25, 0.5, 1, 2, 4]
 
 /** Floating bar at the bottom centre of the plan: page arrows and number, zoom controls and the sheet scale. */
-export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel, tool, onTool, hotkeys, deviceScale = 1, onDeviceScale, deviceScaleReadOnly }: Props) {
+export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel, tool, onTool, hotkeys, deviceScale = 1, onDeviceScale, deviceScaleReadOnly, boxSelect, onBoxSelect }: Props) {
   const [text, setText] = useState(String(pageNum))
   const [menu, setMenu] = useState<'zoom' | 'scale' | 'devsize' | null>(null)
   useEffect(() => setText(String(pageNum)), [pageNum])
@@ -46,6 +49,8 @@ export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHin
         return <button key={t} className={'icon-btn' + (tool === t ? ' active' : '')} aria-pressed={tool === t} onClick={() => onTool(t)}
           title={key ? `${def.label} (${key})` : def.label} aria-label={def.label}>{def.icon}</button>
       })}
+      {onBoxSelect && <button className={'icon-btn' + (boxSelect ? ' active' : '')} aria-pressed={!!boxSelect} onClick={onBoxSelect}
+        title={`Box select${hotkeys?.['select.boxMode'] ? ` (${hotkeys['select.boxMode']})` : ''}: drag on empty space to select several`} aria-label="Box select">{BOX_ICON}</button>}
       <button className="icon-btn" onClick={onFit} title={`Fit page${fitHint ? ` (${fitHint})` : ''}`} aria-label="Fit page"><Icon name="maximize" size={18} /></button>
       <span className="divider" />
       <button className="icon-btn" onClick={() => onGo(pageNum - 1)} disabled={pageNum <= 1} title={`Previous page (${prevHint ?? 'PageUp'})`} aria-label="Previous page"><Icon name="chevron-left" size={18} /></button>
