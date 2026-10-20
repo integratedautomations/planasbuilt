@@ -566,3 +566,5 @@ input.invalid { border-color: var(--danger); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.markup-stage.no-cursor, .markup-stage.no-cursor canvas { cursor: none !important; }

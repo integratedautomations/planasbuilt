@@ -1141,11 +1141,11 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                 </select>
               )}
               <button className={'palette-item cone-toggle' + (showCones ? ' on' : '')} aria-pressed={showCones}
-                title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
+                title={showCones ? 'Hide coverage' : 'Show coverage'} onClick={() => setShowCones(!showCones)}>
                 <span className="cone-icon" aria-hidden>
                   <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fillOpacity={showCones ? 0.3 : 0} stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 20L4 6a12 12 0 0116 0z" /></svg>
                 </span>
-                <span>Coverage cones</span>
+                <span>Coverage</span>
               </button>
             </FloatingChip>
           )}
@@ -1224,7 +1224,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     pageAreas, parentOf: (id: string) => areaIndex.parents.get(id) ?? null,
     pathOf: (m: Markup) => areaPathIn(areaIndex, m), deviceCount: (id: string) => counts.get(id) ?? 0,
     parentChoices: (a: Markup) => parentChoices(areaIndex, a), show: showAreas, onShow: setShowAreas,
-    onSelectArea: selectArea, onDraw: drawArea, onNameSheet: nameSheet,
+    onSelectArea: selectArea, onSelectAreas: setSelectedIds, onDraw: drawArea, onNameSheet: nameSheet,
   }
 
   const sidePanelEl = (
@@ -1251,7 +1251,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const markupsListEl = (docked: boolean) => (
     <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
       pageNum={pageNum} markups={allMarkups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
-      selectedIds={selectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone} docked={docked}
+      selectedIds={selectedIds} onSelectIds={setSelectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone} docked={docked}
       visibleColumns={prefs.listColumns} onVisibleColumns={ids => setPref('listColumns', ids)}
       onJump={jumpTo} onClose={() => (docked ? setPanel('markups', false) : setShowList(false))} />
   )
@@ -1272,7 +1272,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     props: sidePanelEl,
     markups: markupsListEl(true),
     compare: compareEl,
-    areas: <Areas areas={areasProps} readOnly={readOnly} selected={selected} />,
+    areas: <Areas areas={areasProps} readOnly={readOnly} selected={selected} onDelete={deleteSelected} />,
     layers: <Layers layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId} hidden={hidden} locked={locked}
       onToggleHidden={toggleHidden} onToggleLocked={toggleLocked} onAddLayer={addLayer} readOnly={readOnly} symbolSets={symbolSets}
       display={{ showCones, onShowCones: setShowCones }} />,
@@ -1444,7 +1444,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         )
       })()}
       {newTypeSetId && (
-        <DeviceTypeEditor key={`new:${newTypeSetId}`} initial={{ setId: newTypeSetId, name: '', tag_prefix: '', icon: '', fields: [], default_product_id: null }}
+        <DeviceTypeEditor key={`new:${newTypeSetId}`} initial={{ setId: newTypeSetId, name: '', tag_prefix: '', icon: '', fields: [], default_product_id: null, coverage: { on: false, angle: 90, range_ft: 20 } }}
           set={symbolSets.get(newTypeSetId)} onClose={() => setNewTypeSetId(null)}
           onSaved={async () => { await reloadCatalog(); setNewTypeSetId(null) }}
           onRemoved={async () => { setNewTypeSetId(null) }} />

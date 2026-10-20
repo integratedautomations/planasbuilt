@@ -20,6 +20,7 @@ import type { LegendRow } from './legend'
 import type { Catalog } from '../catalog/catalog'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
+import { initialCoverage } from './coverage'
 import type { Peer } from '../realtime/presence'
 import { REDLINE } from './canvasFonts'
 
@@ -112,6 +113,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const [marquee, setMarquee] = useState<Box | null>(null)
   const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean } } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
+  /** Armed device tool: where the semi-transparent preview of the device follows the pointer (null when hidden). */
+  const [devGhost, setDevGhost] = useState<Pt | null>(null)
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
   // Plex arrives from Google Fonts after the first draw: re-measure canvas text once it has loaded.
   useEffect(() => {
@@ -182,7 +185,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }))
 
   // Leaving a tool abandons its half-drawn markup
-  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null); setDevGhost(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
     while (node && node !== stageRef.current) {
@@ -261,6 +264,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
       if (!set) return
       const size = 24
+      const covFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
       // Close to a device of the same set: land exactly on it so it joins its stack
       const snap = findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)
       setSnapHint(null)
@@ -268,13 +272,13 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         const sg = snap.geometry as BoxGeometry
         finish(newMarkup('device', {
           x: sg.x, y: sg.y, width: sg.width, height: sg.height, rotation: sg.rotation,
-          ...(set.has_fov ? { fov: { direction: -90, angle: 90, range: 150 } } : {}),
+          ...(covFov ? { fov: covFov } : {}),
         }))
         return
       }
       const placed = newMarkup('device', {
         x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0,
-        ...(set.has_fov ? { fov: { direction: -90, angle: 90, range: 150 } } : {}),
+        ...(covFov ? { fov: covFov } : {}),
       })
       // On top of a device of another type: the viewer may replace it or ask first
       const over = onDeviceOverlap ? findOverlapTarget(markups, p, set.id, newBase.deviceTypeId ?? null) : null
@@ -317,6 +321,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
   function onPointerMove(e: Konva.KonvaEventObject<PointerEvent>) {
     if (onCursor) onCursor(stageRef.current?.getRelativePointerPosition() ?? null)
+    if (tool === 'device' && !readOnly && newBase.symbolSetId) setDevGhost((e.evt.buttons & 4) ? null : pointer())
+    else if (devGhost) setDevGhost(null)
     if (marqueeStart.current) {
       const r = marqueeStart.current.right
       if (r && !r.moved) {
@@ -516,8 +522,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const ordered = [...drawable.filter(m => m.type === 'area'), ...drawable.filter(m => m.type !== 'area')]
 
   return (
-    <Stage ref={stageRef} width={width} height={height} className="markup-stage"
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => onCursor?.(null)}
+    <Stage ref={stageRef} width={width} height={height} className={devGhost ? 'markup-stage no-cursor' : 'markup-stage'}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => { onCursor?.(null); setDevGhost(null) }}
       onDblClick={onDoubleClick} onDblTap={onDoubleClick}>
       <Layer>
         {ordered.map(m => {
@@ -564,6 +570,16 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} fill="rgba(25,113,194,0.12)" />}
         {snapHint && <Circle x={snapHint.x} y={snapHint.y} radius={snapHint.r * 1.2} listening={false}
           stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[4 / zoom, 3 / zoom]} opacity={0.7} />}
+        {devGhost && newBase.symbolSetId && symbolSets.get(newBase.symbolSetId) && (() => {
+          const set = symbolSets.get(newBase.symbolSetId!)!
+          const gm = newMarkup('device', { x: devGhost.x - 12, y: devGhost.y - 12, width: 24, height: 24, rotation: 0 })
+          return (
+            <Group opacity={0.5} listening={false}>
+              <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost' }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}
+                iconSrc={deviceIcon(gm, set, catalog)} />
+            </Group>
+          )
+        })()}
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}

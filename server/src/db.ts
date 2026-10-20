@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS revu_mappings (
   action text NOT NULL DEFAULT 'device' CHECK (action IN ('device','plain','skip')),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE device_types ADD COLUMN IF NOT EXISTS coverage jsonb;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL;
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'upload';

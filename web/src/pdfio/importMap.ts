@@ -189,6 +189,10 @@ function cleanGeometry(type: string, g: unknown): BoxGeometry | PathGeometry | n
       if (direction !== null && angle !== null && range !== null) {
         out.fov = { direction, angle, range }
         if (g.fov.hidden === true) out.fov.hidden = true
+        if (g.fov.locked === true) out.fov.locked = true
+        const rf = num(g.fov.rangeFt), op = num(g.fov.opacity)
+        if (rf !== null && rf > 0) out.fov.rangeFt = rf
+        if (op !== null && op >= 0 && op <= 1) out.fov.opacity = op
       }
     }
     return out

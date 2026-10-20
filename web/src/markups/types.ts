@@ -9,7 +9,12 @@ export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight',
 export const isBoxType = (t: MarkupType): t is BoxType => BOX_TYPES.includes(t)
 
 /** Camera coverage wedge, in degrees and page points, from the device center. */
-export interface Fov { direction: number; angle: number; range: number; hidden?: boolean }
+/**
+ * Device coverage sector ("Coverage" in the UI; stored as `fov` for backward compatibility).
+ * `range` is page points; `rangeFt` is the real length, used whenever the page has a scale.
+ * `hidden` = coverage off for this device. `locked` = geometry cannot be edited. `opacity` = fill opacity (default 0.18).
+ */
+export interface Fov { direction: number; angle: number; range: number; hidden?: boolean; rangeFt?: number; locked?: boolean; opacity?: number }
 
 export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number; fov?: Fov }
 /** points are relative to x/y: [x0, y0, x1, y1, ...] */

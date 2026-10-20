@@ -1,4 +1,4 @@
-import { Component, useRef } from 'react'
+import { Component, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text, Wedge } from 'react-konva'
 import type Konva from 'konva'
@@ -6,6 +6,7 @@ import { FONT_MONO, FONT_UI } from './canvasFonts'
 import { cloudArcs, deviceCenter } from './geometry'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, radiusOf, sqftOf } from './measure'
 import { STATUSES } from './types'
+import { clampAngle, COVERAGE_OPACITY, formatRange, hasCoverage, normDeg, rangeFeet, rangePx, withRangePx } from './coverage'
 import type { BoxGeometry, Fov, Markup, PathGeometry, Status, SymbolSet } from './types'
 import { useImage } from './useImage'
 import { legendLayout, legendSettings } from './legend'
@@ -57,7 +58,7 @@ function MarkupShapeInner(props: Props) {
   const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
-  const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g && showCones && !g.fov?.hidden ? g.fov : undefined
+  const fov = m.type === 'device' && 'width' in g && showCones && hasCoverage(g.fov) ? g.fov : undefined
 
   // Keep the cone attached while the device is being dragged
   const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => {
@@ -69,8 +70,8 @@ function MarkupShapeInner(props: Props) {
   return (
     <>
       {fov && 'width' in g && (
-        <FovCone innerRef={fovRef} center={deviceCenter(g)} fov={fov} color={symbolSet!.color} zoom={zoom}
-          editable={!!editFov} onChange={onFovChange} />
+        <FovCone innerRef={fovRef} center={deviceCenter(g)} fov={fov} color={symbolSet?.color ?? '#868e96'} zoom={zoom} ppf={scale}
+          editable={!!editFov && !fov.locked} onChange={onFovChange} />
       )}
       <Group id={m.id} name="markup" x={g.x} y={g.y} rotation={g.rotation}
         draggable={draggable} listening={listening && !ghost} opacity={m.style.opacity}
@@ -198,25 +199,52 @@ function LegendBody({ m, g, rows }: { m: Markup; g: BoxGeometry; rows: LegendRow
   )
 }
 
-function FovCone({ innerRef, center, fov, color, zoom, editable, onChange }: {
+function FovCone({ innerRef, center, fov, color, zoom, ppf, editable, onChange }: {
   innerRef: React.RefObject<Konva.Group | null>; center: { x: number; y: number }; fov: Fov; color: string
-  zoom: number; editable: boolean; onChange?: (f: Fov, done: boolean) => void
+  zoom: number; ppf: number | null; editable: boolean; onChange?: (f: Fov, done: boolean) => void
 }) {
+  const range = rangePx(fov, ppf)
   const rad = (fov.direction * Math.PI) / 180
-  const tip = { x: Math.cos(rad) * fov.range, y: Math.sin(rad) * fov.range }
-  const drag = (e: Konva.KonvaEventObject<DragEvent>, done: boolean) => {
+  const tip = { x: Math.cos(rad) * range, y: Math.sin(rad) * range }
+  const edgeRad = ((fov.direction + fov.angle / 2) * Math.PI) / 180
+  const edge = { x: Math.cos(edgeRad) * range, y: Math.sin(edgeRad) * range }
+  const [dragging, setDragging] = useState(false)
+  const dragTip = (e: Konva.KonvaEventObject<DragEvent>, done: boolean) => {
     e.cancelBubble = true
+    setDragging(!done)
     const x = e.target.x(), y = e.target.y()
-    onChange?.({ ...fov, direction: Math.round((Math.atan2(y, x) * 180) / Math.PI), range: Math.max(10, Math.hypot(x, y)) }, done)
+    onChange?.({ ...withRangePx(fov, Math.hypot(x, y), ppf), direction: normDeg((Math.atan2(y, x) * 180) / Math.PI) }, done)
   }
+  const dragEdge = (e: Konva.KonvaEventObject<DragEvent>, done: boolean) => {
+    e.cancelBubble = true
+    setDragging(!done)
+    const x = e.target.x(), y = e.target.y()
+    let diff = Math.abs(normDeg((Math.atan2(y, x) * 180) / Math.PI - fov.direction))
+    if (diff === 0 && fov.angle >= 360) diff = 180
+    onChange?.({ ...fov, angle: clampAngle(diff * 2) }, done)
+  }
+  const ft = rangeFeet(fov, ppf)
+  const label = `${ft !== null ? formatRange(ft) : `${Math.round(range)} pt`} · ${Math.round(fov.angle)}°`
+  const hr = 7 / zoom, fs = 12 / zoom
   return (
     <Group ref={innerRef} x={center.x} y={center.y} listening={editable}>
-      <Wedge radius={fov.range} angle={fov.angle} rotation={fov.direction - fov.angle / 2}
-        fill={color} opacity={0.18} stroke={color} strokeWidth={1.5 / zoom} listening={false} />
+      <Wedge radius={range} angle={Math.min(360, fov.angle)} rotation={fov.direction - Math.min(360, fov.angle) / 2}
+        fill={color} opacity={fov.opacity ?? COVERAGE_OPACITY} listening={false} />
+      <Wedge radius={range} angle={Math.min(360, fov.angle)} rotation={fov.direction - Math.min(360, fov.angle) / 2}
+        stroke={color} strokeWidth={1.5 / zoom} listening={false} />
       {editable && (
-        <Circle name="point-handle" x={tip.x} y={tip.y} radius={7 / zoom} fill="#fff" stroke={color}
-          strokeWidth={2 / zoom} draggable onDragStart={e => { e.cancelBubble = true }}
-          onDragMove={e => drag(e, false)} onDragEnd={e => drag(e, true)} />
+        <>
+          <Circle name="point-handle" x={tip.x} y={tip.y} radius={hr} fill="#fff" stroke={color}
+            strokeWidth={2 / zoom} draggable onDragStart={e => { e.cancelBubble = true }}
+            onDragMove={e => dragTip(e, false)} onDragEnd={e => dragTip(e, true)} />
+          <Circle name="point-handle" x={edge.x} y={edge.y} radius={hr * 0.8} fill={color} stroke="#fff"
+            strokeWidth={1.5 / zoom} draggable onDragStart={e => { e.cancelBubble = true }}
+            onDragMove={e => dragEdge(e, false)} onDragEnd={e => dragEdge(e, true)} />
+          {dragging && (
+            <Text text={label} x={tip.x + hr * 1.5} y={tip.y - fs / 2} fontSize={fs} fontStyle="bold" fill={color}
+              stroke="#fff" strokeWidth={fs * 0.25} fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />
+          )}
+        </>
       )}
     </Group>
   )

@@ -125,10 +125,10 @@ export function SymbolSetsPage({ user }: { user: User }) {
               <>
                 <div className="row wrap">
                   <h3>{selSet.name}</h3>
-                  <span className="muted"> · {selSet.tag_prefix}-01 · {selSet.fields.length} field{selSet.fields.length === 1 ? '' : 's'}{selSet.has_fov ? ' · coverage cone' : ''}</span>
+                  <span className="muted"> · {selSet.tag_prefix}-01 · {selSet.fields.length} field{selSet.fields.length === 1 ? '' : 's'}{selSet.has_fov ? ' · coverage' : ''}</span>
                   <span className="spacer" />
                   {admin && <button onClick={() => setDraft({ ...selSet, fields: selSet.fields.map(f => ({ ...f })) })}>Edit set</button>}
-                  {admin && <button className="primary" onClick={() => setTypeDraft({ setId: selSet.id, name: '', tag_prefix: '', icon: '', fields: [], default_product_id: null })}>New device type</button>}
+                  {admin && <button className="primary" onClick={() => setTypeDraft({ setId: selSet.id, name: '', tag_prefix: '', icon: '', fields: [], default_product_id: null, coverage: { on: false, angle: 90, range_ft: 20 } })}>New device type</button>}
                 </div>
                 <ul className="list">
                   {(catalog.typesBySet.get(selSet.id) ?? []).map(t => (
@@ -205,7 +205,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
               </label>
             </div>
             <label className="check"><input type="checkbox" checked={draft.has_fov}
-              onChange={e => setDraft({ ...draft, has_fov: e.target.checked })} /> Show coverage cone (cameras, motion sensors)</label>
+              onChange={e => setDraft({ ...draft, has_fov: e.target.checked })} /> Coverage on by default (cameras, motion sensors)</label>
 
             <h4>Fields</h4>
             <p className="muted small">Every device also has: {HARDWARE_FIELDS.map(f => f.label).join(', ')}, and install status. Device types can add their own fields.</p>

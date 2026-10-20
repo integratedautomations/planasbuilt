@@ -1,3 +1,4 @@
+import { COVERAGE_OPACITY, hasCoverage, rangePx, sectorPoints } from '../markups/coverage'
 import { cloudArcs } from '../markups/geometry'
 import { legendLayout, legendSettings } from '../markups/legend'
 import type { LegendRow } from '../markups/legend'
@@ -296,13 +297,12 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         const r = Math.min(w, h) / 2
         const cx = w / 2, cy = h / 2
         // Coverage cone: a sibling of the device in page space, so it does not rotate with the device.
-        const fov = set?.has_fov && ctx.showCones !== false && !b.fov?.hidden ? b.fov : undefined
+        const fov = ctx.showCones !== false && hasCoverage(b.fov) ? b.fov : undefined
         if (fov) {
           const dc = localToDisplay(b.x, b.y, b.rotation || 0)(cx, cy)
           const CM = localMatrix(box, dc.x, dc.y, 0)
-          const a0 = ((fov.direction - fov.angle / 2) * Math.PI) / 180, a1 = ((fov.direction + fov.angle / 2) * Math.PI) / 180
-          const poly = [0, 0, ...arcPoints(0, 0, fov.range, a0, a1, Math.max(4, Math.ceil(fov.angle / 8)))]
-          ops.save().cm(CM).gs('GC', { ca: 0.18 * opacity, CA: opacity })
+          const poly = sectorPoints(rangePx(fov, ctx.ppf), fov.angle, fov.direction)
+          ops.save().cm(CM).gs('GC', { ca: (fov.opacity ?? COVERAGE_OPACITY) * opacity, CA: opacity })
           ops.fill(color).stroke(color).width(1.5).dash(undefined).poly(poly, true).paint(true, true)
           ops.restore()
           for (let i = 0; i + 1 < poly.length; i += 2) extra.push(applyMatrix(CM, poly[i], poly[i + 1]))

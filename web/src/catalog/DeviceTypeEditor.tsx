@@ -6,11 +6,12 @@ import { FieldsEditor } from './FieldsEditor'
 import { IconPicker } from './icons/IconPicker'
 import { readIcon } from './readIcon'
 
-export interface TypeDraft { id?: string; setId: string; name: string; tag_prefix: string; icon: string; fields: FieldDef[]; default_product_id: string | null }
+export interface TypeDraft { id?: string; setId: string; name: string; tag_prefix: string; icon: string; fields: FieldDef[]; default_product_id: string | null; coverage: { on: boolean; angle: number; range_ft: number } }
 
 /** A type's editable draft (`setId` carries the symbol set it belongs to). */
 export const draftOfType = (t: DeviceType): TypeDraft => ({
   id: t.id, setId: t.symbol_set_id, name: t.name, tag_prefix: t.tag_prefix ?? '', icon: t.icon, fields: t.fields.map(f => ({ ...f })), default_product_id: t.default_product_id,
+  coverage: t.coverage ?? { on: false, angle: 90, range_ft: 20 },
 })
 
 /** The device-type editor dialog (name, tag prefix, icon, extra fields). Used by the catalog page and the viewer's tool chest. */
@@ -28,7 +29,7 @@ export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: 
   async function save() {
     setError('')
     try {
-      const body = JSON.stringify({ name: draft.name, tag_prefix: draft.tag_prefix, icon: draft.icon, fields: draft.fields, default_product_id: draft.default_product_id })
+      const body = JSON.stringify({ name: draft.name, tag_prefix: draft.tag_prefix, icon: draft.icon, fields: draft.fields, default_product_id: draft.default_product_id, coverage: draft.coverage })
       const saved = draft.id
         ? await api<DeviceType>(`/device-types/${draft.id}`, { method: 'PUT', body })
         : await api<DeviceType>(`/symbol-sets/${draft.setId}/device-types`, { method: 'POST', body })
@@ -69,6 +70,22 @@ export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: 
               </span>
             </label>
           </div>
+          <h4>Coverage</h4>
+          <p className="muted small">New devices of this type get this coverage (motion sensors, speakers, WAPs, smoke detectors: use 360° for a full circle).</p>
+          <label className="check"><input type="checkbox" checked={draft.coverage.on}
+            onChange={e => setDraft({ ...draft, coverage: { ...draft.coverage, on: e.target.checked } })} /> Coverage on by default</label>
+          {draft.coverage.on && (
+            <div className="grid2">
+              <label className="field">Angle (1–360°)
+                <input type="number" min={1} max={360} value={draft.coverage.angle}
+                  onChange={e => setDraft({ ...draft, coverage: { ...draft.coverage, angle: Math.min(360, Math.max(1, Math.round(+e.target.value) || 1)) } })} />
+              </label>
+              <label className="field">Range (feet)
+                <input type="number" min={1} step={1} value={draft.coverage.range_ft}
+                  onChange={e => setDraft({ ...draft, coverage: { ...draft.coverage, range_ft: Math.max(0, +e.target.value || 0) } })} />
+              </label>
+            </div>
+          )}
           <h4>Extra fields</h4>
           <p className="muted small">On top of the set's fields. Devices of this type show both.</p>
           <FieldsEditor fields={draft.fields} onChange={fields => setDraft({ ...draft, fields })} />

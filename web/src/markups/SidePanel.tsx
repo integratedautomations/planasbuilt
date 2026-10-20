@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Icon } from '../ui/Icon'
+import { clickSelect, keySelect } from '../ui/listSelection'
 import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import { STATUSES } from './types'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
@@ -30,6 +31,8 @@ export interface AreasProps {
   show: boolean
   onShow: (v: boolean) => void
   onSelectArea: (id: string) => void
+  /** Replace the selection with these areas (multi-select; no zoom). */
+  onSelectAreas: (ids: string[]) => void
   onDraw: (tool: 'area' | 'area-rect') => void
   onNameSheet: () => void
 }
@@ -213,7 +216,7 @@ function Properties(p: Props) {
         {one && <button className="stack-back" onClick={() => p.onSelectIds(stack.members.map(m => m.id))}>{'‹'} Back to stack ({stack.members.length})</button>}
         {whole && <StackMembers stack={stack} set={set} onPick={id => p.onSelectIds([id])} />}
         <Section title="Device">
-          <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate} set={set}
+          <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate} set={set} scale={p.measure.scale?.pointsPerFoot ?? null}
             heading={whole ? `Stack ×${selected.length} · ${tagRange(selected.map(m => m.tag ?? ''))}` : undefined}
             areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
         </Section>
@@ -364,7 +367,8 @@ function AreaProperties(p: Props) {
 }
 
 /** Areas of the current sheet as a tree (its own dock panel on desktop; a Properties tab on phones). */
-export function Areas({ areas, readOnly, selected }: Pick<Props, 'areas' | 'readOnly' | 'selected'>) {
+export function Areas({ areas, readOnly, selected, onDelete }: Pick<Props, 'areas' | 'readOnly' | 'selected'> & { onDelete?: () => void }) {
+  const anchor = useRef<string | null>(null)
   const kids = new Map<string | null, Markup[]>()
   const ids = new Set(areas.pageAreas.map(a => a.id))
   for (const a of areas.pageAreas) {
@@ -374,10 +378,20 @@ export function Areas({ areas, readOnly, selected }: Pick<Props, 'areas' | 'read
   }
   for (const list of kids.values()) list.sort((x, y) => (x.text || '').localeCompare(y.text || ''))
   const sheet = areas.pageAreas.find(a => a.fields?.sheet === true)
+  const order: string[] = []
+  const walk = (a: Markup) => { order.push(a.id); (kids.get(a.id) ?? []).forEach(walk) }
+  ;(kids.get(null) ?? []).forEach(walk)
+  const selectedAreaIds = selected.filter(m => m.type === 'area').map(m => m.id)
   const node = (a: Markup, depth: number): React.ReactNode => (
     <li key={a.id} style={{ display: 'block' }}>
       <button className={`area-row${selected.some(s => s.id === a.id) ? ' active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }}
-        onClick={() => areas.onSelectArea(a.id)} title="Select and zoom to fit">
+        onClick={e => {
+          if (e.ctrlKey || e.metaKey || e.shiftKey) {
+            const r = clickSelect(order, { selected: selectedAreaIds, anchor: anchor.current }, a.id, { ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey })
+            anchor.current = r.anchor
+            areas.onSelectAreas(r.selected)
+          } else { anchor.current = a.id; areas.onSelectArea(a.id) }
+        }} title="Select and zoom to fit (Ctrl/Shift+click for several)">
         <span className="area-name">{a.text.trim() || (a.fields?.sheet === true ? 'Unnamed sheet' : 'Unnamed area')}</span>
         <span className="muted small">{areas.deviceCount(a.id)}</span>
       </button>
@@ -386,13 +400,18 @@ export function Areas({ areas, readOnly, selected }: Pick<Props, 'areas' | 'read
   )
   const roots = kids.get(null) ?? []
   return (
-    <div className="panel-body">
+    <div className="panel-body" tabIndex={-1} onKeyDown={e => {
+      if ((e.target as HTMLElement).closest('input,textarea,select')) return
+      const r = keySelect(order, { selected: selectedAreaIds, anchor: anchor.current }, e)
+      if (r) { e.preventDefault(); e.stopPropagation(); anchor.current = r.anchor; areas.onSelectAreas(r.selected) }
+    }}>
       <div className="panel-heading">Areas, this sheet</div>
       {!readOnly && (
         <div className="area-actions">
           <button onClick={() => areas.onDraw('area')}>Draw area</button>
           <button onClick={() => areas.onDraw('area-rect')}>Draw rectangle</button>
           <button onClick={areas.onNameSheet}>{sheet ? 'Rename sheet' : 'Name this sheet'}</button>
+          {onDelete && selectedAreaIds.length > 1 && <button className="danger" onClick={onDelete}>Delete {selectedAreaIds.length} areas</button>}
         </div>
       )}
       <label className="check"><input type="checkbox" checked={areas.show} onChange={e => areas.onShow(e.target.checked)} /> Show area outlines and labels</label>
@@ -555,7 +574,7 @@ export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, o
   return (
     <div className="panel-body">
       <div className="panel-heading">Display</div>
-      <label className="check"><input type="checkbox" checked={display.showCones} onChange={e => display.onShowCones(e.target.checked)} /> Show coverage cones</label>
+      <label className="check"><input type="checkbox" checked={display.showCones} onChange={e => display.onShowCones(e.target.checked)} /> Show coverage</label>
       <div className="panel-heading">Layers</div>
       <p className="muted small">The selected layer gets new markups.</p>
       <ul className="layer-list">

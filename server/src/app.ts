@@ -1000,7 +1000,18 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const icon = String(b.icon ?? '')
     if (icon && (!/^data:image\/(svg\+xml|png|jpeg|webp)[;,]/.test(icon) || icon.length > 300_000)) return null
     const prefix = String(b.tag_prefix ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
-    return { name, icon, tag_prefix: prefix || null, fields: cleanFields(b.fields) }
+    // Default coverage for new devices of this type: { on, angle 1-360, range_ft > 0 }, or null for none. undefined = not sent.
+    let coverage: { on: boolean; angle: number; range_ft: number } | null | undefined
+    if (b.coverage === null) coverage = null
+    else if (b.coverage && typeof b.coverage === 'object') {
+      const angle = Math.round(Number(b.coverage.angle)), range = Number(b.coverage.range_ft)
+      coverage = {
+        on: b.coverage.on === true,
+        angle: Number.isFinite(angle) ? Math.min(360, Math.max(1, angle)) : 90,
+        range_ft: Number.isFinite(range) && range > 0 ? Math.min(10000, Math.round(range * 100) / 100) : 20,
+      }
+    }
+    return { name, icon, tag_prefix: prefix || null, fields: cleanFields(b.fields), coverage }
   }
 
   function cleanProduct(b: any) {
@@ -1077,9 +1088,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const [set] = await db.query('SELECT id FROM symbol_sets WHERE id = $1', [(req.params as any).id])
     if (!set) return reply.code(404).send({ error: 'Not found' })
     const [row] = await db.query(
-      `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, sort)
-       VALUES ($1,$2,$3,$4,$5,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
-      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields)])
+      `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, coverage, sort)
+       VALUES ($1,$2,$3,$4,$5,$6,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
+      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), t.coverage ? JSON.stringify(t.coverage) : null])
     realtime.symbolSetsChanged(req.user.id, cid(req))
     return row
   })
@@ -1096,8 +1107,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       defaultId = p.id
     }
     const [row] = await db.query(
-      `UPDATE device_types SET name=$1, icon=$2, tag_prefix=$3, fields=$4, default_product_id=$5 WHERE id=$6 RETURNING *`,
-      [t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), defaultId, (req.params as any).id])
+      `UPDATE device_types SET name=$1, icon=$2, tag_prefix=$3, fields=$4, default_product_id=$5,
+         coverage = CASE WHEN $7::boolean THEN $8::jsonb ELSE coverage END WHERE id=$6 RETURNING *`,
+      [t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), defaultId, (req.params as any).id,
+        t.coverage !== undefined, t.coverage ? JSON.stringify(t.coverage) : null])
     if (!row) return reply.code(404).send({ error: 'Not found' })
     realtime.symbolSetsChanged(req.user.id, cid(req))
     return row

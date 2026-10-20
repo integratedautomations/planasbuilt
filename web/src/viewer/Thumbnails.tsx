@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ContextMenu } from '../markups/ContextMenu'
 import type { MenuItem } from '../markups/ContextMenu'
 import { PDFDocumentProxy } from '../pdf'
+import { clickSelect, keySelect } from '../ui/listSelection'
 
 const THUMB_WIDTH = 132
 
@@ -32,14 +33,15 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
   /** Pages an action applies to: the multi-selection when the target is in it, else the target alone. */
   const targets = (page: number) => (picked.includes(page) ? [...picked].sort((a, b) => a - b) : [page])
   const act = (a: PageAction) => onAction?.(a)
+  const anchor = useRef<number | null>(null)
   const click = (e: React.MouseEvent, n: number) => {
-    if (e.ctrlKey || e.metaKey) { setPicked(p => (p.includes(n) ? p.filter(x => x !== n) : [...p, n])); return }
-    if (e.shiftKey && picked.length) {
-      const from = picked[picked.length - 1]
-      const [lo, hi] = from < n ? [from, n] : [n, from]
-      setPicked(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i))
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      const r = clickSelect(pages, { selected: picked, anchor: anchor.current ?? current }, n, { ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey })
+      anchor.current = r.anchor
+      setPicked(r.selected)
       return
     }
+    anchor.current = n
     setPicked([])
     onSelect(n)
   }
@@ -68,7 +70,10 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
   const bar = picked.length ? picked : [current]
   const barLabel = bar.length === 1 ? `page ${bar[0]}` : `${bar.length} pages`
   return (
-    <aside className="thumbs" aria-label="Pages">
+    <aside className="thumbs" aria-label="Pages" tabIndex={-1} onKeyDown={e => {
+      const r = keySelect(pages, { selected: picked, anchor: anchor.current }, e)
+      if (r) { e.preventDefault(); e.stopPropagation(); anchor.current = r.anchor; setPicked(r.selected) }
+    }}>
       <div className="page-tools" role="toolbar" aria-label="Page tools">
         {canEdit && <button className="icon-btn small" title={`Rotate ${barLabel} 90° clockwise`} aria-label="Rotate pages" onClick={() => act({ type: 'rotate', pages: bar })}>⟳</button>}
         {canEdit && <button className="icon-btn small" title={`Delete ${barLabel}`} aria-label="Delete pages" onClick={() => act({ type: 'delete', pages: bar })}>🗑</button>}

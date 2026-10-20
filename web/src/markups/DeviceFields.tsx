@@ -6,7 +6,8 @@ import { Attribution, HistorySection } from './MarkupInfo'
 import { DevicePhotos } from '../photos/DevicePhotos'
 import { BarcodeScanner } from '../photos/BarcodeScanner'
 import '../photos/photos.css'
-import type { FieldDef, Markup, Status, SymbolSet } from './types'
+import type { FieldDef, Fov, Markup, Status, SymbolSet } from './types'
+import { clampAngle, COVERAGE_DEFAULT_PX, COVERAGE_OPACITY, formatRange, initialCoverage, normDeg, parseRange, rangeFeet, withRangeFeet } from './coverage'
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
 
@@ -21,10 +22,12 @@ interface Props {
   areaPath?: string[]
   /** Heading for multi-device mode (default "N devices"), e.g. "Stack of 6". */
   heading?: string
+  /** points_per_foot of the page (null = not calibrated). */
+  scale?: number | null
 }
 
 /** Device data entry: tag, install status, hardware fields and the symbol set's own fields. */
-export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, heading }: Props) {
+export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, heading, scale = null }: Props) {
   const d = devices[0]
   const single = devices.length === 1
   const setStatus = (status: Status) => onUpdate(m => ({ ...m, status }), 'status')
@@ -47,6 +50,14 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
     setScanKey(null)
   }
   const fov = 'width' in d.geometry ? d.geometry.fov : undefined
+  const setFov = (fn: (cur: Fov | undefined) => Fov | undefined, key: string) =>
+    onUpdate(m => {
+      if (!('width' in m.geometry)) return m
+      const next = fn(m.geometry.fov)
+      const geometry = { ...m.geometry }
+      if (next) geometry.fov = next; else delete geometry.fov
+      return { ...m, geometry }
+    }, key)
   const cat = useCatalogContext()
   const sameType = devices.every(m => (m.device_type_id ?? null) === (d.device_type_id ?? null))
   const dtype = sameType && d.device_type_id ? cat.types.get(d.device_type_id) : undefined
@@ -129,18 +140,51 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           <label className="field">Notes
             <textarea rows={2} value={String(d.fields?.notes ?? '')} onChange={e => setField('notes', e.target.value)} />
           </label>
-          {set?.has_fov && fov && (
+          <div className="muted small section-label">Coverage</div>
+          <label className="check"><input type="checkbox" checked={!!fov && !fov.hidden}
+            onChange={e => {
+              const on = e.target.checked
+              setFov(cur => on
+                ? (cur ? { ...cur, hidden: false } : initialCoverage(set, dtype?.coverage?.on ? dtype.coverage : { on: true, angle: 90, range_ft: 20 }, scale) ?? { ...COVERAGE_DEFAULT_PX })
+                : cur ? { ...cur, hidden: true } : cur, `fovshow.${d.id}`)
+            }} /> Show coverage</label>
+          {fov && !fov.hidden && (
             <>
-              <div className="muted small section-label">Coverage cone{fov.hidden ? '' : ' · drag the white dot to aim'}</div>
-              <label className="check"><input type="checkbox" checked={!fov.hidden}
-                onChange={e => onUpdate(m => ({ ...m, geometry: { ...m.geometry, fov: { ...fov, hidden: !e.target.checked } } }), `fovshow.${d.id}`)} /> Show coverage cone</label>
-              <label className="field">Angle <span className="muted">{fov.angle}°</span>
-                <input type="range" min={10} max={360} step={5} value={fov.angle}
-                  onChange={e => onUpdate(m => ({ ...m, geometry: { ...m.geometry, fov: { ...fov, angle: +e.target.value } } }), `fov.${d.id}`)} />
-              </label>
-              <label className="field">Range <span className="muted">{Math.round(fov.range)}</span>
-                <input type="range" min={10} max={1500} step={5} value={fov.range}
-                  onChange={e => onUpdate(m => ({ ...m, geometry: { ...m.geometry, fov: { ...fov, range: +e.target.value } } }), `fov.${d.id}`)} />
+              <label className="check"><input type="checkbox" checked={!!fov.locked}
+                onChange={e => setFov(cur => cur && { ...cur, locked: e.target.checked }, `fovlock.${d.id}`)} /> Lock coverage</label>
+              {!fov.locked && <p className="muted small">Drag the white dot to aim and size it, the filled dot to change the angle.</p>}
+              {scale ? (
+                <label className="field">Range
+                  <input key={`r${fov.rangeFt ?? fov.range}`} defaultValue={formatRange(rangeFeet(fov, scale) ?? 0)} disabled={fov.locked} placeholder={`e.g. 40'`}
+                    onBlur={e => {
+                      const ft = parseRange(e.target.value)
+                      if (ft === null) { e.target.value = formatRange(rangeFeet(fov, scale) ?? 0); return }
+                      setFov(cur => cur && withRangeFeet(cur, ft, scale), `fovrange.${d.id}`)
+                    }}
+                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
+                </label>
+              ) : (
+                <>
+                  <p className="scale-warn small">Set scale to use real distances</p>
+                  <label className="field">Range <span className="muted">{Math.round(fov.range)} pt</span>
+                    <input type="range" min={10} max={1500} step={5} value={fov.range} disabled={fov.locked}
+                      onChange={e => setFov(cur => cur && { ...cur, range: +e.target.value }, `fov.${d.id}`)} />
+                  </label>
+                </>
+              )}
+              <div className="grid2">
+                <label className="field">Angle (1–360°)
+                  <input type="number" min={1} max={360} step={1} value={Math.round(fov.angle)} disabled={fov.locked}
+                    onChange={e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setFov(cur => cur && { ...cur, angle: clampAngle(v) }, `fov.${d.id}`) }} />
+                </label>
+                <label className="field">Rotation (°)
+                  <input type="number" step={1} value={Math.round(fov.direction)} disabled={fov.locked}
+                    onChange={e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setFov(cur => cur && { ...cur, direction: normDeg(v) }, `fov.${d.id}`) }} />
+                </label>
+              </div>
+              <label className="field">Opacity <span className="muted">{Math.round((fov.opacity ?? COVERAGE_OPACITY) * 100)}%</span>
+                <input type="range" min={5} max={60} step={1} value={Math.round((fov.opacity ?? COVERAGE_OPACITY) * 100)}
+                  onChange={e => setFov(cur => cur && { ...cur, opacity: +e.target.value / 100 }, `fovop.${d.id}`)} />
               </label>
             </>
           )}

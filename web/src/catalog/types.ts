@@ -10,6 +10,8 @@ export interface DeviceType {
   /** Extra fields on top of the symbol set's own. */
   fields: FieldDef[]
   default_product_id: string | null
+  /** Default coverage for new devices of this type (range in feet); null/absent = none. */
+  coverage?: { on: boolean; angle: number; range_ft: number } | null
   sort: number
 }
 

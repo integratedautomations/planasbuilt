@@ -11,6 +11,7 @@ import type { ProjectScaleRow } from './exportProject'
 import { ImportDialog } from './ImportDialog'
 import { areaOptions, buildRows, cellText, exportFileName, exportTables, filterRows, listColumns, NO_FILTER, sortRows } from './rows'
 import type { ColumnDef, RowFilter, ScheduleRow } from './rows'
+import { clickSelect, keySelect } from '../ui/listSelection'
 import './schedule.css'
 
 export type Scope = 'sheet' | 'document' | 'project'
@@ -27,6 +28,8 @@ interface Props {
   symbolSets: Map<string, SymbolSet>
   localScales: Map<number, PageScale>
   selectedIds: string[]
+  /** Replace the canvas selection (multi-select from the list). */
+  onSelectIds: (ids: string[]) => void
   readOnly: boolean
   canImport: boolean
   isPhone: boolean
@@ -137,10 +140,28 @@ export function MarkupsList(p: Props) {
   const shown = rows.slice(0, limit)
   const hasForeign = rows.some(r => r.documentId !== documentId)
   const selected = new Set(p.selectedIds)
+  const anchor = useRef<string | null>(null)
+  // Only rows of the open document can be selected on the canvas
+  const order = shown.filter(r => r.documentId === documentId).map(r => r.id)
+  const onRowClick = (e: React.MouseEvent, r: ScheduleRow) => {
+    if ((e.ctrlKey || e.metaKey || e.shiftKey) && r.documentId === documentId) {
+      const res = clickSelect(order, { selected: p.selectedIds.filter(id => order.includes(id)), anchor: anchor.current }, r.id, { ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey })
+      anchor.current = res.anchor
+      p.onSelectIds(res.selected)
+      return
+    }
+    anchor.current = r.id
+    p.onJump({ documentId: r.documentId, page: r.page, id: r.id })
+  }
 
   return (
     <section className={`markups-list${p.isPhone ? ' full' : ''}${p.docked ? ' docked' : ''}`} style={p.isPhone || p.docked ? undefined : { height }} aria-label="Markups list"
-      onPointerDown={e => e.stopPropagation()}>
+      tabIndex={-1} onPointerDown={e => e.stopPropagation()}
+      onKeyDown={e => {
+        if ((e.target as HTMLElement).closest('input,textarea,select')) return
+        const res = keySelect(order, { selected: p.selectedIds, anchor: anchor.current }, e)
+        if (res) { e.preventDefault(); e.stopPropagation(); anchor.current = res.anchor; p.onSelectIds(res.selected) }
+      }}>
       {!p.isPhone && !p.docked && (
         <div className="list-handle" role="separator" aria-orientation="horizontal" aria-label="Resize list"
           onPointerDown={onHandleDown} onPointerMove={onHandleMove} onPointerUp={onHandleUp} onPointerCancel={onHandleUp} />
@@ -209,7 +230,7 @@ export function MarkupsList(p: Props) {
               const editable = editableRow(r)
               return (
                 <tr key={r.id} className={selected.has(r.id) ? 'sel' : undefined}
-                  onClick={() => p.onJump({ documentId: r.documentId, page: r.page, id: r.id })}>
+                  onClick={e => onRowClick(e, r)}>
                   {columns.map(c => (
                     <td key={c.id} className={c.id === 'tag' ? 'cell-tag' : undefined} onClick={c.edit && editable ? e => e.stopPropagation() : undefined}>
                       <Cell row={r} col={c} editable={editable} setSet={sets} onStatus={s => setStatus(r, s)} onField={(k, v) => setField(r, k, v)} />
