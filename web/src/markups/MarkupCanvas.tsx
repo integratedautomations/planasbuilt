@@ -699,7 +699,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               iconSrc={m.type === 'device' ? deviceIcon(m, m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined, catalog) : undefined}
               showCones={showCones}
               legendRows={m.type === 'legend' ? legendRows?.get(m.id) : undefined}
-              editFov={single?.id === m.id && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
+              editFov={(single?.id === m.id || (selectedIds.includes(m.id) && !!stacks.byId.get(m.id) && selectedIds.every(i => stacks.byId.get(m.id)!.members.some(x => x.id === i)))) && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
               onFovChange={(fov, done) => {
                 if (!done) { setFovOverride({ id: m.id, fov }); return }
                 setFovOverride(null)
