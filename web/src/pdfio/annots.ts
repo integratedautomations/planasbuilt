@@ -1,4 +1,6 @@
 import { cloudArcs } from '../markups/geometry'
+import { legendLayout, legendSettings } from '../markups/legend'
+import type { LegendRow } from '../markups/legend'
 import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { BoxGeometry, Markup, PathGeometry, SymbolSet } from '../markups/types'
@@ -69,6 +71,8 @@ export interface BuildCtx {
   areaPath?: string[]
   countNumber?: number
   showCones?: boolean
+  /** Rows of a legend markup. */
+  legendRows?: LegendRow[]
 }
 
 export const isPathGeom = (g: Markup['geometry']): g is PathGeometry => 'points' in g
@@ -80,7 +84,7 @@ const TYPE_LABEL: Record<string, string> = {
   rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text', stamp: 'Stamp',
   device: 'Device', line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Freehand',
   cable: 'Cable', 'measure-length': 'Length', 'measure-polylength': 'Polyline length', 'measure-area': 'Area measurement',
-  count: 'Count', area: 'Area',
+  count: 'Count', area: 'Area', legend: 'Legend',
 }
 
 /** Readable summary, e.g. "Tag: CAM-01 | IP: 10.0.0.5 | Model: X". */
@@ -183,7 +187,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
   if (!isPathGeom(g)) {
     const b = g as BoxGeometry
     const w = b.width, h = b.height
-    ext.box(0, 0, w, h)
+    if (m.type !== 'legend') ext.box(0, 0, w, h)
     const corners = [toP(0, 0), toP(w, 0), toP(w, h), toP(0, h)]
     const cornerFlat = corners.flatMap(c => c)
     // axis-aligned in user space (no markup rotation, or a multiple of 90)
@@ -246,6 +250,44 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         ops.text(label, (w - tw) / 2, h / 2 + fs * 0.35, fs, c, true)
         spec.subtype = 'Stamp'; spec.stampName = label; spec.borderWidth = 0
         pad = Math.max(2, sw) / 2 + 1
+        break
+      }
+      case 'legend': {
+        // Count table; height follows the rows. A colored dot stands in for the icon.
+        const rows = ctx.legendRows ?? []
+        const s = legendSettings(m)
+        const fs = m.style.fontSize || 12
+        const L = legendLayout(rows, s, w, fs)
+        const ink = stroke ?? [0.2, 0.2, 0.25]
+        const fit = (text: string, width: number, size: number, bold = false) => {
+          let t = text
+          while (t.length > 1 && ctx.textWidth(t, size, bold) > width) t = t.slice(0, -1)
+          return t.length < text.length ? t.slice(0, Math.max(0, t.length - 1)) + '.' : t
+        }
+        ops.fill(fillC ?? [1, 1, 1]).stroke(ink).width(m.style.strokeWidth || 1).dash(undefined).rect(0, 0, w, L.height).paint(true, true)
+        ext.box(0, 0, w, L.height)
+        if (s.title.trim()) ops.text(fit(s.title, w - L.pad * 2, fs * 1.2, true), L.pad, L.pad * 0.8 + fs * 1.1, fs * 1.2, ink, true)
+        let x0 = L.pad
+        const colX: Record<string, number> = {}
+        for (const c of s.columns) { colX[c] = x0; x0 += L.widths[c] }
+        rows.forEach((r, i) => {
+          const top = L.titleH + L.pad + i * L.rowH
+          const base = top + L.rowH / 2 + fs * 0.35
+          if (s.columns.includes('icon')) {
+            const d = L.rowH * 0.64
+            ops.fill(hexToRgb(r.color) ?? GRAY).dash(undefined).ellipse(colX.icon + L.rowH * 0.5, top + L.rowH / 2, d / 2, d / 2).paint(true, false)
+          }
+          if (s.columns.includes('name')) ops.text(fit(r.name, L.widths.name - 4, fs), colX.name, base, fs, ink)
+          if (s.columns.includes('code')) ops.text(fit(r.code, L.widths.code - 4, fs), colX.code, base, fs, [0.29, 0.31, 0.34])
+          if (s.columns.includes('count')) {
+            const t = String(r.count)
+            ops.text(t, colX.count + L.widths.count - 4 - ctx.textWidth(t, fs, true), base, fs, ink, true)
+          }
+        })
+        if (!rows.length) ops.text('No devices', L.pad, L.titleH + L.pad + fs, fs, GRAY)
+        spec.subtype = 'Stamp'; spec.stampName = 'Legend'; spec.borderWidth = 0
+        pad = (m.style.strokeWidth || 1) / 2 + 1
+        spec.contents = ['Legend', s.title, ...rows.map(r => `${r.name}: ${r.count}`)].filter(Boolean).join(' | ')
         break
       }
       case 'device': {
@@ -441,7 +483,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
     spec.inner = r4([Math.max(spec.inner[0], spec.rect[0]), Math.max(spec.inner[1], spec.rect[1]),
       Math.min(spec.inner[2], spec.rect[2]), Math.min(spec.inner[3], spec.rect[3])])
   }
-  spec.contents = m.type === 'text' ? m.text : contentsOf(m, ctx.set, measureText)
+  if (m.type !== 'legend') spec.contents = m.type === 'text' ? m.text : contentsOf(m, ctx.set, measureText)
   spec.ap = { stream: ops.toString(), gstates: ops.gstates, fonts: [...ops.fonts], images: [...ops.images] }
   return spec
 }

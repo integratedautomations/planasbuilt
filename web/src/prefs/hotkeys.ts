@@ -30,6 +30,7 @@ export const COMMANDS: Command[] = [
   tool('stamp', 'Stamp', 'S'),
   tool('area', 'Area (click points)', 'J'),
   tool('area-rect', 'Area (drag rectangle)', 'U'),
+  tool('legend', 'Legend', 'Alt+L'),
   { id: 'edit.undo', label: 'Undo', group: 'Edit', combo: 'Ctrl+Z' },
   { id: 'edit.redo', label: 'Redo', group: 'Edit', combo: 'Ctrl+Y' },
   { id: 'edit.redoAlt', label: 'Redo (alternate)', group: 'Edit', combo: 'Ctrl+Shift+Z' },

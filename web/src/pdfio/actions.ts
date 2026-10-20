@@ -2,6 +2,7 @@ import { api, attachmentFileUrl } from '../api'
 import type { Attachment, DocumentSummary } from '../api'
 import type { CatalogData, DeviceType } from '../catalog/types'
 import { buildCatalog } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
 import type { Markup, SymbolSet } from '../markups/types'
 import { loadPdfBytes } from '../offline/cache'
 import { exportAnnotated, exportFileName, exportFlattened } from './build'
@@ -21,12 +22,13 @@ export interface DocExportArgs {
   deviceTypes?: Iterable<DeviceType>
   /** Points per foot by page. */
   scales: Map<number, number>
+  catalog?: Catalog
 }
 
 /** Downloads `<name>-markups.pdf` (editable annotations) or `<name>-flattened.pdf`. */
 export async function exportDocumentPdf(kind: 'annotated' | 'flattened', a: DocExportArgs) {
   const [pdfBytes, icons] = await Promise.all([loadPdfBytes(a.documentId), loadIcons(a.symbolSets.values(), a.deviceTypes)])
-  const input = { pdfBytes, markups: [...a.markups], symbolSets: a.symbolSets, scales: a.scales, icons }
+  const input = { pdfBytes, markups: [...a.markups], symbolSets: a.symbolSets, scales: a.scales, icons, catalog: a.catalog }
   const bytes = kind === 'annotated' ? await exportAnnotated(input) : await exportFlattened(input)
   downloadBytes(bytes, exportFileName(a.name, kind === 'annotated' ? 'markups' : 'flattened'))
 }

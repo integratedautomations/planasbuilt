@@ -1,6 +1,10 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import type { PDFPage } from 'pdf-lib'
 import { areaPathIn, buildAreaIndex, isArea } from '../markups/areas'
+import { EMPTY_CATALOG } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
+import { legendRowsFor } from '../markups/legend'
+import type { LegendRow } from '../markups/legend'
 import type { Markup, SymbolSet } from '../markups/types'
 import { approxTextWidth, buildAnnot, countNumbers } from './annots'
 import type { AnnotSpec } from './annots'
@@ -18,6 +22,10 @@ export interface ExportInput {
   icons?: Map<string, Uint8Array>
   /** Draw coverage cones (default true). */
   showCones?: boolean
+  /** Catalog for legend tables (device type and product names). */
+  catalog?: Catalog
+  /** Rows of each legend by markup id; computed from `markups` when omitted (pass it when `markups` is only part of the document). */
+  legendRows?: Map<string, LegendRow[]>
 }
 
 export type Mode = 'annotate' | 'flatten'
@@ -41,7 +49,7 @@ export function textWidthFn(res: Resources) {
 
 /** Specs for one page's markups (areas first so they sit underneath). */
 export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInput, res: Resources, counts: Map<string, number>,
-  areaPaths: Map<string, string[]>, pageNumber: number): { spec: AnnotSpec; iconKey?: string }[] {
+  areaPaths: Map<string, string[]>, pageNumber: number, legend?: Map<string, LegendRow[]>): { spec: AnnotSpec; iconKey?: string }[] {
   const box = pageBoxOf(page)
   const tw = textWidthFn(res)
   const out: { spec: AnnotSpec; iconKey?: string }[] = []
@@ -52,7 +60,7 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
     const iconKey = typeKey && res.icons.has(typeKey) ? typeKey : set && res.icons.has(set.id) ? set.id : undefined
     const spec = buildAnnot(m, {
       box, ppf: input.scales.get(pageNumber) ?? null, set, hasIcon: !!iconKey, textWidth: tw,
-      areaPath: areaPaths.get(m.id), countNumber: counts.get(m.id), showCones: input.showCones,
+      areaPath: areaPaths.get(m.id), countNumber: counts.get(m.id), showCones: input.showCones, legendRows: legend?.get(m.id),
     })
     if (spec) out.push({ spec, iconKey })
   }
@@ -71,10 +79,11 @@ export function applyMarkups(doc: PDFDocument, mode: Mode, input: ExportInput, r
   const idx = buildAreaIndex(input.markups.filter(isArea))
   const areaPaths = new Map(input.markups.filter(isArea).map(a => [a.id, areaPathIn(idx, a)]))
   const counts = countNumbers(input.markups)
+  const legend = input.legendRows ?? legendRowsFor(input.markups, input.catalog ?? EMPTY_CATALOG, input.symbolSets)
   let n = 0
   for (const [pageNumber, list] of byPage) {
     const page = pages[pageNumber - 1]
-    for (const { spec, iconKey } of specsForPage(page, list, input, res, counts, areaPaths, pageNumber)) {
+    for (const { spec, iconKey } of specsForPage(page, list, input, res, counts, areaPaths, pageNumber, legend)) {
       if (mode === 'annotate') addAnnotation(doc, page, spec, res, iconKey)
       else if (!(spec.flags & 2)) flattenAnnotation(doc, page, spec, res, iconKey)
       n++

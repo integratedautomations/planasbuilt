@@ -1,4 +1,4 @@
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFString } from 'pdf-lib'
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRef, PDFString } from 'pdf-lib'
 import type { PDFObject } from 'pdf-lib'
 import { pageBoxOf } from './writer'
 import type { PageBox } from './coords'
@@ -32,6 +32,15 @@ export interface RawAnnot {
   flags: number
   /** Our custom /PlanAsBuilt key (full markup JSON). */
   payload?: string
+  /** Object reference ("12 0 R"), for resolving /IRT. */
+  ref?: string
+  /** /IRT target reference and /RT relation (Revu groups use /RT /Group). */
+  irt?: string
+  rt?: string
+  /** Optional-content layer name (/OC), e.g. a Revu layer. */
+  layer?: string
+  /** Has an /Image key (Revu embeds an image inside the annotation). */
+  hasImage?: boolean
 }
 
 type Dict = PDFDict
@@ -55,9 +64,22 @@ function str(doc: PDFDocument, d: Dict, key: string): string {
   return ''
 }
 
+const refKey = (v: PDFObject | undefined) => (v instanceof PDFRef ? v.toString() : undefined)
+
 function nameOf(doc: PDFDocument, v: PDFObject | undefined): string {
   const o = v ? doc.context.lookup(v) : undefined
   return o instanceof PDFName ? o.decodeText() : ''
+}
+
+/** Name of the optional-content group (or the first group of a membership dict) behind /OC. */
+function layerNameOf(doc: PDFDocument, d: Dict): string | undefined {
+  const oc = doc.context.lookupMaybe(d.get(PDFName.of('OC')), PDFDict)
+  if (!oc) return undefined
+  const own = str(doc, oc, 'Name')
+  if (own) return own
+  const groups = oc.get(PDFName.of('OCGs'))
+  const first = groups instanceof PDFArray ? doc.context.lookupMaybe(groups.get(0), PDFDict) : doc.context.lookupMaybe(groups, PDFDict)
+  return first ? str(doc, first, 'Name') || undefined : undefined
 }
 
 /** Reads every markup-type annotation of the document (links, widgets and popups are skipped). */
@@ -111,6 +133,11 @@ export function readAnnotations(doc: PDFDocument): { page: number; box: PageBox;
         stampName: nameOf(doc, d.get(PDFName.of('Name'))) || undefined,
         flags: f ? f.asNumber() : 0,
         payload: payload || undefined,
+        ref: refKey(list.get(k)),
+        irt: refKey(d.get(PDFName.of('IRT'))),
+        rt: nameOf(doc, d.get(PDFName.of('RT'))) || undefined,
+        layer: layerNameOf(doc, d),
+        hasImage: d.has(PDFName.of('Image')) || undefined,
       })
     }
     out.push({ page: i + 1, box: pageBoxOf(page), annots })

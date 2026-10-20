@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react'
 import { useCatalogContext } from '../catalog/useCatalog'
 import type { PageScale } from '../markups/ScaleControl'
-import type { Markup, SymbolSet } from '../markups/types'
+import type { Layer, Markup, SymbolSet } from '../markups/types'
 import type { Change } from '../markups/useMarkups'
 import { exportDocumentPdf, planImportFile } from './actions'
 import type { ImportPlan } from './importPlan'
+import { RevuConvert } from './RevuConvert'
 
 interface Props {
   documentId: string
@@ -17,18 +18,25 @@ interface Props {
   /** Opens the print dialog. */
   onPrint?: () => void
   printHint?: string
+  projectId: string
+  layers: Layer[]
+  onLayersAdded: (layers: Layer[]) => void
+  /** Whether the PDF's own (baked-in) annotations are drawn, and the switch for it. */
+  showOriginal: boolean
+  onShowOriginal: (show: boolean) => void
 }
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
 /** Viewer toolbar menu: annotated / flattened PDF export and import from an annotated PDF. */
-export function PdfMenu({ documentId, documentName, markups, symbolSets, scales, readOnly, commit, onPrint, printHint }: Props) {
+export function PdfMenu({ documentId, documentName, markups, symbolSets, scales, readOnly, commit, onPrint, printHint, projectId, layers, onLayersAdded, showOriginal, onShowOriginal }: Props) {
   const catalog = useCatalogContext()
   const menu = useRef<HTMLDetailsElement>(null)
   const file = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState('')
   const [note, setNote] = useState('')
   const [preview, setPreview] = useState<ImportPlan | null>(null)
+  const [revu, setRevu] = useState(false)
 
   const close = () => { if (menu.current) menu.current.open = false }
 
@@ -37,7 +45,7 @@ export function PdfMenu({ documentId, documentName, markups, symbolSets, scales,
     try {
       await exportDocumentPdf(kind, {
         documentId, name: documentName, markups: markups.values(), symbolSets, deviceTypes: catalog.types.values(),
-        scales: new Map([...scales].map(([p, s]) => [p, s.pointsPerFoot])),
+        scales: new Map([...scales].map(([p, s]) => [p, s.pointsPerFoot])), catalog,
       })
     } catch (e) { setNote(`Export failed: ${(e as Error).message}`) } finally { setBusy('') }
   }
@@ -62,9 +70,18 @@ export function PdfMenu({ documentId, documentName, markups, symbolSets, scales,
           <button role="menuitem" onClick={() => run('flattened')} disabled={!!busy}>Export flattened PDF</button>
           {onPrint && <button role="menuitem" onClick={() => { close(); onPrint() }}>Print…{printHint ? ` (${printHint})` : ""}</button>}
           {!readOnly && <button role="menuitem" onClick={() => file.current?.click()} disabled={!!busy}>Import markups from PDF…</button>}
+          {!readOnly && <button role="menuitem" onClick={() => { close(); setRevu(true) }} disabled={!!busy}>Convert Revu markups…</button>}
+          <label className="menu-check" role="menuitemcheckbox" aria-checked={showOriginal} title="Draw the annotations that are baked into the PDF file (hide them once converted)">
+            <input type="checkbox" checked={showOriginal} onChange={e => onShowOriginal(e.target.checked)} /> Show original PDF annotations
+          </label>
         </div>
       </details>
       <input ref={file} type="file" accept="application/pdf,.pdf" hidden onChange={e => picked(e.target.files?.[0])} />
+      {revu && (
+        <RevuConvert documentId={documentId} projectId={projectId} catalog={catalog} symbolSets={symbolSets} layers={layers}
+          onLayersAdded={onLayersAdded} commit={commit} onClose={() => setRevu(false)}
+          onDone={summary => { setRevu(false); onShowOriginal(false); setNote(summary) }} />
+      )}
       {(busy || note) && <div className="live-toast" role="status">{busy || note}<button className="icon-btn small" aria-label="Dismiss" hidden={!!busy} onClick={() => setNote('')}>×</button></div>}
       {preview && (
         <div className="name-modal" onPointerDown={e => e.stopPropagation()}>

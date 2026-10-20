@@ -193,6 +193,14 @@ CREATE TABLE IF NOT EXISTS products (
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS revu_mappings (
+  signature text PRIMARY KEY,
+  symbol_set_id uuid REFERENCES symbol_sets(id) ON DELETE SET NULL,
+  device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL,
+  product_id uuid REFERENCES products(id) ON DELETE SET NULL,
+  action text NOT NULL DEFAULT 'device' CHECK (action IN ('device','plain','skip')),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL;
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'upload';

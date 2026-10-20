@@ -1,6 +1,7 @@
 import { loadPdfBytes } from '../offline/cache'
 import type { Markup, SymbolSet } from '../markups/types'
 import type { DeviceType } from '../catalog/types'
+import type { Catalog } from '../catalog/catalog'
 import { loadIcons } from './icons'
 import { buildSubset } from './pageSubset'
 import { printableMarkups, printPages } from './printOptions'
@@ -16,6 +17,7 @@ export interface PrintArgs {
   deviceTypes?: Iterable<DeviceType>
   scales: Map<number, number>
   showCones?: boolean
+  catalog?: Catalog
   /** PDF to print; defaults to the document's stored current PDF. */
   pdfBytes?: ArrayBuffer | Uint8Array
 }
@@ -27,7 +29,7 @@ export async function buildPrintPdf(a: PrintArgs, s: PrintSettings, current: num
   const pdfBytes = a.pdfBytes ?? await loadPdfBytes(a.documentId)
   const icons = s.includeMarkups ? await loadIcons(a.symbolSets.values(), a.deviceTypes) : undefined
   return buildSubset({
-    pdfBytes, pages, fitToPage: s.fit, mode: 'flatten', icons, scales: a.scales, symbolSets: a.symbolSets, showCones: a.showCones,
+    pdfBytes, pages, fitToPage: s.fit, mode: 'flatten', icons, scales: a.scales, symbolSets: a.symbolSets, showCones: a.showCones, catalog: a.catalog,
     markups: s.includeMarkups ? printableMarkups(a.markups, s.hiddenLayers) : undefined,
   })
 }

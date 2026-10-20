@@ -1,4 +1,7 @@
 import { PDFDocument, PrintScaling } from 'pdf-lib'
+import { EMPTY_CATALOG } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
+import { legendRowsFor } from '../markups/legend'
 import type { Markup, SymbolSet } from '../markups/types'
 import { applyMarkups, prepareResources } from './build'
 import type { Mode } from './build'
@@ -13,6 +16,8 @@ export interface SubsetInput {
   scales?: Map<number, number>
   icons?: Map<string, Uint8Array>
   showCones?: boolean
+  /** For legend tables; their counts run over `markups` (the whole document). */
+  catalog?: Catalog
   /** How markups are written: editable annotations or drawn into the page. */
   mode?: Mode
   /** false asks the PDF viewer to print at 100% instead of shrinking to the printable area. */
@@ -29,11 +34,12 @@ export async function buildSubset(input: SubsetInput): Promise<Uint8Array> {
   copied.forEach(p => out.addPage(p))
   const newNumber = new Map(input.pages.map((p, i) => [p, i + 1]))
   if (input.markups) {
+    const legendRows = legendRowsFor(input.markups, input.catalog ?? EMPTY_CATALOG, input.symbolSets ?? new Map())
     const markups = input.markups.filter(m => newNumber.has(m.page)).map(m => ({ ...m, page: newNumber.get(m.page)! }))
     const scales = new Map<number, number>()
     for (const [p, ppf] of input.scales ?? []) { const n = newNumber.get(p); if (n) scales.set(n, ppf) }
     const res = await prepareResources(out, input.icons)
-    applyMarkups(out, input.mode ?? 'annotate', { pdfBytes: input.pdfBytes, markups, symbolSets: input.symbolSets ?? new Map(), scales, icons: input.icons, showCones: input.showCones }, res)
+    applyMarkups(out, input.mode ?? 'annotate', { pdfBytes: input.pdfBytes, markups, symbolSets: input.symbolSets ?? new Map(), scales, icons: input.icons, showCones: input.showCones, legendRows }, res)
   }
   if (input.fitToPage !== undefined) {
     out.catalog.getOrCreateViewerPreferences().setPrintScaling(input.fitToPage ? PrintScaling.AppDefault : PrintScaling.None)

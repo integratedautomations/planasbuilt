@@ -36,6 +36,9 @@ import { CalibrateDialog } from '../markups/ScaleControl'
 import type { PageScale } from '../markups/ScaleControl'
 import { pathFromPoints } from '../markups/geometry'
 import type { Pt } from '../markups/geometry'
+import { legendRows as computeLegendRows, legendSettings, scopeOf } from '../markups/legend'
+import type { LegendRow } from '../markups/legend'
+import { annotationModeFor, setShowOriginalAnnots, showOriginalAnnots } from '../pdfio/annotVisibility'
 import { areaBounds, areaPathIn, buildAreaIndex, deviceCounts, isArea, isSheetArea, parentChoices } from '../markups/areas'
 import { useMarkups } from '../markups/useMarkups'
 import { invalidatePdf, loadDocMeta, loadLayers, loadPdfBytes, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
@@ -206,6 +209,9 @@ export function ViewerPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [defaultStyle, setDefaultStyle] = useState<MarkupStyle>(DEFAULT_STYLE)
   const [stampText, setStampText] = useState('APPROVED')
+  const [showOrig, setShowOrig] = useState(() => showOriginalAnnots(documentId))
+  useEffect(() => { setShowOrig(showOriginalAnnots(documentId)) }, [documentId])
+  const changeShowOrig = useCallback((v: boolean) => { setShowOriginalAnnots(documentId, v); setShowOrig(v) }, [documentId])
   const [layers, setLayers] = useState<Layer[]>([])
   const [symbolSetList, setSymbolSetList] = useState<SymbolSet[]>([])
   const [activeSetId, setActiveSetId] = useState<string | null>(null)
@@ -417,7 +423,7 @@ export function ViewerPage() {
     const off = document.createElement('canvas')
     off.width = Math.floor(vp.width)
     off.height = Math.floor(vp.height)
-    const task = page.render({ canvas: off, canvasContext: off.getContext('2d')!, viewport: vp })
+    const task = page.render({ canvas: off, canvasContext: off.getContext('2d')!, viewport: vp, annotationMode: annotationModeFor(showOrig) })
     task.promise.then(() => {
       const c = canvasRef.current
       if (!c) return
@@ -426,7 +432,7 @@ export function ViewerPage() {
       c.getContext('2d')!.drawImage(off, 0, 0)
     }).catch(() => { /* cancelled */ })
     return () => task.cancel()
-  }, [page, settledZoom])
+  }, [page, settledZoom, showOrig])
 
   // A markup is hidden/locked if its custom layer or its symbol set's layer is
   const flagged = (flags: Set<string>, m: Markup) =>
@@ -448,6 +454,16 @@ export function ViewerPage() {
     return { count, pages: [...pages].sort((a, b) => a - b) }
   }, [pdf, allMarkups, viewingOld])
   const stackIndex = useMemo(() => detectStacks(pageMarkups), [pageMarkups])
+  /** Live rows for each legend on this page, counted over all markups (even on hidden layers). */
+  const legendRowsById = useMemo(() => {
+    const out = new Map<string, LegendRow[]>()
+    for (const m of pageMarkups) {
+      if (m.type !== 'legend') continue
+      const s = legendSettings(m)
+      out.set(m.id, computeLegendRows(allMarkups.values(), catalog, scopeOf(s.scope, m.page), { groupBy: s.groupBy, symbolSets, areaIndex }))
+    }
+    return out
+  }, [pageMarkups, allMarkups, catalog, symbolSets, areaIndex])
   const lockedIds = useMemo(
     () => new Set(pageMarkups.filter(m => flagged(locked, m)).map(m => m.id)),
     [pageMarkups, locked]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -688,7 +704,7 @@ export function ViewerPage() {
     try {
       const bytes = await buildSubset({
         pdfBytes: await currentPdfBytes(), pages, markups: [...allMarkups.values()], symbolSets, scales: scaleMap(),
-        icons: await loadIcons(symbolSets.values(), catalog.types.values()), mode: 'annotate', showCones,
+        icons: await loadIcons(symbolSets.values(), catalog.types.values()), mode: 'annotate', showCones, catalog,
       })
       downloadBytes(bytes, exportFileName(meta?.name ?? 'plan', `page${pages.length === 1 ? '' : 's'}-${pages.slice(0, 6).join('_')}${pages.length > 6 ? '_etc' : ''}`))
     } catch (e) { setToast(`Could not extract: ${(e as Error).message}`) } finally { setPageBusy('') }
@@ -713,7 +729,7 @@ export function ViewerPage() {
     setPrintBusy(true); setPrintError('')
     try {
       const bytes = await buildPrintPdf({
-        documentId, markups: allMarkups.values(), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones,
+        documentId, markups: allMarkups.values(), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
         pdfBytes: revParam ? await fetchRevisionPdf(documentId, revParam) : undefined,
       }, settings, pageNum, pageCount)
       await printPdfBytes(bytes)
@@ -894,11 +910,12 @@ export function ViewerPage() {
           peers={peersHere} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
           constrain={!!shapeLock}
-          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
+          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
           newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
             deviceTypeId: activeTypeId, productId: activeProductId, deviceFields: productFields(activeProductId ? catalog.products.get(activeProductId) : undefined) }}
           onCreated={m => {
+            if (m.type === 'legend') { openPanel('props'); setTool('select'); setSelectedIds([m.id]); return }
             if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
             if (m.type === 'text') { openPanel('props'); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
           }} />
@@ -1042,7 +1059,8 @@ export function ViewerPage() {
           {pageScale ? pageScale.label : 'No scale'}
         </button>
         <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
-          scales={scales} readOnly={readOnly} commit={store.commit} onPrint={() => { setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
+          scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
+          projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
         <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
           onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} />
         <button className="icon-btn hide-sm" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShowHotkeys(true)}>⌨</button>

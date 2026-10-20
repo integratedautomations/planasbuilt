@@ -23,6 +23,7 @@ export const TOOLS: { tool: Tool; label: string; icon: ReactNode }[] = [
   { tool: 'stamp', label: 'Stamp', icon: icon(<><rect x="4" y="14" width="16" height="5" rx="1" /><path d="M9 14v-3a3 3 0 116 0v3" /></>) },
   { tool: 'area', label: 'Area (click points)', icon: icon(<path d="M5 6h6M14 6h5v5M19 14v5h-6M10 19H5v-5M5 11V9" strokeDasharray="3 2.5" />) },
   { tool: 'area-rect', label: 'Area (drag rectangle)', icon: icon(<><rect x="4" y="6" width="16" height="12" rx="1" strokeDasharray="3 2.5" /><path d="M7 9.5h4" /></>) },
+  { tool: 'legend', label: 'Legend', icon: icon(<><rect x="4" y="4" width="16" height="16" rx="1" /><path d="M4 9h16M9 9v11M13 13h4M13 16.5h4" /></>) },
   { tool: 'calibrate', label: 'Calibrate scale', icon: icon(<><path d="M3 15l12-12 6 6-12 12z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
   { tool: 'measure-length', label: 'Length', icon: icon(<><path d="M4 12h16M4 8v8M20 8v8" /></>) },
   { tool: 'measure-polylength', label: 'Polylength', icon: icon(<><path d="M4 18l5-8 5 5 6-9" /><path d="M3 15v6M21 3v6" /></>) },

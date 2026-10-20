@@ -46,6 +46,12 @@ These decisions come from comparing PlanAsBuilt with Revu and System Surveyor (2
 - **Import a Revu-marked plan:**
   - The importer lists each distinct Subject/icon, the user maps it once to a device type and product, and the mapping is saved.
   - Custom columns map to fields. This needs a sample file from the user.
+  - **Findings from the sample (MU 58 South Parker Dr, 813 annotations, no custom columns):**
+    - Devices are Revu *groups*. A parent Rectangle has children linked by /IRT + /RT /Group: rectangles, ellipses, a 1-letter FreeText ("S", "G", "MD") and a label FreeText ("SD-1", "OCAM-1", "SPK-1", "WC-16").
+    - Subjects are mostly generic ("Rectangle", "Text Box"). Only a few carry meaning ("Door Strike", "Glass Break Sensor", "Data Jack").
+    - Layers (/OC) carry the system: Burglar Alarm, Cameras, Fire, Aceess, Intercom, Paging, Data.
+    - Map each group into one device. The key is the layer plus the label prefix (SD, OCAM, SPK, GB, DC, MD, WS, AP, TDJ, KP, CO, ES, LD, HD, SIPH, M15, ICM…). The group's bounding box gives position and size.
+    - Labels repeat (SD-1 ×14), so the number is probably a type code, not a unique tag.
 - **Count and legend:**
   - A legend table placed on the sheet that updates live.
   - Its scope is the sheet, the whole set or one area.

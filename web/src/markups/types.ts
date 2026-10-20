@@ -1,11 +1,11 @@
 // All geometry is in PDF page points at scale 1, origin top-left, y down (pdf.js viewport space).
 
-export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device'
+export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device' | 'legend'
 export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand' | 'cable'
   | 'measure-length' | 'measure-polylength' | 'measure-area' | 'count' | 'area'
 export type MarkupType = BoxType | PathType
 
-export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp', 'device']
+export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp', 'device', 'legend']
 export const isBoxType = (t: MarkupType): t is BoxType => BOX_TYPES.includes(t)
 
 /** Camera coverage wedge, in degrees and page points, from the device center. */

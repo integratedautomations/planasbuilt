@@ -14,6 +14,8 @@ import { copyMarkup } from './copy'
 import type { Rect as Box } from './selection'
 import { AREA_STYLE, isBoxType } from './types'
 import { deviceIcon } from '../catalog/catalog'
+import { DEFAULT_LEGEND, legendFields } from './legend'
+import type { LegendRow } from './legend'
 import type { Catalog } from '../catalog/catalog'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
@@ -66,6 +68,8 @@ interface Props {
   multiSelect: boolean
   /** Global coverage cone switch. */
   showCones: boolean
+  /** Live rows of each legend on this page (by markup id). */
+  legendRows?: Map<string, LegendRow[]>
   /** Device stacks on this page (same-set devices on one spot). */
   stacks: StackIndex
   /** Other people on this page (cursor + selection are drawn in their colour). */
@@ -87,7 +91,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, stacks, peers, onCursor, onContextMenu, constrain } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onContextMenu, constrain } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -222,6 +226,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       return
     }
     const t = (cal ? 'line' : tool) as MarkupType
+    if (t === 'legend') {
+      finish({ ...newMarkup('legend', { x: p.x, y: p.y, width: 260, height: 120, rotation: 0 }), style: { ...newBase.style, stroke: '#343a40', fill: '#ffffff', strokeWidth: 1, fontSize: 12 }, fields: legendFields(DEFAULT_LEGEND) })
+      return
+    }
     if (t === 'stamp') {
       finish(newMarkup('stamp', { x: p.x - 80, y: p.y - 25, width: 160, height: 50, rotation: 0 }))
       return
@@ -483,6 +491,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
               iconSrc={m.type === 'device' ? deviceIcon(m, m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined, catalog) : undefined}
               showCones={showCones}
+              legendRows={m.type === 'legend' ? legendRows?.get(m.id) : undefined}
               editFov={single?.id === m.id && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
               onFovChange={(fov, done) => {
                 if (!done) { setFovOverride({ id: m.id, fov }); return }

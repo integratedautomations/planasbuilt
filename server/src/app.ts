@@ -759,6 +759,46 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     products: (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut),
   }))
 
+  // ---- Revu converter mappings (one set per organization: Revu signature -> device type / product) ----
+  const REVU_ACTIONS = ['device', 'plain', 'skip']
+  const listRevuMappings = () => db.query(
+    'SELECT signature, symbol_set_id, device_type_id, product_id, action, updated_at FROM revu_mappings ORDER BY signature')
+
+  app.get('/api/revu-mappings', { preHandler: auth }, async () => listRevuMappings())
+
+  app.put('/api/revu-mappings', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) {
+      const [r] = await db.query("SELECT 1 AS ok FROM project_members WHERE user_id = $1 AND role IN ('admin','editor') LIMIT 1", [req.user.id])
+      if (!r) return reply.code(403).send({ error: 'Not allowed' })
+    }
+    const list = (req.body as any)?.mappings
+    if (!Array.isArray(list) || list.length > 2000) return reply.code(400).send({ error: 'mappings must be a list' })
+    const clean: { signature: string; set: string | null; type: string | null; product: string | null; action: string }[] = []
+    for (const m of list) {
+      const signature = String(m?.signature ?? '').trim()
+      const action = String(m?.action ?? 'device')
+      if (!signature || signature.length > 300 || !REVU_ACTIONS.includes(action)) return reply.code(400).send({ error: 'Bad mapping' })
+      const id = (v: unknown) => (v ? String(v) : null)
+      const set = id(m.symbol_set_id), type = id(m.device_type_id), product = id(m.product_id)
+      for (const v of [set, type, product]) if (v && !uuidRe.test(v)) return reply.code(400).send({ error: 'Bad id' })
+      if (action === 'device') {
+        if (!set) return reply.code(400).send({ error: 'A device mapping needs a symbol set' })
+        if (!(await db.query('SELECT 1 FROM symbol_sets WHERE id = $1', [set])).length) return reply.code(400).send({ error: 'Unknown symbol set' })
+        if (type && !(await db.query('SELECT 1 FROM device_types WHERE id = $1 AND symbol_set_id = $2', [type, set])).length) return reply.code(400).send({ error: 'Unknown device type' })
+        if (product && !(await db.query('SELECT 1 FROM products WHERE id = $1', [product])).length) return reply.code(400).send({ error: 'Unknown product' })
+      }
+      const dev = action === 'device'
+      clean.push({ signature, set: dev ? set : null, type: dev ? type : null, product: dev ? product : null, action })
+    }
+    for (const c of clean)
+      await db.query(
+        `INSERT INTO revu_mappings (signature, symbol_set_id, device_type_id, product_id, action) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (signature) DO UPDATE SET symbol_set_id = EXCLUDED.symbol_set_id, device_type_id = EXCLUDED.device_type_id,
+           product_id = EXCLUDED.product_id, action = EXCLUDED.action, updated_at = now()`,
+        [c.signature, c.set, c.type, c.product, c.action])
+    return listRevuMappings()
+  })
+
   app.post('/api/symbol-sets/:id/device-types', { preHandler: auth }, async (req, reply) => {
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
     const t = cleanDeviceType(req.body)

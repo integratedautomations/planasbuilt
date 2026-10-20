@@ -450,3 +450,16 @@ input.invalid { border-color: var(--danger); }
   .compare-panes { flex-direction: column; }
   .compare-list { width: auto; max-height: 30%; border-left: none; border-top: 1px solid var(--border); }
 }
+
+/* Revu converter dialog */
+.revu-dialog { width: min(820px, 100%); max-height: 92vh; }
+.revu-scroll { overflow: auto; max-height: 52vh; border: 1px solid var(--border); border-radius: 8px; }
+.revu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.revu-table th { text-align: left; position: sticky; top: 0; background: var(--surface); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.revu-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.revu-thumb { width: 104px; }
+.revu-thumb img { max-width: 96px; max-height: 96px; background: #fff; border: 1px solid var(--border); border-radius: 4px; display: block; }
+.revu-targets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.revu-targets select { max-width: 200px; }
+.revu-newtype { flex-basis: 100%; }
+.menu-check { display: flex; gap: 6px; align-items: center; padding: 8px 12px; cursor: pointer; white-space: nowrap; font-size: 14px; }

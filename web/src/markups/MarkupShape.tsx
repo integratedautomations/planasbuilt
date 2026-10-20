@@ -6,6 +6,8 @@ import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, po
 import { STATUSES } from './types'
 import type { BoxGeometry, Fov, Markup, PathGeometry, Status, SymbolSet } from './types'
 import { useImage } from './useImage'
+import { legendLayout, legendSettings } from './legend'
+import type { LegendRow } from './legend'
 
 interface Props {
   markup: Markup
@@ -35,6 +37,8 @@ interface Props {
   stack?: StackView
   /** A non-top stack member: keeps its node (for selection, drag, resize) but draws no icon. */
   ghost?: boolean
+  /** Rows of a legend markup (computed by the viewer from all markups). */
+  legendRows?: LegendRow[]
 }
 
 export interface StackView { count: number; label: string; statuses: Status[] }
@@ -47,7 +51,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 export function MarkupShape(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true, stack, ghost } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g && showCones && !g.fov?.hidden ? g.fov : undefined
@@ -72,6 +76,7 @@ export function MarkupShape(props: Props) {
         {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
             : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} zoom={zoom} stack={stack} />)
+          : m.type === 'legend' ? <LegendBody m={m} g={g} rows={legendRows ?? []} />
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
           <PointHandles points={g.points} zoom={zoom} onChange={onPointsChange} />
@@ -122,6 +127,48 @@ function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeom
             fontSize={qfs} fontStyle="bold" fill="#fff" fontFamily="system-ui, sans-serif" listening={false} />
         </>
       )}
+    </>
+  )
+}
+
+function LegendIcon({ src, color, size }: { src: string; color: string; size: number }) {
+  const img = useImage(src || undefined)
+  return img
+    ? <KImage image={img} width={size} height={size} />
+    : <Circle x={size / 2} y={size / 2} radius={size * 0.38} fill={color} />
+}
+
+/** Count legend: title, then one row per device type/product with icon, name, code and count. Height follows the rows. */
+function LegendBody({ m, g, rows }: { m: Markup; g: BoxGeometry; rows: LegendRow[] }) {
+  const s = legendSettings(m)
+  const fs = m.style.fontSize || 12
+  const L = legendLayout(rows, s, g.width, fs)
+  const ink = m.style.stroke || '#343a40'
+  const font = 'system-ui, sans-serif'
+  let x = L.pad
+  const colX: Record<string, number> = {}
+  for (const c of s.columns) { colX[c] = x; x += L.widths[c] }
+  return (
+    <>
+      <Rect width={g.width} height={L.height} fill={m.style.fill || '#fff'} stroke={ink} strokeWidth={m.style.strokeWidth || 1} />
+      {s.title.trim() && (
+        <Text text={s.title} x={L.pad} y={L.pad * 0.8} width={g.width - L.pad * 2} height={L.titleH} fontSize={fs * 1.2} fontStyle="bold" fill={ink} fontFamily={font} listening={false} />
+      )}
+      {rows.length === 0 && (
+        <Text text="No devices" x={L.pad} y={L.titleH + L.pad} fontSize={fs} fill="#868e96" fontFamily={font} listening={false} />
+      )}
+      {rows.map((r, i) => {
+        const y = L.titleH + L.pad + i * L.rowH
+        return (
+          <Group key={r.key} y={y} listening={false}>
+            {s.columns.includes('icon') && <Group x={colX.icon + L.rowH * 0.1}><LegendIcon src={r.icon} color={r.color} size={L.rowH * 0.8} /></Group>}
+            {s.columns.includes('name') && <Text text={r.name} x={colX.name} width={L.widths.name - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill={ink} fontFamily={font} />}
+            {s.columns.includes('code') && <Text text={r.code} x={colX.code} width={L.widths.code - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill="#495057" fontFamily={font} />}
+            {s.columns.includes('count') && <Text text={String(r.count)} x={colX.count} width={L.widths.count - 4} height={L.rowH} align="right" verticalAlign="middle" fontSize={fs} fontStyle="bold" fill={ink} fontFamily={font} />}
+          </Group>
+        )
+      })}
+      <Rect width={g.width} height={L.height} fill="transparent" />
     </>
   )
 }

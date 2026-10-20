@@ -1,0 +1,138 @@
+import { buildAreaIndex, areaIdOf, isArea } from './areas'
+import type { AreaIndex } from './areas'
+import { productLabel } from '../catalog/catalog'
+import type { Catalog } from '../catalog/catalog'
+import type { Markup, SymbolSet } from './types'
+
+/** A legend is a box markup; its settings live in `fields`. */
+export type LegendGroupBy = 'type' | 'product' | 'type+product'
+export type LegendScope = { kind: 'sheet'; page: number } | { kind: 'document' } | { kind: 'area'; areaId: string }
+export type LegendColumn = 'icon' | 'name' | 'code' | 'count'
+
+export const LEGEND_COLUMNS: { key: LegendColumn; label: string }[] = [
+  { key: 'icon', label: 'Icon' }, { key: 'name', label: 'Name' }, { key: 'code', label: 'Code / model' }, { key: 'count', label: 'Count' },
+]
+
+export interface LegendSettings { scope: string; groupBy: LegendGroupBy; columns: LegendColumn[]; title: string }
+
+export const DEFAULT_LEGEND: LegendSettings = { scope: 'sheet', groupBy: 'type', columns: ['icon', 'name', 'count'], title: 'Legend' }
+
+/** Reads a legend's settings out of its fields, falling back to defaults for anything missing. */
+export function legendSettings(m: Pick<Markup, 'fields'>): LegendSettings {
+  const f = m.fields ?? {}
+  const groupBy = f.groupBy === 'product' || f.groupBy === 'type+product' ? f.groupBy : 'type'
+  const cols = typeof f.columns === 'string' ? f.columns.split(',').filter((c): c is LegendColumn => LEGEND_COLUMNS.some(x => x.key === c)) : DEFAULT_LEGEND.columns
+  return {
+    scope: typeof f.scope === 'string' && f.scope ? f.scope : 'sheet',
+    groupBy,
+    columns: cols.length ? cols : DEFAULT_LEGEND.columns,
+    title: typeof f.title === 'string' ? f.title : DEFAULT_LEGEND.title,
+  }
+}
+
+/** Fields that store the settings (columns as a comma list since fields hold primitives). */
+export const legendFields = (s: LegendSettings): Record<string, string> =>
+  ({ scope: s.scope, groupBy: s.groupBy, columns: s.columns.join(','), title: s.title })
+
+/** "sheet", "document" or "area:<id>" -> scope for the legend placed on `page`. */
+export function scopeOf(setting: string, page: number): LegendScope {
+  if (setting === 'document') return { kind: 'document' }
+  if (setting.startsWith('area:')) return { kind: 'area', areaId: setting.slice(5) }
+  return { kind: 'sheet', page }
+}
+
+export interface LegendRow {
+  key: string
+  name: string
+  /** Product model (or the Revu code when the device has no product). */
+  code: string
+  /** Icon image (data URL) of the type, else the symbol set. */
+  icon: string
+  /** Colour of the symbol set. */
+  color: string
+  count: number
+}
+
+export interface LegendOptions {
+  groupBy?: LegendGroupBy
+  symbolSets?: Map<string, SymbolSet>
+  /** Prebuilt area index (needed for the 'area' scope; built from `markups` when missing). */
+  areaIndex?: AreaIndex
+}
+
+/**
+ * Rows of a count legend. Every device markup counts once (the members of a stack each count),
+ * grouped by device type, product, or both. Rows are sorted by name.
+ */
+export function legendRows(markups: Iterable<Markup>, catalog: Catalog, scope: LegendScope, opts: LegendOptions = {}): LegendRow[] {
+  const groupBy = opts.groupBy ?? 'type'
+  const all = [...markups]
+  let idx = opts.areaIndex
+  if (scope.kind === 'area' && !idx) idx = buildAreaIndex(all.filter(isArea))
+  const inScope = (m: Markup) => {
+    if (scope.kind === 'sheet') return m.page === scope.page
+    if (scope.kind === 'area') {
+      // the device belongs to the area or any area nested inside it
+      let id = areaIdOf(idx!, m)
+      for (let n = 0; id && n <= idx!.byId.size; n++) { if (id === scope.areaId) return true; id = idx!.parents.get(id) ?? null }
+      return false
+    }
+    return true
+  }
+  const rows = new Map<string, LegendRow>()
+  for (const m of all) {
+    if (m.type !== 'device' || !m.symbol_set_id || !inScope(m)) continue
+    const type = m.device_type_id ? catalog.types.get(m.device_type_id) : undefined
+    const product = m.product_id ? catalog.products.get(m.product_id) : undefined
+    const set = opts.symbolSets?.get(m.symbol_set_id)
+    const keyType = m.device_type_id ?? `set:${m.symbol_set_id}`
+    const key = groupBy === 'type' ? keyType : groupBy === 'product' ? (m.product_id ?? keyType) : `${keyType}|${m.product_id ?? ''}`
+    let row = rows.get(key)
+    if (!row) {
+      const byProduct = groupBy === 'product' && !!product
+      const name = byProduct ? productLabel(product) : type?.name ?? set?.name ?? 'Device'
+      const withProduct = groupBy === 'type+product' && !!product
+      row = {
+        key, color: set?.color ?? '#868e96', icon: type?.icon || set?.icon || '', count: 0,
+        name: withProduct ? `${name} - ${productLabel(product)}` : name,
+        code: '',
+      }
+      rows.set(key, row)
+    }
+    row.count++
+    // code column: the product model, else the model typed on the device, else the Revu code (first one found for the row)
+    if (!row.code) {
+      const typed = typeof m.fields?.model === 'string' ? m.fields.model : typeof m.fields?.revu_code === 'string' ? m.fields.revu_code : ''
+      row.code = product?.model || typed
+    }
+  }
+  return [...rows.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+}
+
+/** Layout shared by the canvas and the PDF export: row height from the font size, columns by content. */
+export function legendLayout(rows: LegendRow[], settings: LegendSettings, width: number, fontSize: number) {
+  const pad = fontSize * 0.5
+  const rowH = fontSize * 1.8
+  const titleH = settings.title.trim() ? fontSize * 1.9 : 0
+  const cols = settings.columns
+  const widths: Record<LegendColumn, number> = { icon: rowH, name: 0, code: 0, count: fontSize * 3 }
+  const inner = Math.max(40, width - pad * 2)
+  const code = cols.includes('code') ? Math.min(inner * 0.3, fontSize * 9) : 0
+  widths.code = code
+  widths.name = Math.max(20, inner - cols.filter(c => c !== 'name').reduce((s, c) => s + widths[c], 0))
+  const height = titleH + pad + Math.max(1, rows.length) * rowH + pad
+  return { pad, rowH, titleH, widths, height }
+}
+
+/** Live rows for every legend markup in `markups`, keyed by legend id (counts run over all markups given). */
+export function legendRowsFor(markups: Markup[], catalog: Catalog, symbolSets: Map<string, SymbolSet>): Map<string, LegendRow[]> {
+  const out = new Map<string, LegendRow[]>()
+  const legends = markups.filter(m => m.type === 'legend')
+  if (!legends.length) return out
+  const areaIndex = buildAreaIndex(markups.filter(isArea))
+  for (const m of legends) {
+    const s = legendSettings(m)
+    out.set(m.id, legendRows(markups, catalog, scopeOf(s.scope, m.page), { groupBy: s.groupBy, symbolSets, areaIndex }))
+  }
+  return out
+}
