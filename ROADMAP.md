@@ -59,3 +59,29 @@ These decisions come from comparing PlanAsBuilt with Revu and System Surveyor (2
 
 ## Later / undecided
 - System Surveyor extras: camera resolution check (pixels per foot), maintenance dates, photo tour report, sharing with customers and subcontractors.
+
+## M14 UI polish, settings, users and invites (decided 2026-10-20)
+- **Less clutter:**
+  - Properties opens only when something is selected. Areas and Compare start closed.
+  - PDF, Revisions, Print and Hotkeys move into one ⋯ menu.
+  - Tool chest groups start collapsed, except Favorites and Recent.
+- **Density:** Compact on desktop, Comfortable on touch, chosen automatically and overridable.
+- **Buttons:** 28/36/44px sizes. Primary is filled blue, secondary is outlined, destructive is red-outlined (a status color, not the brand red). Every icon button gets a tooltip that includes its hotkey.
+- **Settings page tabs:**
+  - Personal: theme, density, hotkeys, tool chest, overlap prompt, notifications.
+  - Company (admin): name, logo and address for reports, report defaults, tag format, statuses.
+  - Storage and backups (admin).
+- **Users page:**
+  - A table of name, email, role, projects, last active and status, with a side drawer for editing.
+  - Deactivating a user keeps their name on markups they made.
+  - Each project gets a Members tab.
+- **Invites and resets:** links valid for 7 days. For now the admin copies the link; SMTP sending can be added in Settings later.
+- **Storage:** files stay on the VPS disk for now, with a setting to switch to S3-compatible storage (Cloudflare R2). The page shows storage use per project, photo size limits and revision retention.
+
+## M15 Collaboration and visibility
+- **Notifications:** an in-app bell, email (instant or daily digest) and Web Push to phones with the app installed. Each user chooses per event type.
+  - **Events:** mention, assignment, status change, new revision, comment reply, a failed sync, an accepted invite.
+- **Comments and @mentions** on markups (Revu-style replies).
+- **Project dashboard:** counts by status, % complete, recent activity.
+- **Ctrl+K search:** tags, IPs, serials, sheets and commands.
+- **Customer share link:** a read-only view or report link that can expire or be revoked.
