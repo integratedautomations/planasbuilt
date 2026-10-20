@@ -91,11 +91,11 @@ interface Props {
   onDeviceOverlap?: (target: Markup, placed: Markup) => boolean
 }
 
-const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
+const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-radius']
 const CLICK_PATHS: MarkupType[] = ['polyline', 'polygon', 'cable', 'measure-polylength', 'measure-area', 'area']
 const CLOSED: MarkupType[] = ['polygon', 'measure-area', 'area']
 const rectPoints = (a: Pt, b: Pt): Pt[] => [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]
-const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'ellipse', 'cloud', 'highlight', 'text', 'freehand']
+const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-radius', 'rect', 'ellipse', 'cloud', 'highlight', 'text', 'freehand']
 
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 

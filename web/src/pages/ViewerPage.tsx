@@ -62,6 +62,8 @@ import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Status } from '../markups/types'
 import { defaultProductId, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
+import { DeviceTypeEditor, draftOfType } from '../catalog/DeviceTypeEditor'
+import { useSession } from '../settings/session'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
 import { uuid } from '../uuid'
 import { Avatars } from '../realtime/Avatars'
@@ -70,6 +72,8 @@ import { usePeers } from '../realtime/hooks'
 import { joinDocument, on as onSocket, sendPresence } from '../realtime/socket'
 import { PdfMenu } from '../pdfio/PdfMenu'
 import { PrintDialog } from '../pdfio/PrintDialog'
+import { WindowPicker } from '../pdfio/WindowPicker'
+import type { PrintWindow } from '../pdfio/printPlan'
 import { buildPrintPdf } from '../pdfio/print'
 import { markupsForPrint } from '../pdfio/printPlan'
 import type { PrintOptions } from '../pdfio/printPlan'
@@ -207,6 +211,11 @@ export function ViewerPage() {
   const [showCompare, setShowCompare] = useState(false)
   const [printOpen, setPrintOpen] = useState(false)
   const [printBusy, setPrintBusy] = useState('')
+  /** Cancels the print preparation in flight. */
+  const printAbort = useRef<AbortController | null>(null)
+  /** Options kept while the dialog is hidden for the "Window" pick. */
+  const [printDraft, setPrintDraft] = useState<PrintOptions | null>(null)
+  const [pickingWindow, setPickingWindow] = useState(false)
   /** Pages picked in the Pages panel when Print was opened from it. */
   const [printSelected, setPrintSelected] = useState<number[]>([])
   const [printError, setPrintError] = useState('')
@@ -244,7 +253,9 @@ export function ViewerPage() {
   const [symbolSetList, setSymbolSetList] = useState<SymbolSet[]>([])
   const [activeSetId, setActiveSetId] = useState<string | null>(null)
   const symbolSets = useMemo(() => new Map(symbolSetList.map(s => [s.id, s])), [symbolSetList])
-  const { data: catalogData, catalog } = useCatalog()
+  const { data: catalogData, catalog, reload: reloadCatalog } = useCatalog()
+  const isAdmin = !!useSession()?.user.is_admin
+  const [editTypeId, setEditTypeId] = useState<string | null>(null)
   /** Device type / product the Device tool places; the product defaults to the type's default. */
   const [activeTypeId, setActiveTypeId] = useState<string | null>(null)
   const [activeProductId, setActiveProductId] = useState<string | null>(null)
@@ -840,7 +851,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const onPageAction = (a: PageAction) => {
     switch (a.type) {
       case 'extract': void extractPages(a.pages); break
-      case 'print': setPrintSelected(a.pages); setPrintError(''); setPrintOpen(true); break
+      case 'print': setPrintSelected(a.pages); setPrintError(''); setPrintDraft(null); setPrintOpen(true); break
       case 'rotate': void runPageTool(() => rotatePages(documentId, a.pages)); break
       case 'delete':
         if (confirm(`Delete ${pageList(a.pages)}? Their markups leave the plan but stay in the previous revision, which you can still open.`))
@@ -860,12 +871,32 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   /** Renders the chosen pages to images and hands them to the browser's print dialog (printer and paper are picked there). */
   async function doPrint(o: PrintOptions, pages: number[]) {
+    printAbort.current?.abort()
+    const ctl = new AbortController()
+    printAbort.current = ctl
     setPrintBusy('Preparing pages…'); setPrintError('')
     try {
-      const raster = await renderPrintImages(await printArgs(), o, pages, (d, t) => setPrintBusy(`Preparing page ${d} of ${t}…`))
-      await printImages(raster, o, meta?.name ?? 'Plan')
-      setPrintOpen(false)
-    } catch (e) { setPrintError((e as Error).message) } finally { setPrintBusy('') }
+      const raster = await renderPrintImages(await printArgs(), o, pages, (d, t) => { if (!ctl.signal.aborted) setPrintBusy(`Preparing page ${d} of ${t}…`) }, ctl.signal)
+      await printImages(raster, o, meta?.name ?? 'Plan', ctl.signal)
+      if (!ctl.signal.aborted) closePrint()
+    } catch (e) {
+      if (!ctl.signal.aborted) setPrintError((e as Error).message)
+    } finally {
+      if (printAbort.current === ctl) { printAbort.current = null; setPrintBusy('') }
+    }
+  }
+
+  /** Cancel / close: stops any preparation in flight so nothing prints. */
+  function closePrint() {
+    printAbort.current?.abort()
+    printAbort.current = null
+    setPrintBusy('')
+    setPrintOpen(false); setPrintDraft(null); setPickingWindow(false)
+  }
+
+  function finishWindowPick(w: PrintWindow | null) {
+    setPickingWindow(false)
+    setPrintDraft(d => (d ? (w ? { ...d, range: 'window', window: w } : d.window ? d : { ...d, range: 'all' }) : d))
   }
 
   /** The earlier route: build a print-ready PDF and download it. */
@@ -1001,7 +1032,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       case 'panel.pages': togglePanel('pages'); return true
       case 'panel.compare': togglePanel('compare'); return true
       case 'panel.areas': togglePanel('areas'); return true
-      case 'file.print': setPrintSelected([]); setPrintError(''); setPrintOpen(true); return true
+      case 'file.print': setPrintSelected([]); setPrintError(''); setPrintDraft(null); setPrintOpen(true); return true
       default: return false
     }
   }
@@ -1009,7 +1040,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   // One key listener for every command in the hotkey registry; ignored while typing or while a menu/dialog is open
   const runRef = useRef(runCommand)
   runRef.current = runCommand
-  const modalOpen = showHotkeys || !!hkEntry || !!overlap || !!ctx || replacing || printOpen || issueOpen || !!compareReq
+  const modalOpen = showHotkeys || !!hkEntry || !!editTypeId || !!overlap || !!ctx || replacing || printOpen || issueOpen || !!compareReq
   useEffect(() => {
     if (modalOpen) return
     const panKey = parseCombo(hotkeys['view.panHold'])?.key
@@ -1144,6 +1175,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         style={pageSize ? { width: pageSize.width, height: pageSize.height } : { display: 'none' }}>
         <canvas ref={canvasRef} className="page-canvas" />
       </div>
+      {pickingWindow && pageSize && <WindowPicker page={pageNum} pageSize={pageSize} view={view} onDone={finishWindowPick} />}
       {!isPhone && (
         <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
           scaleLabel={pageScale?.label ?? null}
@@ -1232,6 +1264,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeTypeId)} favorites={prefs.favorites} recent={prefs.recent}
       hotkeys={hotkeys} readOnly={readOnly} chest={prefs.chest} onChest={c => setPref('chest', c)} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
       onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))}
+      onEditType={isAdmin && !readOnly ? e => { if (e.typeId) setEditTypeId(e.typeId) } : undefined}
       onAssignHotkey={setHkEntry} onRemoveHotkey={e => setPref('hotkeys', assignCombo(getPrefs().hotkeys, entryCommand(e), ''))} />,
     pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} canEdit={pageToolsOn} onAction={onPageAction} /> : <div className="muted small dock-empty">Loading…</div>,
     props: sidePanelEl,
@@ -1318,7 +1351,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <MoreMenu title="More: PDF, revisions, print, panels, settings">
           <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
             scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
-            projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
+            projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintDraft(null); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
           <MenuSep />
           <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
             onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
@@ -1382,9 +1415,10 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           onClose={() => setIssueOpen(false)}
           onIssued={rev => { setIssueOpen(false); refreshRevs(); setToast(`Issued ${revisionName(rev)}`) }} />
       )}
-      {printOpen && (
-        <PrintDialog pageCount={pageCount} currentPage={pageNum} selectedPages={printSelected} layers={layers} symbolSets={symbolSetList} hidden={hidden}
-          busy={printBusy} error={printError} onPrint={doPrint} onSavePdf={savePrintPdf} onClose={() => setPrintOpen(false)} />
+      {printOpen && !pickingWindow && (
+        <PrintDialog key={printDraft ? 'draft' : 'fresh'} initial={printDraft ?? undefined}
+          onPickWindow={o => { setPrintDraft({ ...o, hiddenLayers: o.hiddenLayers }); setPickingWindow(true) }} pageCount={pageCount} currentPage={pageNum} selectedPages={printSelected} layers={layers} symbolSets={symbolSetList} hidden={hidden}
+          busy={printBusy} error={printError} onPrint={doPrint} onSavePdf={savePrintPdf} onClose={closePrint} />
       )}
       {compareReq && (
         <CompareView documentId={documentId} a={compareReq.a} b={compareReq.b} mode={compareMode} onMode={setCompareMode}
@@ -1398,6 +1432,15 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         replaceChoice={prefs.replaceOnOverlap} onReplaceChoice={c => setPref('replaceOnOverlap', c)} />}
       {hkEntry && <HotkeyRecorder commandId={entryCommand(hkEntry)} label={hkEntry.label} overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setHkEntry(null)}
         nameOf={id => { const eid = entryIdOfCommand(id); return (eid && entryMap.get(eid)?.label) || commandLabelOf(id) }} />}
+      {editTypeId && catalog.types.get(editTypeId) && (() => {
+        const t = catalog.types.get(editTypeId)!
+        return (
+          <DeviceTypeEditor key={t.id} initial={draftOfType(t)} set={symbolSets.get(t.symbol_set_id)}
+            onClose={() => setEditTypeId(null)}
+            onSaved={async () => { await reloadCatalog(); setEditTypeId(null) }}
+            onRemoved={async () => { await reloadCatalog(); setEditTypeId(null) }} />
+        )
+      })()}
       {overlap && <OverlapPrompt message={overlap.message} onChoose={answerOverlap} />}
     </div>
     </CatalogContext.Provider>

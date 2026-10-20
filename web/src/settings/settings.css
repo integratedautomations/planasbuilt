@@ -34,7 +34,7 @@
 .avatar-btn {
   width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%;
   background: var(--accent); color: var(--accent-text); border: 2px solid rgb(255 255 255 / 0.35);
-  font-weight: 700; font-size: 13px; display: inline-grid; place-items: center;
+  font-weight: 700; font-size: 13px; display: inline-grid; place-items: center; overflow: hidden;
 }
 .topbar .avatar-btn { color: var(--accent-text); }
 .user-menu-pop {

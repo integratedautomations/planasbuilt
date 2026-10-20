@@ -4,6 +4,8 @@ export interface Peer {
   clientId: string
   userId: string
   name: string
+  /** Avatar version, null when the person has no picture. */
+  avatar?: number | null
   color: string
   page: number | null
   cursor: { x: number; y: number } | null
@@ -86,4 +88,12 @@ export function avatarStack(peers: Peer[], max = 4) {
   const people: Peer[] = []
   for (const p of peers) if (!seen.has(p.userId)) { seen.add(p.userId); people.push(p) }
   return { shown: people.slice(0, max), more: Math.max(0, people.length - max) }
+}
+
+const PALETTE = ['#e8590c', '#1c7ed6', '#2f9e44', '#ae3ec9', '#f08c00', '#0c8599', '#d6336c', '#5c940d']
+/** A stable colour for a user id (used where no server-assigned colour is at hand). */
+export function userColor(userId: string): string {
+  let h = 0
+  for (let i = 0; i < userId.length; i++) h = (h * 31 + userId.charCodeAt(i)) >>> 0
+  return PALETTE[h % PALETTE.length]
 }

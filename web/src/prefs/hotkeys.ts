@@ -23,6 +23,7 @@ export const COMMANDS: Command[] = [
   tool('measure-length', 'Measure length', 'M'),
   tool('measure-polylength', 'Measure polylength', 'N'),
   tool('measure-area', 'Measure area', 'B'),
+  tool('measure-radius', 'Measure radius', 'Shift+M'),
   tool('count', 'Count', 'O'),
   tool('calibrate', 'Calibrate scale', 'K'),
   tool('device', 'Device', 'D'),

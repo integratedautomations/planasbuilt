@@ -117,7 +117,6 @@ export function usePanZoom(
         opts.current.onPinchStart?.()
       }
       if (pan || pointers.size === 2) {
-        if (middle) e.preventDefault()
         el.setPointerCapture(e.pointerId)
         el.classList.add('panning')
       }
@@ -143,16 +142,20 @@ export function usePanZoom(
     }
 
     // Middle button: no browser autoscroll / paste-on-Linux, whatever the page does with the press
+    // (Do NOT preventDefault the pointerdown: that suppresses the compatibility mousedown, so Chrome's autoscroll would still start.)
     const onMouseDown = (e: MouseEvent) => { if (e.button === 1) e.preventDefault() }
+    const onAuxClick = (e: MouseEvent) => { if (e.button === 1) e.preventDefault() }
 
-    el.addEventListener('mousedown', onMouseDown)
+    el.addEventListener('mousedown', onMouseDown, true)
+    el.addEventListener('auxclick', onAuxClick, true)
     el.addEventListener('wheel', onWheel, { passive: false })
     el.addEventListener('pointerdown', onDown)
     el.addEventListener('pointermove', onMove)
     el.addEventListener('pointerup', onUp)
     el.addEventListener('pointercancel', onUp)
     return () => {
-      el.removeEventListener('mousedown', onMouseDown)
+      el.removeEventListener('mousedown', onMouseDown, true)
+      el.removeEventListener('auxclick', onAuxClick, true)
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)

@@ -1,13 +1,13 @@
 import { areaPathIn, buildAreaIndex, isArea, isSheetArea } from '../markups/areas'
 import { detectStacks, naturalCompare } from '../markups/stacks'
-import { feetOf, formatArea, formatFeetInches, sqftOf } from '../markups/measure'
+import { circleStats, feetOf, formatArea, formatFeetInches, formatRadius, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { FieldDef, Markup, SymbolSet } from '../markups/types'
 import { productLabel } from '../catalog/catalog'
 import type { Catalog } from '../catalog/catalog'
 
 export const AREA_SEP = ' > '
-export const MEASURE_TYPES = ['measure-length', 'measure-polylength', 'measure-area', 'cable']
+export const MEASURE_TYPES = ['measure-length', 'measure-polylength', 'measure-area', 'measure-radius', 'cable']
 
 export interface ScheduleRow {
   id: string
@@ -65,6 +65,7 @@ export function measurement(m: Markup, ppf: number | null): { value: string; num
   if (!MEASURE_TYPES.includes(m.type) || !('points' in m.geometry)) return { value: m.text, num: null, unit: '' }
   if (!ppf) return { value: 'No scale', num: null, unit: '' }
   if (m.type === 'measure-area') { const v = sqftOf(m.geometry.points, ppf); return { value: formatArea(v), num: v, unit: 'SF' } }
+  if (m.type === 'measure-radius') { const v = circleStats(m.geometry.points, ppf).radius; return { value: formatRadius(v), num: v, unit: 'ft' } }
   const v = feetOf(m.geometry.points, ppf)
   return { value: formatFeetInches(v), num: v, unit: 'ft' }
 }

@@ -2,8 +2,8 @@ import { getClientId } from './realtime/clientId'
 
 export type Role = 'admin' | 'editor' | 'viewer'
 
-export interface User { id: string; email: string; name: string; is_admin: boolean }
-export interface Project { id: string; name: string; created_at: string; role: Role; document_count?: number }
+export interface User { id: string; email: string; name: string; is_admin: boolean; avatar?: number | null }
+export interface Project { id: string; name: string; created_at: string; role: Role; document_count?: number; status?: 'open' | 'completed'; completed_at?: string | null }
 export interface DocumentSummary {
   id: string; name: string; created_at: string
   revision_id: string; revision: number; page_count: number

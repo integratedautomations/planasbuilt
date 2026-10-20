@@ -10,7 +10,7 @@ import type { LegendSettings } from './legend'
 import { Attribution, HistorySection } from './MarkupInfo'
 import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
-import { summarize } from './measure'
+import { circleStats, formatArea, formatFeetInches, summarize } from './measure'
 import type { MeasureTotal } from './measure'
 import { tagRange } from './stacks'
 import type { Stack, StackIndex } from './stacks'
@@ -106,7 +106,7 @@ interface Props {
   onPinned?: (v: boolean) => void
 }
 
-const MEASURE_TYPES: Markup['type'][] = ['measure-length', 'measure-polylength', 'measure-area', 'count', 'cable']
+const MEASURE_TYPES: Markup['type'][] = ['measure-length', 'measure-polylength', 'measure-area', 'measure-radius', 'count', 'cable']
 
 /** Collapsible block inside the one-scroll Properties panel; open/closed is remembered in this browser. */
 export function Section({ title, children, defaultOpen = true }: { title: string; children: ReactNode; defaultOpen?: boolean }) {
@@ -431,6 +431,20 @@ function StyleProperties(p: Props) {
         {first ? `${selected.length > 1 ? `${selected.length} markups` : labelFor(first.type)}` : 'New markup style'}
       </div>
       {selected.length === 1 && <Attribution markup={first} />}
+      {selected.length === 1 && first.type === 'measure-radius' && 'points' in first.geometry && (
+        <Section title="Measurement">
+          {p.measure.scale ? (() => {
+            const c = circleStats(first.geometry.points, p.measure.scale.pointsPerFoot)
+            return (
+              <dl className="kv">
+                <dt>Radius</dt><dd>{formatFeetInches(c.radius)}</dd>
+                <dt>Diameter</dt><dd>{formatFeetInches(c.diameter)}</dd>
+                <dt>Area</dt><dd>{formatArea(c.area)}</dd>
+              </dl>
+            )
+          })() : <p className="scale-warn small">Set a scale to see the radius, diameter and area.</p>}
+        </Section>
+      )}
       <fieldset disabled={disabled} className="stack">
         <Section title="Style">
         <label className="field">Color
@@ -511,7 +525,7 @@ function Measure({ measure: m, readOnly }: Props) {
       <ul className="layer-list">{rows.map(row)}</ul>
     </>
   )
-  const empty = !sum.length.length && !sum.area.length && !sum.cable.length && !sum.count.length
+  const empty = !sum.length.length && !sum.area.length && !sum.cable.length && !sum.radius.length && !sum.count.length
   return (
     <div className="panel-body">
       <ScaleControl scale={m.scale} readOnly={readOnly} busy={m.scaleBusy} error={m.scaleError}
@@ -520,9 +534,10 @@ function Measure({ measure: m, readOnly }: Props) {
       {sum.unscaled > 0 && <p className="scale-warn small">{sum.unscaled} measurement{sum.unscaled > 1 ? 's' : ''} need a scale.</p>}
       {block('Length', sum.length, sum.lengthTotal)}
       {block('Area', sum.area, sum.areaTotal)}
+      {block('Radius', sum.radius, '')}
       {block('Cable runs', sum.cable, sum.cableTotal)}
       {block('Counts', sum.count, '')}
-      {empty && sum.unscaled === 0 && <p className="muted small">Use the Length, Polylength, Area and Count tools to see totals here.</p>}
+      {empty && sum.unscaled === 0 && <p className="muted small">Use the Length, Polylength, Area, Radius and Count tools to see totals here.</p>}
     </div>
   )
 }
@@ -589,7 +604,7 @@ export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, o
 function labelFor(t: Markup['type']) {
   return ({ rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text box', stamp: 'Stamp', legend: 'Legend',
     line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', area: 'Area', cable: 'Cable run',
-    'measure-length': 'Length', 'measure-polylength': 'Polylength', 'measure-area': 'Area', count: 'Count marker' } as const)[t]
+    'measure-length': 'Length', 'measure-polylength': 'Polylength', 'measure-area': 'Area', 'measure-radius': 'Radius', count: 'Count marker' } as const)[t]
 }
 
 /** Compact style editor for the style chip: color, fill, width and opacity of the style new markups get. */

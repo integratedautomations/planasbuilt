@@ -85,3 +85,19 @@ describe('print document', () => {
     expect(buildPrintHtml([], { fit: true, margins: 'normal', orientation: 'auto', grayscale: false }, '<b>"x"</b>')).toContain('<title>&lt;b&gt;&quot;x&quot;&lt;/b&gt;</title>')
   })
 })
+
+describe('print window', () => {
+  it('builds a normalized, clamped window and rejects tiny drags', async () => {
+    const { windowFromCorners, printPageList, planPrint, normalizePrintOptions } = await import('./printPlan')
+    expect(windowFromCorners(2, { x: 50, y: 80 }, { x: 10, y: 20 })).toEqual({ page: 2, x: 10, y: 20, width: 40, height: 60 })
+    expect(windowFromCorners(1, { x: -10, y: -10 }, { x: 700, y: 900 }, { width: 612, height: 792 })).toEqual({ page: 1, x: 0, y: 0, width: 612, height: 792 })
+    expect(windowFromCorners(1, { x: 5, y: 5 }, { x: 6, y: 300 })).toBeNull()
+    const w = { page: 3, x: 0, y: 0, width: 144, height: 72 }
+    expect(printPageList({ range: 'window', custom: '', window: w }, 1, 5).pages).toEqual([3])
+    expect(printPageList({ range: 'window', custom: '', window: null }, 1, 5).error).toBeTruthy()
+    const plan = planPrint([3], new Map([[3, { width: 612, height: 792 }]]), { orientation: 'auto', quality: 'normal', range: 'window', window: w })[0]
+    expect(plan.widthIn).toBe(2); expect(plan.heightIn).toBe(1); expect(plan.orientation).toBe('landscape')
+    expect(normalizePrintOptions({ range: 'window', window: w }).window).toEqual(w)
+    expect(normalizePrintOptions({ window: { page: 0 } }).window).toBeNull()
+  })
+})

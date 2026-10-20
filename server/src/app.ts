@@ -215,11 +215,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     // Browsers cannot set headers on a WebSocket, so the token (login or file token) rides in the query string.
     const user = await authenticate(String(q.token ?? q.ft ?? ''), 'any').catch(() => null)
     if (!user) { socket.close(4401, 'Invalid token'); return }
-    const [u] = await db.query("SELECT name FROM users WHERE id = $1 AND status = 'active'", [user.id])
+    const [u] = await db.query("SELECT name, avatar_key, avatar_version FROM users WHERE id = $1 AND status = 'active'", [user.id])
     if (!u) { socket.close(4401, 'Invalid token'); return }
     const conn = realtime.add(socket, {
       clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
-      userId: user.id, name: u.name,
+      userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null,
     })
     socket.on('message', async (data) => {
       let m: any
@@ -285,11 +285,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     failures.delete(key)
     if (user.status === 'deactivated')
       return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
-    return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin } }
+    return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin, avatar: user.avatar_key ? user.avatar_version : null } }
   })
 
   app.get('/api/me', { preHandler: auth }, async (req) => {
-    const [user] = await db.query('SELECT id, email, name, is_admin FROM users WHERE id = $1', [req.user.id])
+    const [user] = await db.query(
+      'SELECT id, email, name, is_admin, CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar FROM users WHERE id = $1', [req.user.id])
     return user
   })
 
@@ -329,7 +330,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // ---- Projects ----
   app.get('/api/projects', { preHandler: auth }, async (req) =>
     db.query(
-      `SELECT p.id, p.name, p.created_at, m.role,
+      `SELECT p.id, p.name, p.created_at, p.status, p.completed_at, m.role,
          (SELECT count(*)::int FROM documents d WHERE d.project_id = p.id) AS document_count
        FROM projects p JOIN project_members m ON m.project_id = p.id
        WHERE m.user_id = $1 ORDER BY p.created_at DESC`, [req.user.id]))
@@ -349,6 +350,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!role) return
     const [project] = await db.query('SELECT * FROM projects WHERE id = $1', [id])
     return { ...project, role }
+  })
+
+  // Mark a project Complete or reopen it (project admins and editors). Completed projects stay fully usable.
+  app.patch('/api/projects/:id', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    if (!(await requireRole(req, reply, id, 'editor'))) return
+    const status = (req.body as any)?.status
+    if (status !== 'open' && status !== 'completed') return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
+    const [project] = await db.query(
+      `UPDATE projects SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN now() ELSE NULL END WHERE id = $2 RETURNING *`, [status, id])
+    return { ...project, role: await projectRole(req.user.id, id) }
   })
 
   app.get('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {
@@ -1530,6 +1542,37 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!stream) return reply.code(404).send({ error: 'File missing' })
     const ext = key.slice(key.lastIndexOf('.') + 1)
     fileHeaders(reply, EXT_TYPES[ext] ?? 'application/octet-stream', `photo-${a.id}.${ext}`)
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    return reply.send(stream)
+  })
+
+  // ---- Profile picture (own row; anyone signed in can fetch anyone's, it is shown next to their name) ----
+  app.post('/api/me/avatar', { preHandler: auth }, async (req, reply) => {
+    const file = await req.file({ limits: { fileSize: 5 * 1024 * 1024 } })
+    if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No picture' })
+    const key = await savePhoto(file, reply)
+    if (!key) return
+    const [old] = await db.query('SELECT avatar_key FROM users WHERE id = $1', [req.user.id])
+    const [row] = await db.query('UPDATE users SET avatar_key = $1, avatar_version = avatar_version + 1 WHERE id = $2 RETURNING avatar_version', [key, req.user.id])
+    if (old?.avatar_key) void storage.remove(old.avatar_key)
+    return { avatar: row.avatar_version }
+  })
+
+  app.delete('/api/me/avatar', { preHandler: auth }, async (req) => {
+    const [old] = await db.query('SELECT avatar_key FROM users WHERE id = $1', [req.user.id])
+    await db.query('UPDATE users SET avatar_key = NULL, avatar_version = avatar_version + 1 WHERE id = $1', [req.user.id])
+    if (old?.avatar_key) void storage.remove(old.avatar_key)
+    return { avatar: null }
+  })
+
+  app.get('/api/users/:id/avatar', { preHandler: fileAuth }, async (req, reply) => {
+    const { id } = req.params as any
+    const [u] = await db.query('SELECT avatar_key FROM users WHERE id = $1', [id])
+    if (!u?.avatar_key) return reply.code(404).send({ error: 'No picture' })
+    const stream = await storage.open(u.avatar_key)
+    if (!stream) return reply.code(404).send({ error: 'File missing' })
+    const ext = u.avatar_key.slice(u.avatar_key.lastIndexOf('.') + 1)
+    fileHeaders(reply, EXT_TYPES[ext] ?? 'application/octet-stream', `avatar-${id}.${ext}`)
     reply.header('Cache-Control', 'private, max-age=31536000, immutable')
     return reply.send(stream)
   })

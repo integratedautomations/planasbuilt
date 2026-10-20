@@ -4,6 +4,8 @@ import { api, post } from '../api'
 import type { User } from '../api'
 import { BtxImport } from '../catalog/BtxImport'
 import { CatalogImport, exportCatalogExcel } from '../catalog/CatalogImport'
+import { DeviceTypeEditor, draftOfType } from '../catalog/DeviceTypeEditor'
+import type { TypeDraft } from '../catalog/DeviceTypeEditor'
 import { FieldsEditor } from '../catalog/FieldsEditor'
 import { ProductsTable } from '../catalog/ProductsTable'
 import { readIcon } from '../catalog/readIcon'
@@ -11,7 +13,7 @@ import { IconPicker } from '../catalog/icons/IconPicker'
 import { moveBefore } from '../prefs/chest'
 import type { DeviceType } from '../catalog/types'
 import { useCatalog } from '../catalog/useCatalog'
-import type { FieldDef, SymbolSet } from '../markups/types'
+import type { SymbolSet } from '../markups/types'
 import { HARDWARE_FIELDS } from '../markups/types'
 import { Brand } from '../Brand'
 import { UserMenu } from '../settings/UserMenu'
@@ -19,7 +21,6 @@ import { UserMenu } from '../settings/UserMenu'
 type Draft = Omit<SymbolSet, 'id' | 'sort'> & { id?: string }
 const EMPTY: Draft = { name: '', color: '#1971c2', tag_prefix: '', icon: '', fields: [], has_fov: false }
 
-interface TypeDraft { id?: string; name: string; tag_prefix: string; icon: string; fields: FieldDef[]; default_product_id: string | null }
 /** Nav selection: a set, one of its device types, or the standalone accessories list. */
 type Sel = { kind: 'set'; setId: string } | { kind: 'type'; setId: string; typeId: string } | { kind: 'accessories' } | null
 
@@ -27,11 +28,11 @@ type Sel = { kind: 'set'; setId: string } | { kind: 'type'; setId: string; typeI
 export function SymbolSetsPage({ user }: { user: User }) {
   const [sets, setSets] = useState<SymbolSet[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [typeDraft, setTypeDraft] = useState<(TypeDraft & { setId: string }) | null>(null)
+  const [typeDraft, setTypeDraft] = useState<TypeDraft | null>(null)
   const [sel, setSel] = useState<Sel>(null)
   const [dialog, setDialog] = useState<'excel' | 'btx' | null>(null)
   /** Which editor the icon picker fills in. */
-  const [picking, setPicking] = useState<'set' | 'type' | null>(null)
+  const [picking, setPicking] = useState<'set' | null>(null)
   const [dragType, setDragType] = useState<string | null>(null)
   const [overType, setOverType] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -61,27 +62,6 @@ export function SymbolSetsPage({ user }: { user: User }) {
     await api(`/symbol-sets/${s.id}`, { method: 'DELETE' })
     setSets(ss => ss.filter(x => x.id !== s.id))
     setDraft(null); setSel(null)
-  }
-
-  async function saveType() {
-    if (!typeDraft) return
-    setError('')
-    try {
-      const body = JSON.stringify({ name: typeDraft.name, tag_prefix: typeDraft.tag_prefix, icon: typeDraft.icon, fields: typeDraft.fields, default_product_id: typeDraft.default_product_id })
-      const saved = typeDraft.id
-        ? await api<DeviceType>(`/device-types/${typeDraft.id}`, { method: 'PUT', body })
-        : await api<DeviceType>(`/symbol-sets/${typeDraft.setId}/device-types`, { method: 'POST', body })
-      await reload()
-      setSel({ kind: 'type', setId: typeDraft.setId, typeId: saved.id })
-      setTypeDraft(null)
-    } catch (e) { setError((e as Error).message) }
-  }
-
-  async function removeType(t: DeviceType) {
-    if (!confirm(`Remove device type "${t.name}"? Devices already placed keep their type; it just leaves the palette.`)) return
-    await api(`/device-types/${t.id}`, { method: 'DELETE' })
-    await reload()
-    setTypeDraft(null); setSel({ kind: 'set', setId: t.symbol_set_id })
   }
 
   /** Persists a new order for a set's device types (drag handles or the up / down buttons). */
@@ -184,7 +164,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
                   <h3>{selSet.name} › {selType.name}</h3>
                   <span className="muted"> · tags {typePrefixHint(selType, selSet)}{selType.fields.length ? ` · ${selType.fields.length} extra field${selType.fields.length === 1 ? '' : 's'}` : ''}</span>
                   <span className="spacer" />
-                  {admin && <button onClick={() => setTypeDraft({ ...selType, tag_prefix: selType.tag_prefix ?? '', setId: selSet.id, fields: selType.fields.map(f => ({ ...f })) })}>Edit type</button>}
+                  {admin && <button onClick={() => setTypeDraft(draftOfType(selType))}>Edit type</button>}
                 </div>
                 <ProductsTable products={products} allProducts={data.products} type={selType} set={selSet} admin={admin} onChanged={reload} onError={setError} />
               </>
@@ -241,48 +221,16 @@ export function SymbolSetsPage({ user }: { user: User }) {
       )}
 
       {typeDraft && (
-        <div className="modal-backdrop" onClick={() => setTypeDraft(null)}>
-          <div className="card modal wide" onClick={e => e.stopPropagation()}>
-            <div className="row"><h3>{typeDraft.id ? 'Edit device type' : 'New device type'}</h3><span className="spacer" />
-              <button onClick={() => setTypeDraft(null)}>Close</button></div>
-            <div className="grid2">
-              <label className="field">Name<input value={typeDraft.name} onChange={e => setTypeDraft({ ...typeDraft, name: e.target.value })} /></label>
-              <label className="field">Tag prefix (blank = set's prefix)
-                <input value={typeDraft.tag_prefix} placeholder={sets.find(s => s.id === typeDraft.setId)?.tag_prefix}
-                  onChange={e => setTypeDraft({ ...typeDraft, tag_prefix: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })} />
-              </label>
-              <label className="field">Icon (blank = set's icon)
-                <span className="icon-pick-row">
-                  <span className="set-icon" style={{ background: sets.find(s => s.id === typeDraft.setId)?.color }}>
-                    {(typeDraft.icon || sets.find(s => s.id === typeDraft.setId)?.icon) && <img src={typeDraft.icon || sets.find(s => s.id === typeDraft.setId)?.icon} alt="" />}</span>
-                  <button type="button" onClick={() => setPicking('type')}>Choose from library…</button>
-                  <input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp" aria-label="Upload an icon"
-                    onChange={async e => { const f = e.target.files?.[0]; if (f) setTypeDraft({ ...typeDraft, icon: await readIcon(f) }) }} />
-                  {typeDraft.icon && <button onClick={() => setTypeDraft({ ...typeDraft, icon: '' })}>Use set icon</button>}
-                </span>
-              </label>
-            </div>
-            <h4>Extra fields</h4>
-            <p className="muted small">On top of the set's fields. Devices of this type show both.</p>
-            <FieldsEditor fields={typeDraft.fields} onChange={fields => setTypeDraft({ ...typeDraft, fields })} />
-            {error && <div className="error">{error}</div>}
-            <div className="row">
-              {typeDraft.id && <button className="danger" onClick={() => removeType(catalog.types.get(typeDraft.id!)!)}>Remove type</button>}
-              <span className="spacer" />
-              <button className="primary" onClick={saveType} disabled={!typeDraft.name.trim()}>Save</button>
-            </div>
-          </div>
-        </div>
+        <DeviceTypeEditor key={typeDraft.id ?? 'new'} initial={typeDraft} set={sets.find(x => x.id === typeDraft.setId)}
+          onClose={() => setTypeDraft(null)}
+          onSaved={async saved => { await reload(); setSel({ kind: 'type', setId: typeDraft.setId, typeId: saved.id }); setTypeDraft(null) }}
+          onRemoved={async (_id, setId) => { await reload(); setTypeDraft(null); setSel({ kind: 'set', setId }) }} />
       )}
 
       {picking && (
-        <IconPicker color={(picking === 'set' ? draft?.color : sets.find(s => s.id === typeDraft?.setId)?.color) ?? '#1971c2'}
+        <IconPicker color={draft?.color ?? '#1971c2'}
           onClose={() => setPicking(null)}
-          onPick={url => {
-            if (picking === 'set' && draft) setDraft({ ...draft, icon: url })
-            else if (picking === 'type' && typeDraft) setTypeDraft({ ...typeDraft, icon: url })
-            setPicking(null)
-          }} />
+          onPick={url => { if (draft) setDraft({ ...draft, icon: url }); setPicking(null) }} />
       )}
 
       {dialog === 'excel' && <CatalogImport data={data} sets={sets} onClose={() => setDialog(null)} onDone={reload} />}

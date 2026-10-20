@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { UserAvatar } from '../ui/UserAvatar'
 import { useSession } from './session'
 
 export const initials = (name: string) =>
@@ -23,7 +24,7 @@ export function UserMenu() {
   return (
     <div className="user-menu" ref={ref}>
       <button className="avatar-btn" aria-haspopup="menu" aria-expanded={open} title={user.name} onClick={() => setOpen(o => !o)}>
-        {initials(user.name)}
+        <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} bare />
       </button>
       {open && (
         <div className="user-menu-pop" role="menu" onClick={() => setOpen(false)}>

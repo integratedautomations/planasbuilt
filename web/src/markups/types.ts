@@ -2,7 +2,7 @@
 
 export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device' | 'legend'
 export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand' | 'cable'
-  | 'measure-length' | 'measure-polylength' | 'measure-area' | 'count' | 'area'
+  | 'measure-length' | 'measure-polylength' | 'measure-area' | 'measure-radius' | 'count' | 'area'
 export type MarkupType = BoxType | PathType
 
 export const BOX_TYPES: MarkupType[] = ['rect', 'ellipse', 'cloud', 'highlight', 'text', 'stamp', 'device', 'legend']
@@ -97,6 +97,6 @@ export function defaultStyleFor(type: MarkupType, base: MarkupStyle): MarkupStyl
   if (type === 'highlight') return { ...base, stroke: '', fill: '#ffd43b', opacity: 0.4 }
   if (type === 'stamp') return { ...base, fontSize: 28 }
   if (type === 'cable') return { ...base, strokeWidth: 2, dash: true }
-  if (type === 'measure-length' || type === 'measure-polylength' || type === 'measure-area') return { ...base, strokeWidth: 2 }
+  if (type === 'measure-length' || type === 'measure-polylength' || type === 'measure-area' || type === 'measure-radius') return { ...base, strokeWidth: 2 }
   return base
 }

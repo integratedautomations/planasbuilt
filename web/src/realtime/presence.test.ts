@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { avatarStack, createPresenceThrottle, initials, reducePeers } from './presence'
+import { avatarStack, createPresenceThrottle, initials, reducePeers, userColor } from './presence'
 import type { Peer, PresenceOut } from './presence'
 
 const peer = (clientId: string, over: Partial<Peer> = {}): Peer => ({
@@ -61,5 +61,12 @@ describe('presence throttle', () => {
     expect(sent).toHaveLength(1)
     t.reset(); t.push(p(1)); vi.advanceTimersByTime(150)
     expect(sent).toHaveLength(2)
+  })
+})
+
+describe('userColor', () => {
+  it('is stable per user and always a palette colour', () => {
+    expect(userColor('abc')).toBe(userColor('abc'))
+    expect(userColor('abc')).toMatch(/^#[0-9a-f]{6}$/)
   })
 })

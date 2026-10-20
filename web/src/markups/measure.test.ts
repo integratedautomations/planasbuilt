@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatArea, formatFeetInches, parseFeetInches, pathMidpoint, polygonArea, polygonPerimeter, polylineLength, SCALE_PRESETS } from './measure'
+import { circleStats, formatArea, formatRadius, radiusOf, summarize, formatFeetInches, parseFeetInches, pathMidpoint, polygonArea, polygonPerimeter, polylineLength, SCALE_PRESETS } from './measure'
 
 describe('lengths and areas', () => {
   it('polyline length', () => {
@@ -51,5 +51,25 @@ describe('presets', () => {
     expect(SCALE_PRESETS.find(p => p.label.startsWith('1/8"'))!.pointsPerFoot).toBe(9)
     expect(SCALE_PRESETS.find(p => p.label === `1" = 20'`)!.pointsPerFoot).toBeCloseTo(3.6)
     expect(SCALE_PRESETS.find(p => p.label.startsWith('3"'))!.pointsPerFoot).toBe(216)
+  })
+})
+
+describe('radius measure', () => {
+  it('radius is the center-to-edge distance', () => {
+    expect(radiusOf([10, 10, 13, 14])).toBe(5)
+    expect(radiusOf([1, 2])).toBe(0)
+  })
+  it('radius, diameter and area use the calibration', () => {
+    // 9 points per foot: a 40.5 pt radius is 4.5 ft
+    const c = circleStats([0, 0, 40.5, 0], 9)
+    expect(c.radius).toBeCloseTo(4.5)
+    expect(c.diameter).toBeCloseTo(9)
+    expect(c.area).toBeCloseTo(Math.PI * 4.5 * 4.5)
+    expect(formatRadius(c.radius)).toBe(`R 4'-6"`)
+  })
+  it('is listed in the measure summary, or counted as unscaled', () => {
+    const m: any = { id: 'r1', document_id: 'd', page: 1, type: 'measure-radius', geometry: { x: 0, y: 0, rotation: 0, points: [0, 0, 40.5, 0] }, style: { stroke: '#e03131' }, text: '', layer_id: null }
+    expect(summarize([m], 9).radius.map(r => r.value)).toEqual([`R 4'-6"`])
+    expect(summarize([m], null).unscaled).toBe(1)
   })
 })

@@ -84,6 +84,15 @@ export function ProjectPage({ user }: { user: User }) {
   const canEdit = project?.role === 'admin' || project?.role === 'editor'
   const isAdmin = project?.role === 'admin'
 
+  async function toggleComplete() {
+    if (!project) return
+    setError('')
+    try {
+      const p = await api<Project>(`/projects/${project.id}`, { method: 'PATCH', body: JSON.stringify({ status: project.status === 'completed' ? 'open' : 'completed' }) })
+      setProject({ ...project, status: p.status, completed_at: p.completed_at })
+    } catch (err) { setError((err as Error).message) }
+  }
+
   async function upload(files: FileList | null) {
     if (!files) return
     setError('')
@@ -174,7 +183,11 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
         <span className="muted">/</span>
         <span className="crumb">{project?.name ?? '…'}</span>
+        {project?.status === 'completed' && <span className="muted small">Completed</span>}
         <span className="spacer" />
+        {canEdit && project && (
+          <button onClick={toggleComplete}>{project.status === 'completed' ? 'Reopen project' : 'Mark complete'}</button>
+        )}
         <UserMenu />
       </header>
       <OfflineBanner />

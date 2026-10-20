@@ -1,4 +1,4 @@
-import type { Markup } from './types'
+import type { Markup, PathGeometry } from './types'
 
 /** Sum of segment lengths of [x0,y0,x1,y1,...] points, in the same units. */
 export function polylineLength(points: number[]): number {
@@ -116,6 +116,19 @@ export const SCALE_PRESETS: ScalePreset[] = [
 
 // ---- Per-markup measurement ----
 
+/** Radius markup: points are [cx, cy, ex, ey] (center, then a point on the circle). */
+export const radiusOf = (points: number[]): number =>
+  points.length >= 4 ? Math.hypot(points[2] - points[0], points[3] - points[1]) : 0
+
+export interface CircleStats { radius: number; diameter: number; area: number }
+/** Radius (ft), diameter (ft) and area (SF) of a radius markup at the given scale. */
+export function circleStats(points: number[], ppf: number): CircleStats {
+  const radius = radiusOf(points) / ppf
+  return { radius, diameter: radius * 2, area: Math.PI * radius * radius }
+}
+/** `R 4'-6"` */
+export const formatRadius = (feet: number) => `R ${formatFeetInches(feet)}`
+
 export const LENGTH_TYPES: string[] = ['measure-length', 'measure-polylength']
 
 export const feetOf = (points: number[], ppf: number) => polylineLength(points) / ppf
@@ -126,6 +139,7 @@ export interface MeasureSummary {
   length: MeasureTotal[]; lengthTotal: string
   area: MeasureTotal[]; areaTotal: string
   cable: MeasureTotal[]; cableTotal: string
+  radius: MeasureTotal[]
   count: MeasureTotal[]
   unscaled: number
 }
@@ -149,14 +163,16 @@ function group(markups: Markup[], types: string[], val: (pts: number[]) => numbe
 
 /** Totals for one page's markups, grouped by type then stroke color. */
 export function summarize(markups: Markup[], ppf: number | null): MeasureSummary {
-  const out: MeasureSummary = { length: [], lengthTotal: '', area: [], areaTotal: '', cable: [], cableTotal: '', count: [], unscaled: 0 }
+  const out: MeasureSummary = { length: [], lengthTotal: '', area: [], areaTotal: '', cable: [], cableTotal: '', radius: [], count: [], unscaled: 0 }
   if (ppf) {
     const l = group(markups, LENGTH_TYPES, p => feetOf(p, ppf), formatFeetInches, 'Length')
     const a = group(markups, ['measure-area'], p => sqftOf(p, ppf), formatArea, 'Area')
     const c = group(markups, ['cable'], p => feetOf(p, ppf), formatFeetInches, 'Cable')
+    out.radius = markups.filter(m => m.type === 'measure-radius' && 'points' in m.geometry)
+      .map(m => ({ key: m.id, label: 'Radius', color: m.style.stroke || '#e03131', value: formatRadius(circleStats((m.geometry as PathGeometry).points, ppf).radius), ids: [m.id] }))
     Object.assign(out, { length: l.rows, lengthTotal: l.total, area: a.rows, areaTotal: a.total, cable: c.rows, cableTotal: c.total })
   } else {
-    out.unscaled = markups.filter(m => [...LENGTH_TYPES, 'measure-area', 'cable'].includes(m.type)).length
+    out.unscaled = markups.filter(m => [...LENGTH_TYPES, 'measure-area', 'measure-radius', 'cable'].includes(m.type)).length
   }
   const groups = new Map<string, { color: string; n: number; ids: string[] }>()
   for (const m of markups) {

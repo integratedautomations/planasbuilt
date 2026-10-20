@@ -1,10 +1,11 @@
-import { FormEvent, useState } from 'react'
+import { FormEvent, useRef, useState } from 'react'
 import { api, setToken, User } from '../api'
 import type { ReplaceChoice } from '../markups/placeReplace'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
 import { DENSITY_PREFS } from '../prefs/density'
 import type { DensityPref } from '../prefs/density'
 import { setPref, usePrefs } from '../prefs/store'
+import { UserAvatar } from '../ui/UserAvatar'
 import { THEME_PREFS } from '../prefs/theme'
 import type { ThemePref } from '../prefs/theme'
 
@@ -18,6 +19,23 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
   const [pw, setPw] = useState({ current: '', next: '', again: '' })
   const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [hotkeys, setHotkeys] = useState(false)
+  const [picMsg, setPicMsg] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  async function uploadPicture(file: File | undefined) {
+    if (!file) return
+    setPicMsg('')
+    try {
+      const fd = new FormData(); fd.append('photo', file)
+      const r = await api<{ avatar: number | null }>('/me/avatar', { method: 'POST', body: fd })
+      onUser({ ...user, avatar: r.avatar })
+    } catch (err) { setPicMsg((err as Error).message) }
+    if (fileRef.current) fileRef.current.value = ''
+  }
+  async function removePicture() {
+    setPicMsg('')
+    try { await api('/me/avatar', { method: 'DELETE' }); onUser({ ...user, avatar: null }) } catch (err) { setPicMsg((err as Error).message) }
+  }
 
   async function saveName(e: FormEvent) {
     e.preventDefault(); setNameMsg('')
@@ -41,6 +59,13 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
     <div className="settings-grid">
       <section className="card settings-card">
         <h3>Profile</h3>
+        <div className="row">
+          <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} size={56} />
+          <button type="button" onClick={() => fileRef.current?.click()}>{user.avatar != null ? 'Change picture' : 'Upload picture'}</button>
+          {user.avatar != null && <button type="button" onClick={removePicture}>Remove</button>}
+          <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={e => uploadPicture(e.target.files?.[0])} />
+          {picMsg && <span className="error small">{picMsg}</span>}
+        </div>
         <form className="stack" onSubmit={saveName}>
           <label className="field">Name<input value={name} onChange={e => setName(e.target.value)} required /></label>
           <label className="field">Email<input value={user.email} readOnly disabled /></label>

@@ -6,7 +6,18 @@ import { printableMarkups } from './printOptions'
 // The browser's own print dialog picks the printer, paper size, copies and duplex (pages use `size: auto`), so the
 // printer's real paper is used; each page image is scaled to fit the printable area.
 
-export type PrintRange = 'all' | 'current' | 'custom' | 'selected'
+export type PrintRange = 'all' | 'current' | 'custom' | 'selected' | 'window'
+
+/** A region of one page, in PDF page coordinates (points at scale 1, origin top-left, as the viewer and markups use). */
+export interface PrintWindow { page: number; x: number; y: number; width: number; height: number }
+
+/** Normalises two dragged corners into a window; null when it is too small to be a deliberate selection. */
+export function windowFromCorners(page: number, a: { x: number; y: number }, b: { x: number; y: number }, bounds?: { width: number; height: number }, minSize = 4): PrintWindow | null {
+  let x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y)
+  if (bounds) { x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(bounds.width, x1); y1 = Math.min(bounds.height, y1) }
+  if (x1 - x0 < minSize || y1 - y0 < minSize) return null
+  return { page, x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+}
 export type PrintOrientation = 'auto' | 'portrait' | 'landscape'
 export type PrintMargins = 'none' | 'narrow' | 'normal'
 export type PrintQuality = 'draft' | 'normal' | 'high'
@@ -26,11 +37,13 @@ export interface PrintOptions {
   includeLegend: boolean
   grayscale: boolean
   quality: PrintQuality
+  /** For range === 'window': the region to print. */
+  window: PrintWindow | null
 }
 
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   range: 'all', custom: '', fit: true, orientation: 'auto', margins: 'narrow', includeMarkups: true,
-  hiddenLayers: [], includeLegend: true, grayscale: false, quality: 'normal',
+  hiddenLayers: [], includeLegend: true, grayscale: false, quality: 'normal', window: null,
 }
 
 export const QUALITY_DPI: Record<PrintQuality, number> = { draft: 150, normal: 200, high: 300 }
@@ -38,13 +51,21 @@ export const MARGIN_INCHES: Record<PrintMargins, number> = { none: 0, narrow: 0.
 /** Largest raster, in pixels, rendered for one page (keeps big sheets from exhausting memory). */
 export const MAX_PRINT_PIXELS = 36_000_000
 
+function normalizeWindow(raw: unknown): PrintWindow | null {
+  if (!raw || typeof raw !== 'object') return null
+  const w = raw as Record<string, unknown>
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  if (!ok(w.page) || !ok(w.x) || !ok(w.y) || !ok(w.width) || !ok(w.height) || w.width <= 0 || w.height <= 0 || w.page < 1) return null
+  return { page: w.page, x: w.x, y: w.y, width: w.width, height: w.height }
+}
+
 /** Accepts saved prefs of any shape and returns complete options. */
 export function normalizePrintOptions(raw: unknown): PrintOptions {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const D = DEFAULT_PRINT_OPTIONS
   const pick = <T extends string>(v: unknown, all: readonly T[], d: T): T => (all.includes(v as T) ? (v as T) : d)
   return {
-    range: pick(r.range, ['all', 'current', 'custom', 'selected'] as const, D.range),
+    range: pick(r.range, ['all', 'current', 'custom', 'selected', 'window'] as const, D.range),
     custom: typeof r.custom === 'string' ? r.custom : '',
     fit: typeof r.fit === 'boolean' ? r.fit : D.fit,
     orientation: pick(r.orientation, ['auto', 'portrait', 'landscape'] as const, D.orientation),
@@ -54,13 +75,17 @@ export function normalizePrintOptions(raw: unknown): PrintOptions {
     includeLegend: typeof r.includeLegend === 'boolean' ? r.includeLegend : D.includeLegend,
     grayscale: typeof r.grayscale === 'boolean' ? r.grayscale : D.grayscale,
     quality: pick(r.quality, ['draft', 'normal', 'high'] as const, D.quality),
+    window: normalizeWindow(r.window),
   }
 }
 
 /** Pages a print job covers, or an error for the dialog. `selected` are the pages picked in the Pages panel. */
-export function printPageList(o: Pick<PrintOptions, 'range' | 'custom'>, current: number, count: number, selected: number[] = []): { pages: number[]; error?: string } {
+export function printPageList(o: Pick<PrintOptions, 'range' | 'custom'> & { window?: PrintWindow | null }, current: number, count: number, selected: number[] = []): { pages: number[]; error?: string } {
   if (o.range === 'all') return { pages: Array.from({ length: count }, (_, i) => i + 1) }
   if (o.range === 'current') return { pages: [current] }
+  if (o.range === 'window') {
+    return o.window && o.window.page >= 1 && o.window.page <= count ? { pages: [o.window.page] } : { pages: [], error: 'Choose a window on the page first' }
+  }
   if (o.range === 'selected') {
     const pages = [...new Set(selected)].filter(p => p >= 1 && p <= count).sort((a, b) => a - b)
     return pages.length ? { pages } : { pages: [], error: 'Select pages in the Pages panel first (Ctrl or Shift click)' }
@@ -103,9 +128,10 @@ export function planRaster(widthPt: number, heightPt: number, quality: PrintQual
   return { dpi, scale: dpi / 72, pxWidth: Math.max(1, Math.round(wIn * dpi)), pxHeight: Math.max(1, Math.round(hIn * dpi)) }
 }
 
-export function planPrint(pages: number[], sizes: Map<number, { width: number; height: number }>, o: Pick<PrintOptions, 'orientation' | 'quality'>): PrintPagePlan[] {
+export function planPrint(pages: number[], sizes: Map<number, { width: number; height: number }>, o: Pick<PrintOptions, 'orientation' | 'quality'> & { range?: PrintRange; window?: PrintWindow | null }): PrintPagePlan[] {
   return pages.map(page => {
-    const s = sizes.get(page) ?? { width: 612, height: 792 }
+    const w = o.range === 'window' && o.window && o.window.page === page ? o.window : null
+    const s = w ? { width: w.width, height: w.height } : sizes.get(page) ?? { width: 612, height: 792 }
     const r = planRaster(s.width, s.height, o.quality)
     return { page, orientation: pageOrientation(s.width, s.height, o.orientation), widthIn: s.width / 72, heightIn: s.height / 72, pxWidth: r.pxWidth, pxHeight: r.pxHeight, dpi: r.dpi, scale: r.scale }
   })

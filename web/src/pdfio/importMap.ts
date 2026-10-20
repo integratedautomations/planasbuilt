@@ -146,7 +146,7 @@ export const NO_KNOWN_IDS: KnownIds = { layers: new Set(), symbolSets: new Set()
 
 const BOX_SET: ReadonlySet<string> = new Set(BOX_TYPES)
 const PATH_SET: ReadonlySet<string> = new Set(['line', 'arrow', 'polyline', 'polygon', 'freehand', 'cable',
-  'measure-length', 'measure-polylength', 'measure-area', 'count', 'area'])
+  'measure-length', 'measure-polylength', 'measure-area', 'measure-radius', 'count', 'area'])
 const STATUS_SET: ReadonlySet<string> = new Set(STATUSES.map(s => s.value))
 const MAX_COORD = 1e6
 const MAX_POINTS = 40_000

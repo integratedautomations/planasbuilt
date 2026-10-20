@@ -18,11 +18,18 @@ interface Props {
   onPrint: (o: PrintOptions, pages: number[]) => void
   onSavePdf: (o: PrintOptions, pages: number[]) => void
   onClose: () => void
+  /** Options to start from (e.g. when reopened after choosing a window); defaults to the saved ones. */
+  initial?: PrintOptions
+  /** Hides this dialog and lets the user drag a window on the current page; the viewer reopens the dialog with the result. */
+  onPickWindow?: (o: PrintOptions) => void
 }
 
+const fmtIn = (pt: number) => (Math.round(pt / 72 * 100) / 100).toString()
+
 /** Print options: pages, size, orientation, margins, markups, layers, legend, grayscale, quality. */
-export function PrintDialog({ pageCount, currentPage, selectedPages, layers, symbolSets, hidden, busy, error, onPrint, onSavePdf, onClose }: Props) {
+export function PrintDialog({ pageCount, currentPage, selectedPages, layers, symbolSets, hidden, busy, error, onPrint, onSavePdf, onClose, initial, onPickWindow }: Props) {
   const [o, setO] = useState<PrintOptions>(() => {
+    if (initial) return initial
     const saved = normalizePrintOptions(getPrefs().printOptions)
     // the layers hidden in the viewer start unchecked; "selected pages" only makes sense when some are selected
     return { ...saved, hiddenLayers: [...hidden], range: saved.range === 'selected' && !selectedPages.length ? 'all' : selectedPages.length ? 'selected' : saved.range }
@@ -36,7 +43,7 @@ export function PrintDialog({ pageCount, currentPage, selectedPages, layers, sym
   const toggle = (key: string) => patch({ hiddenLayers: off.has(key) ? o.hiddenLayers.filter(k => k !== key) : [...o.hiddenLayers, key] })
 
   const chosen = printPageList(o, currentPage, pageCount, selectedPages)
-  const remember = () => setPref('printOptions', { ...o, hiddenLayers: [], range: o.range === 'selected' || o.range === 'custom' ? 'all' : o.range } as unknown as Record<string, unknown>)
+  const remember = () => setPref('printOptions', { ...o, hiddenLayers: [], range: o.range === 'selected' || o.range === 'custom' || o.range === 'window' ? 'all' : o.range, window: null } as unknown as Record<string, unknown>)
   const run = (fn: (o: PrintOptions, pages: number[]) => void) => () => { if (!chosen.error) { remember(); fn(o, chosen.pages) } }
   const range = (r: PrintRange, label: string, disabled = false) => (
     <label className="check"><input type="radio" name="range" disabled={disabled} checked={o.range === r} onChange={() => patch({ range: r })} /> {label}</label>
@@ -59,6 +66,16 @@ export function PrintDialog({ pageCount, currentPage, selectedPages, layers, sym
             <input type="radio" name="range" checked={o.range === 'custom'} onChange={() => patch({ range: 'custom' })} /> Pages
             <input value={o.custom} placeholder="1-3, 5" aria-label="Page range" onFocus={() => patch({ range: 'custom' })} onChange={e => patch({ custom: e.target.value, range: 'custom' })} />
           </label>
+          {onPickWindow && (
+            <div className="check">
+              <label className="check"><input type="radio" name="range" checked={o.range === 'window'}
+                onChange={() => { if (o.window) patch({ range: 'window' }); else onPickWindow({ ...o, range: 'window' }) }} /> Window (drag a rectangle on the current page)</label>
+              {o.range === 'window' && o.window && (
+                <span className="small muted"> Page {o.window.page}: {fmtIn(o.window.width)} × {fmtIn(o.window.height)} in{' '}
+                  <button type="button" onClick={() => onPickWindow(o)}>Reselect</button></span>
+              )}
+            </div>
+          )}
           {chosen.error && <div className="error small">{chosen.error}</div>}
         </fieldset>
         <fieldset className="print-group">
@@ -104,7 +121,7 @@ export function PrintDialog({ pageCount, currentPage, selectedPages, layers, sym
         <div className="row">
           <button type="button" onClick={onClose}>Cancel</button>
           <span className="spacer" />
-          <button type="button" disabled={!!busy || !!chosen.error} onClick={run(onSavePdf)} title="Download a print-ready PDF instead of printing now">Save as PDF</button>
+          <button type="button" disabled={!!busy || !!chosen.error || o.range === 'window'} onClick={run(onSavePdf)} title="Download a print-ready PDF instead of printing now">Save as PDF</button>
           <button type="submit" className="primary" disabled={!!busy || !!chosen.error}>{busy ? 'Preparing…' : 'Print…'}</button>
         </div>
       </form>

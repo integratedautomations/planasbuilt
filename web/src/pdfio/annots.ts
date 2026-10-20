@@ -1,7 +1,7 @@
 import { cloudArcs } from '../markups/geometry'
 import { legendLayout, legendSettings } from '../markups/legend'
 import type { LegendRow } from '../markups/legend'
-import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
+import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { BoxGeometry, Markup, PathGeometry, SymbolSet } from '../markups/types'
 import { applyMatrix, boundsOf, localMatrix, localToDisplay } from './coords'
@@ -83,7 +83,7 @@ export const approxTextWidth = (s: string, size: number, bold = false) => s.leng
 const TYPE_LABEL: Record<string, string> = {
   rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text', stamp: 'Stamp',
   device: 'Device', line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Freehand',
-  cable: 'Cable', 'measure-length': 'Length', 'measure-polylength': 'Polyline length', 'measure-area': 'Area measurement',
+  cable: 'Cable', 'measure-length': 'Length', 'measure-polylength': 'Polyline length', 'measure-area': 'Area measurement', 'measure-radius': 'Radius',
   count: 'Count', area: 'Area', legend: 'Legend',
 }
 
@@ -394,6 +394,24 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         measured('length', { x: (x0 + x1) / 2, y: (y0 + y1) / 2 })
         spec.subtype = 'Line'; spec.line = [...toP(x0, y0), ...toP(x1, y1)]
         if (spec.measure) spec.intent = 'LineDimension'
+        break
+      }
+      case 'measure-radius': {
+        const [cx, cy, ex, ey] = pts.length >= 4 ? pts : [pts[0], pts[1], pts[0], pts[1]]
+        const r = Math.hypot(ex - cx, ey - cy)
+        styleStroke()
+        ops.ellipse(cx, cy, r, r).paint(false, true)
+        ops.poly([cx, cy, ex, ey], false).paint(false, true)
+        ext.box(cx - r, cy - r, r * 2, r * 2)
+        const c = toP(cx, cy)
+        spec.subtype = 'Circle'; spec.interior = null
+        spec.inner = r4([c[0] - r, c[1] - r, c[0] + r, c[1] + r])
+        if (ctx.ppf) {
+          const text = formatRadius(r / ctx.ppf)
+          label(text, { x: (cx + ex) / 2, y: (cy + ey) / 2 })
+          spec.measure = { ratio: scaleRatio(ctx.ppf), pointsPerFoot: ctx.ppf }
+          measureText = `${text}, D ${formatFeetInches((2 * r) / ctx.ppf)}, ${formatArea(Math.PI * (r / ctx.ppf) ** 2)}`
+        } else label('Set scale', { x: (cx + ex) / 2, y: (cy + ey) / 2 })
         break
       }
       case 'measure-polylength': {

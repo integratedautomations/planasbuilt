@@ -8,6 +8,8 @@ export interface Peer {
   clientId: string
   userId: string
   name: string
+  /** Avatar version (changes whenever the picture does); null = no picture. */
+  avatar: number | null
   color: string
   page: number | null
   cursor: { x: number; y: number } | null
@@ -43,9 +45,9 @@ export class Realtime {
 
   close() { clearInterval(this.timer) }
 
-  add(socket: WebSocket, info: { clientId: string; userId: string; name: string }): Conn {
+  add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null }): Conn {
     const c: Conn = {
-      socket, ...info, color: colorFor(info.userId), page: null, cursor: null, selection: [],
+      socket, ...info, avatar: info.avatar ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [],
       documentId: null, alive: true, windowStart: 0, windowCount: 0,
     }
     this.conns.add(c)
@@ -74,7 +76,7 @@ export class Realtime {
   }
 
   private static peerOf(c: Conn): Peer {
-    return { clientId: c.clientId, userId: c.userId, name: c.name, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection }
+    return { clientId: c.clientId, userId: c.userId, name: c.name, avatar: c.avatar, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection }
   }
 
   private toRoom(documentId: string, msg: unknown, except?: string | null, exceptConn?: Conn) {

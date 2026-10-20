@@ -124,7 +124,7 @@
 /* Bottom nav bar: calm until the pointer is near (the ::before widens its hover area) */
 @media (hover: hover) {
   .viewer .nav-bar { opacity: 0.5; transition: opacity 0.18s ease; }
-  .viewer .nav-bar::before { content: ''; position: absolute; inset: -32px -24px -12px; }
+  .viewer .nav-bar::before { content: ''; position: absolute; inset: -32px -24px -12px; z-index: -1; }
   .viewer .nav-bar:hover, .viewer .nav-bar:focus-within { opacity: 1; }
 }
 .viewer .nav-bar { background: var(--panel-bg); border-color: var(--divider); padding: 2px 6px; }

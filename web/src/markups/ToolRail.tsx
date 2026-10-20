@@ -26,6 +26,7 @@ export const TOOLS: { tool: Tool; label: string; icon: ReactNode }[] = [
   { tool: 'legend', label: 'Legend', icon: icon(<><rect x="4" y="4" width="16" height="16" rx="1" /><path d="M4 9h16M9 9v11M13 13h4M13 16.5h4" /></>) },
   { tool: 'calibrate', label: 'Calibrate scale', icon: icon(<><path d="M3 15l12-12 6 6-12 12z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
   { tool: 'measure-length', label: 'Length', icon: icon(<><path d="M4 12h16M4 8v8M20 8v8" /></>) },
+  { tool: 'measure-radius', label: 'Radius', icon: icon(<><circle cx="12" cy="12" r="8" /><path d="M12 12l5.5-5.5" /><circle cx="12" cy="12" r="1" fill="currentColor" /></>) },
   { tool: 'measure-polylength', label: 'Polylength', icon: icon(<><path d="M4 18l5-8 5 5 6-9" /><path d="M3 15v6M21 3v6" /></>) },
   { tool: 'measure-area', label: 'Area', icon: icon(<><path d="M5 7l9-3 5 8-4 7-10-2z" fill="currentColor" fillOpacity="0.2" /></>) },
   { tool: 'count', label: 'Count', icon: icon(<><circle cx="12" cy="12" r="7" fill="currentColor" fillOpacity="0.25" /><path d="M10 10l2-1v6" /></>) },

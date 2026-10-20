@@ -161,6 +161,18 @@ describe('annotated export and import', () => {
     expect(spec.rect[2]).toBeGreaterThan(300) // 214 center + 100 range
   })
 
+  it('exports a radius measure as a Circle annotation with a scale and label', () => {
+    const pbox = { llx: 0, lly: 0, width: 612, height: 792, rotation: 0 }
+    const m = mk('measure-radius', path(100, 100, [0, 0, 40.5, 0]))
+    const spec = buildAnnot(m, { box: pbox, ppf: 9, textWidth: approxTextWidth })!
+    expect(spec.subtype).toBe('Circle')
+    expect(spec.measure).toBeDefined()
+    expect(spec.contents).toContain(`R 4'-6"`)
+    expect(spec.inner![2] - spec.inner![0]).toBeCloseTo(81)
+    const unscaled = buildAnnot(m, { box: pbox, ppf: null, textWidth: approxTextWidth })!
+    expect(unscaled.measure).toBeUndefined()
+  })
+
   it('does not turn unscaled measurements into dimensions', () => {
     const spec = buildAnnot(mk('measure-length', path(0, 0, [0, 0, 50, 0])), {
       box: { llx: 0, lly: 0, width: 612, height: 792, rotation: 0 }, ppf: null, textWidth: approxTextWidth })!

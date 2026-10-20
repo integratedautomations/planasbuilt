@@ -40,7 +40,7 @@ const GROUPS: Record<string, string> = {
   select: 'Select / Navigate', pan: 'Select / Navigate',
   line: 'Shapes', arrow: 'Shapes', rect: 'Shapes', ellipse: 'Shapes', cloud: 'Shapes', polyline: 'Shapes', polygon: 'Shapes', freehand: 'Shapes', highlight: 'Shapes',
   text: 'Text', stamp: 'Text',
-  calibrate: 'Measure', 'measure-length': 'Measure', 'measure-polylength': 'Measure', 'measure-area': 'Measure', count: 'Measure',
+  calibrate: 'Measure', 'measure-length': 'Measure', 'measure-polylength': 'Measure', 'measure-radius': 'Measure', 'measure-area': 'Measure', count: 'Measure',
   cable: 'Site', legend: 'Site', area: 'Site', 'area-rect': 'Site',
 }
 

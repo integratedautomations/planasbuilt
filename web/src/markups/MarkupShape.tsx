@@ -4,7 +4,7 @@ import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text
 import type Konva from 'konva'
 import { FONT_MONO, FONT_UI } from './canvasFonts'
 import { cloudArcs, deviceCenter } from './geometry'
-import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from './measure'
+import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, radiusOf, sqftOf } from './measure'
 import { STATUSES } from './types'
 import type { BoxGeometry, Fov, Markup, PathGeometry, Status, SymbolSet } from './types'
 import { useImage } from './useImage'
@@ -326,6 +326,20 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath }: { m: Markup; g: 
           <Line points={[x1 - nx, y1 - ny, x1 + nx, y1 + ny]} stroke={stroke || '#e03131'} strokeWidth={strokeWidth} listening={false} />
           <MeasureLabel at={mid} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'} warn={!scale}
             text={scale ? formatFeetInches(feetOf(g.points, scale)) : 'Set scale'} />
+        </>
+      )
+    }
+    case 'measure-radius': {
+      const [x0, y0, x1, y1] = g.points
+      const r = radiusOf(g.points)
+      const col = stroke || '#e03131'
+      return (
+        <>
+          <Circle x={x0} y={y0} radius={r} stroke={col} strokeWidth={strokeWidth} dash={common.dash} fill={hexAlpha(fill || col, fill ? 0.22 : 0.08)} hitStrokeWidth={common.hitStrokeWidth} />
+          <Line {...common} points={[x0, y0, x1, y1]} />
+          <Circle x={x0} y={y0} radius={Math.max(strokeWidth * 1.2, 2.5 / zoom)} fill={col} listening={false} />
+          <MeasureLabel at={{ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }} zoom={zoom} fontSize={m.style.fontSize} color={col} warn={!scale}
+            text={scale ? formatRadius(r / scale) : 'Set scale'} />
         </>
       )
     }

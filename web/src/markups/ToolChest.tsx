@@ -23,6 +23,8 @@ interface Props {
   /** Opens the hotkey recorder for an entry. */
   onAssignHotkey: (e: ToolEntry) => void
   onRemoveHotkey: (e: ToolEntry) => void
+  /** Admins only: opens the device-type editor for a device-type entry. Omit to hide the menu item. */
+  onEditType?: (e: ToolEntry) => void
 }
 
 function EntryIcon({ e, px }: { e: ToolEntry; px?: number }) {
@@ -78,6 +80,7 @@ export function ToolChest(p: Props) {
     { label: '', separator: true },
     { label: 'Assign hotkey…', hint: keyOf(e) || undefined, disabled: p.readOnly && e.tool !== 'select' && e.tool !== 'pan', onClick: () => p.onAssignHotkey(e) },
     { label: 'Remove hotkey', disabled: !keyOf(e), onClick: () => p.onRemoveHotkey(e) },
+    ...(p.onEditType && e.typeId ? [{ label: '', separator: true }, { label: 'Edit device type…', onClick: () => p.onEditType!(e) }] : []),
   ]
 
   const row = (e: ToolEntry, opts: { favDrag?: boolean; group?: { name: string; entries: ToolEntry[] } } = {}) => {
