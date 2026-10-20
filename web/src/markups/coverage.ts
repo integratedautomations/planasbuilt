@@ -36,7 +36,7 @@ export function withRangePx(fov: Fov, px: number, ppf: number | null): Fov {
 /** Sets the range from feet (needs a scale for the px fallback). */
 export function withRangeFeet(fov: Fov, feet: number, ppf: number | null): Fov {
   const ft = Math.max(0.1, feet)
-  return ppf ? { ...fov, rangeFt: ft, range: Math.max(MIN_RANGE_PX, ft * ppf) } : { ...fov, range: Math.max(MIN_RANGE_PX, fov.range) }
+  return { ...fov, rangeFt: ft, range: Math.max(MIN_RANGE_PX, ppf ? ft * ppf : fov.range) }
 }
 export const formatRange = (feet: number) => formatFeetInches(feet)
 /** Parses a typed length ("40'", "40", "12'-6\"") into feet; null if invalid or not positive. */
@@ -52,7 +52,7 @@ export function initialCoverage(set: SymbolSet | undefined, def: CoverageDefault
     const ft = def.range_ft > 0 ? def.range_ft : 20
     return ppf
       ? { direction: -90, angle, range: Math.max(MIN_RANGE_PX, ft * ppf), rangeFt: ft }
-      : { direction: -90, angle, range: Math.max(MIN_RANGE_PX, ft * 7.5) }
+      : { direction: -90, angle, range: Math.max(MIN_RANGE_PX, ft * 7.5), rangeFt: ft }
   }
   return set?.has_fov ? { ...COVERAGE_DEFAULT_PX } : undefined
 }
