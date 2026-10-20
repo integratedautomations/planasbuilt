@@ -1163,7 +1163,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           copyHint={hotkeys['edit.copy'] || undefined} deleteHint={hotkeys['edit.delete'] || undefined}
           onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
           onStatus={selectedDevices.length && selectedDevices.length === selected.length ? setStatusOnSelected : undefined}
-          status={selectedDevices[0]?.status}
+          status={selectedDevices.every(m => m.status === selectedDevices[0].status) ? selectedDevices[0]?.status : undefined}
           onMore={(x, y) => { const b = selAnchor(); const m = selected[0]; if (m) setCtx({ x, y, hitId: m.id, point: b ? { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 } : { x: 0, y: 0 } }) }} />
       )}
       {!isPhone && activeTool === 'select' && selected.length === 1 && (

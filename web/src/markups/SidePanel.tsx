@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Icon } from '../ui/Icon'
-import { clickSelect, keySelect } from '../ui/listSelection'
+import { clearTextSelection, clickSelect, guardRangeMouseDown, keySelect } from '../ui/listSelection'
 import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import { STATUSES } from './types'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
@@ -13,6 +13,7 @@ import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
 import { circleStats, formatArea, formatFeetInches, summarize } from './measure'
 import type { MeasureTotal } from './measure'
+import { commonValue } from './mixed'
 import { tagRange } from './stacks'
 import type { Stack, StackIndex } from './stacks'
 
@@ -385,11 +386,13 @@ export function Areas({ areas, readOnly, selected, onDelete }: Pick<Props, 'area
   const node = (a: Markup, depth: number): React.ReactNode => (
     <li key={a.id} style={{ display: 'block' }}>
       <button className={`area-row${selected.some(s => s.id === a.id) ? ' active' : ''}`} style={{ paddingLeft: 8 + depth * 14 }}
+        onMouseDown={guardRangeMouseDown}
         onClick={e => {
           if (e.ctrlKey || e.metaKey || e.shiftKey) {
             const r = clickSelect(order, { selected: selectedAreaIds, anchor: anchor.current }, a.id, { ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey })
             anchor.current = r.anchor
             areas.onSelectAreas(r.selected)
+            clearTextSelection()
           } else { anchor.current = a.id; areas.onSelectArea(a.id) }
         }} title="Select and zoom to fit (Ctrl/Shift+click for several)">
         <span className="area-name">{a.text.trim() || (a.fields?.sheet === true ? 'Unnamed sheet' : 'Unnamed area')}</span>
@@ -422,10 +425,11 @@ export function Areas({ areas, readOnly, selected, onDelete }: Pick<Props, 'area
 }
 
 function LayerSelect({ selected, layers, onUpdate, readOnly }: Props) {
-  const first = selected[0]
+  const layer = commonValue(selected, m => m.layer_id ?? '')
   return (
     <label className="field">Layer
-      <select disabled={readOnly} value={first.layer_id ?? ''} onChange={e => onUpdate(m => ({ ...m, layer_id: e.target.value || null }), 'layer')}>
+      <select disabled={readOnly} value={layer.mixed ? '__mixed' : layer.value ?? ''} onChange={e => { if (e.target.value !== '__mixed') onUpdate(m => ({ ...m, layer_id: e.target.value || null }), 'layer') }}>
+        {layer.mixed && <option value="__mixed" disabled>Mixed</option>}
         <option value="">Default</option>
         {layers.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
       </select>
@@ -436,7 +440,9 @@ function LayerSelect({ selected, layers, onUpdate, readOnly }: Props) {
 function StyleProperties(p: Props) {
   const { selected, readOnly, defaultStyle, onDefaultStyle, stampText, onStampText, onUpdate, onDelete, textRef } = p
   const first = selected[0]
-  const style = first?.style ?? defaultStyle
+  const cs = <K extends keyof MarkupStyle>(k: K) => commonValue(selected, m => m.style[k])
+  const style: MarkupStyle = first ? { ...first.style, ...Object.fromEntries((['stroke', 'fill', 'strokeWidth', 'opacity', 'fontSize', 'dash'] as const).map(k => [k, cs(k).value])) } : defaultStyle
+  const mixedStyle = (k: keyof MarkupStyle) => !!first && cs(k).mixed
   const disabled = readOnly && !!first
   const setStyle = (patch: Partial<MarkupStyle>, key: string) => {
     if (first) onUpdate(m => ({ ...m, style: { ...m.style, ...patch } }), `style.${key}`)
@@ -466,18 +472,18 @@ function StyleProperties(p: Props) {
       )}
       <fieldset disabled={disabled} className="stack">
         <Section title="Style">
-        <label className="field">Color
+        <label className="field">Color{mixedStyle('stroke') && <span className="muted"> Mixed</span>}
           <div className="swatches">
             {SWATCHES.map(c => (
-              <button key={c} className={`swatch${style.stroke === c ? ' on' : ''}`} style={{ background: c }}
+              <button key={c} className={`swatch${!mixedStyle('stroke') && style.stroke === c ? ' on' : ''}`} style={{ background: c }}
                 aria-label={c} onClick={() => setStyle({ stroke: c }, 'stroke')} />
             ))}
             <input type="color" value={style.stroke || '#000000'} onChange={e => setStyle({ stroke: e.target.value }, 'stroke')} />
           </div>
         </label>
-        <label className="field">Fill
+        <label className="field">Fill{mixedStyle('fill') && <span className="muted"> Mixed</span>}
           <div className="swatches">
-            <button className={`swatch none${!style.fill ? ' on' : ''}`} aria-label="No fill" onClick={() => setStyle({ fill: '' }, 'fill')} />
+            <button className={`swatch none${!mixedStyle('fill') && !style.fill ? ' on' : ''}`} aria-label="No fill" onClick={() => setStyle({ fill: '' }, 'fill')} />
             {SWATCHES.slice(0, 6).map(c => (
               <button key={c} className={`swatch${style.fill === c ? ' on' : ''}`} style={{ background: c }}
                 aria-label={`fill ${c}`} onClick={() => setStyle({ fill: c }, 'fill')} />
@@ -485,19 +491,19 @@ function StyleProperties(p: Props) {
             <input type="color" value={style.fill || '#ffffff'} onChange={e => setStyle({ fill: e.target.value }, 'fill')} />
           </div>
         </label>
-        <label className="field">Line width <span className="muted">{style.strokeWidth}</span>
+        <label className="field">Line width <span className="muted">{mixedStyle('strokeWidth') ? 'Mixed' : style.strokeWidth}</span>
           <input type="range" min={0.5} max={20} step={0.5} value={style.strokeWidth}
             onChange={e => setStyle({ strokeWidth: +e.target.value }, 'strokeWidth')} />
         </label>
-        <label className="field">Opacity <span className="muted">{Math.round(style.opacity * 100)}%</span>
+        <label className="field">Opacity <span className="muted">{mixedStyle('opacity') ? 'Mixed' : `${Math.round(style.opacity * 100)}%`}</span>
           <input type="range" min={0.1} max={1} step={0.05} value={style.opacity}
             onChange={e => setStyle({ opacity: +e.target.value }, 'opacity')} />
         </label>
-        <label className="field">Font size <span className="muted">{style.fontSize}</span>
+        <label className="field">Font size <span className="muted">{mixedStyle('fontSize') ? 'Mixed' : style.fontSize}</span>
           <input type="range" min={6} max={96} step={1} value={style.fontSize}
             onChange={e => setStyle({ fontSize: +e.target.value }, 'fontSize')} />
         </label>
-        <label className="check"><input type="checkbox" checked={!!style.dash}
+        <label className="check"><input type="checkbox" checked={!!style.dash} ref={el => { if (el) el.indeterminate = mixedStyle('dash') }}
           onChange={e => setStyle({ dash: e.target.checked }, 'dash')} /> Dashed line</label>
         </Section>
 
@@ -507,11 +513,11 @@ function StyleProperties(p: Props) {
               onChange={e => onUpdate(m => ({ ...m, text: e.target.value }), `text.${first.id}`)} />
           </label>
         )}
-        {(!first || first.type === 'stamp') && (
+        {(!first || selected.every(m => m.type === 'stamp')) && (
           <label className="field">{first ? 'Preset' : 'Stamp'}
             <select value={first ? '' : stampText} onChange={e => {
               if (!e.target.value) return
-              if (first) onUpdate(m => ({ ...m, text: e.target.value }), `text.${first.id}`)
+              if (first) onUpdate(m => (m.type === 'stamp' ? { ...m, text: e.target.value } : m), `text.${first.id}`)
               else onStampText(e.target.value)
             }}>
               {first && <option value="">Choose{'…'}</option>}

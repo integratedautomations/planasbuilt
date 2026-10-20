@@ -7,6 +7,7 @@ import { DevicePhotos } from '../photos/DevicePhotos'
 import { BarcodeScanner } from '../photos/BarcodeScanner'
 import '../photos/photos.css'
 import type { FieldDef, Fov, Markup, Status, SymbolSet } from './types'
+import { commonField, commonValue, isUniqueFieldKey } from './mixed'
 import { clampAngle, COVERAGE_DEFAULT_PX, COVERAGE_OPACITY, formatRange, initialCoverage, normDeg, parseRange, rangeFeet, withRangeFeet } from './coverage'
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
@@ -34,10 +35,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
   const setField = (key: string, value: string | number | boolean) =>
     onUpdate(m => ({ ...m, fields: { ...m.fields, [key]: value } }), `field.${key}.${single ? d.id : 'all'}`)
   /** Multi-device: the shared value when every device agrees, otherwise empty + "Mixed". */
-  const shared = (key: string) => {
-    const vals = devices.map(m => m.fields?.[key] ?? '')
-    return { value: d.fields?.[key], mixed: vals.some(v => v !== vals[0]) }
-  }
+  const shared = (key: string) => commonField(devices, key)
   const [scanKey, setScanKey] = useState<string | null>(null)
   const scanProps = (key: string) => (key === 'serial' || key === 'mac') && !readOnly ? { onScan: () => setScanKey(key) } : {}
   const onScanned = (text: string) => {
@@ -190,10 +188,59 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           )}
         </>
       )}
-      {!single && defs.map(f => {
-        const sh = shared(f.key)
-        return <FieldInput key={f.key} def={f} value={sh.mixed ? undefined : sh.value} mixed={sh.mixed} onChange={v => setField(f.key, v)} />
-      })}
+      {!single && (
+        <>
+          <label className="field">Tag
+            <input value="" disabled placeholder="Multiple" readOnly />
+          </label>
+          {defs.map(f => {
+            const sh = shared(f.key)
+            return <FieldInput key={f.key} def={f} value={sh.mixed ? undefined : sh.value} mixed={sh.mixed} multiple={isUniqueFieldKey(f.key, f.type)} onChange={v => setField(f.key, v)} />
+          })}
+          <div className="muted small section-label">Hardware</div>
+          {HARDWARE_FIELDS.map(f => {
+            const sh = shared(f.key)
+            return <FieldInput key={f.key} def={f} value={sh.mixed ? undefined : sh.value} mixed={sh.mixed} multiple={isUniqueFieldKey(f.key, f.type)} onChange={v => setField(f.key, v)} />
+          })}
+          <label className="field">Notes
+            <textarea rows={2} value={shared('notes').mixed ? '' : String(shared('notes').value ?? '')} placeholder={shared('notes').mixed ? 'Mixed' : undefined} onChange={e => setField('notes', e.target.value)} />
+          </label>
+          <div className="muted small section-label">Coverage</div>
+          {(() => {
+            const withFov = devices.filter(m => 'width' in m.geometry)
+            const f = (get: (v: Fov) => string | number | boolean | undefined) => commonValue(withFov, m => { const v = 'width' in m.geometry ? m.geometry.fov : undefined; return v ? get(v) : undefined })
+            const shown = f(v => !v.hidden), locked = f(v => !!v.locked), angle = f(v => Math.round(v.angle)), dir = f(v => Math.round(v.direction))
+            const anyShown = withFov.some(m => 'width' in m.geometry && m.geometry.fov && !m.geometry.fov.hidden)
+            return (
+              <>
+                <label className="check"><input type="checkbox" checked={shown.value === true} ref={el => { if (el) el.indeterminate = withFov.length > 0 && (shown.mixed || shown.count < withFov.length) }}
+                  onChange={e => {
+                    const on = e.target.checked
+                    setFov(cur => on
+                      ? (cur ? { ...cur, hidden: false } : initialCoverage(set, dtype?.coverage?.on ? dtype.coverage : { on: true, angle: 90, range_ft: 20 }, scale) ?? { ...COVERAGE_DEFAULT_PX })
+                      : cur ? { ...cur, hidden: true } : cur, 'fovshow.all')
+                  }} /> Show coverage</label>
+                {anyShown && (
+                  <>
+                    <label className="check"><input type="checkbox" checked={locked.value === true} ref={el => { if (el) el.indeterminate = locked.mixed }}
+                      onChange={e => setFov(cur => cur && { ...cur, locked: e.target.checked }, 'fovlock.all')} /> Lock coverage</label>
+                    <div className="grid2">
+                      <label className="field">Angle (1–360°)
+                        <input type="number" min={1} max={360} step={1} value={angle.mixed ? '' : angle.value as number ?? ''} placeholder={angle.mixed ? 'Mixed' : undefined}
+                          onChange={e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setFov(cur => cur && !cur.locked ? { ...cur, angle: clampAngle(v) } : cur, 'fov.all') }} />
+                      </label>
+                      <label className="field">Rotation (°)
+                        <input type="number" step={1} value={dir.mixed ? '' : dir.value as number ?? ''} placeholder={dir.mixed ? 'Mixed' : undefined}
+                          onChange={e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setFov(cur => cur && !cur.locked ? { ...cur, direction: normDeg(v) } : cur, 'fov.all') }} />
+                      </label>
+                    </div>
+                  </>
+                )}
+              </>
+            )
+          })()}
+        </>
+      )}
       {scanKey && <BarcodeScanner onResult={onScanned} onClose={() => setScanKey(null)} />}
     </fieldset>
     {/* Outside the disabled fieldset so viewers can still open and browse photos */}
@@ -208,7 +255,10 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
   )
 }
 
-function FieldInput({ def, value, onChange, onScan, mixed }: { def: FieldDef; value: string | number | boolean | undefined; onChange: (v: string | number | boolean) => void; onScan?: () => void; mixed?: boolean }) {
+function FieldInput({ def, value, onChange, onScan, mixed, multiple }: { multiple?: boolean; def: FieldDef; value: string | number | boolean | undefined; onChange: (v: string | number | boolean) => void; onScan?: () => void; mixed?: boolean }) {
+  if (multiple) {
+    return <label className="field">{def.label}<input value="" disabled readOnly placeholder="Multiple" /></label>
+  }
   if (def.type === 'checkbox') {
     return <label className="check"><input type="checkbox" checked={!!value} ref={el => { if (el) el.indeterminate = !!mixed }} onChange={e => onChange(e.target.checked)} /> {def.label}{mixed ? ' (Mixed)' : ''}</label>
   }

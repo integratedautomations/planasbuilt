@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ContextMenu } from '../markups/ContextMenu'
 import type { MenuItem } from '../markups/ContextMenu'
 import { PDFDocumentProxy } from '../pdf'
-import { clickSelect, keySelect } from '../ui/listSelection'
+import { clearTextSelection, clickSelect, guardRangeMouseDown, keySelect } from '../ui/listSelection'
 
 const THUMB_WIDTH = 132
 
@@ -39,6 +39,7 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
       const r = clickSelect(pages, { selected: picked, anchor: anchor.current ?? current }, n, { ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey })
       anchor.current = r.anchor
       setPicked(r.selected)
+      clearTextSelection()
       return
     }
     anchor.current = n
@@ -85,6 +86,7 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
       {pages.map(n => (
         <button key={n}
           className={`thumb${n === current ? ' active' : ''}${picked.includes(n) ? ' picked' : ''}${over === n && dragging !== n ? ' drop-target' : ''}`}
+          onMouseDown={guardRangeMouseDown}
           onClick={e => click(e, n)}
           onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, page: n }) }}
           draggable={!!canEdit}

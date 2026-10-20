@@ -6,12 +6,13 @@ import { STATUSES } from '../markups/types'
 import type { Markup, Status, SymbolSet } from '../markups/types'
 import type { Change } from '../markups/useMarkups'
 import { useCatalogContext } from '../catalog/useCatalog'
+import { batchChanges, isUniqueFieldKey } from '../markups/mixed'
 import { scaleKey } from './exportProject'
 import type { ProjectScaleRow } from './exportProject'
 import { ImportDialog } from './ImportDialog'
 import { areaOptions, buildRows, cellText, exportFileName, exportTables, filterRows, listColumns, NO_FILTER, sortRows } from './rows'
 import type { ColumnDef, RowFilter, ScheduleRow } from './rows'
-import { clickSelect, keySelect } from '../ui/listSelection'
+import { clearTextSelection, clickSelect, guardRangeMouseDown, keySelect } from '../ui/listSelection'
 import './schedule.css'
 
 export type Scope = 'sheet' | 'document' | 'project'
@@ -98,13 +99,16 @@ export function MarkupsList(p: Props) {
 
   const editableRow = (r: ScheduleRow) => !p.readOnly && r.isDevice && r.documentId === documentId
 
-  const saveRow = (r: ScheduleRow, patch: (m: Markup) => Markup) => {
-    const before = p.markups.get(r.id)
-    if (before) p.commit([{ before, after: patch(before) }])
+  /** Edits to a row that is part of a multi-selection apply to every selected device of this document, in one undo step. */
+  const saveRows = (r: ScheduleRow, patch: (m: Markup) => Markup, single = false) => {
+    const ids = !single && p.selectedIds.length > 1 && p.selectedIds.includes(r.id) ? p.selectedIds : [r.id]
+    const changes = batchChanges(ids.map(id => p.markups.get(id)).filter((m): m is Markup => !!m), patch, m => m.type === 'device')
+    if (changes.length) p.commit(changes)
   }
-  const setStatus = (r: ScheduleRow, status: Status) => saveRow(r, m => ({ ...m, status }))
-  const setField = (r: ScheduleRow, key: string, value: string | number | boolean) =>
-    saveRow(r, m => ({ ...m, fields: { ...m.fields, [key]: value } }))
+  const setStatus = (r: ScheduleRow, status: Status) => saveRows(r, m => ({ ...m, status }))
+  // Unique fields (IP, MAC, serial) are never mass-set
+  const setField = (r: ScheduleRow, key: string, value: string | number | boolean, type?: string) =>
+    saveRows(r, m => ({ ...m, fields: { ...m.fields, [key]: value } }), isUniqueFieldKey(key, type))
 
   async function exportExcel() {
     setBusy(true); setExportError('')
@@ -148,6 +152,7 @@ export function MarkupsList(p: Props) {
       const res = clickSelect(order, { selected: p.selectedIds.filter(id => order.includes(id)), anchor: anchor.current }, r.id, { ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey })
       anchor.current = res.anchor
       p.onSelectIds(res.selected)
+      clearTextSelection()
       return
     }
     anchor.current = r.id
@@ -230,10 +235,10 @@ export function MarkupsList(p: Props) {
               const editable = editableRow(r)
               return (
                 <tr key={r.id} className={selected.has(r.id) ? 'sel' : undefined}
-                  onClick={e => onRowClick(e, r)}>
+                  onMouseDown={guardRangeMouseDown} onClick={e => onRowClick(e, r)}>
                   {columns.map(c => (
                     <td key={c.id} className={c.id === 'tag' ? 'cell-tag' : undefined} onClick={c.edit && editable ? e => e.stopPropagation() : undefined}>
-                      <Cell row={r} col={c} editable={editable} setSet={sets} onStatus={s => setStatus(r, s)} onField={(k, v) => setField(r, k, v)} />
+                      <Cell row={r} col={c} editable={editable} setSet={sets} onStatus={s => setStatus(r, s)} onField={(k, v) => setField(r, k, v, c.field?.type)} />
                     </td>
                   ))}
                 </tr>

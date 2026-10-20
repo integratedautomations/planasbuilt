@@ -40,3 +40,16 @@ export const pruneSel = <T>(order: T[], sel: ListSel<T>): ListSel<T> => {
   const s = sel.selected.filter(x => order.includes(x))
   return s.length === sel.selected.length ? sel : { selected: s, anchor: sel.anchor !== null && order.includes(sel.anchor) ? sel.anchor : null }
 }
+
+/** Drops any browser text selection (a Shift+click range leaves page text highlighted). */
+export const clearTextSelection = () => { try { window.getSelection()?.removeAllRanges() } catch { /* ignore */ } }
+
+/**
+ * onMouseDown for a list row: with Shift/Ctrl/Cmd held, stops the browser extending a text selection across rows.
+ * Inputs, selects and textareas inside the row keep their normal behavior so editing still works.
+ */
+export function guardRangeMouseDown(e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; target: EventTarget; preventDefault: () => void }) {
+  if (!(e.shiftKey || e.ctrlKey || e.metaKey)) return
+  if ((e.target as HTMLElement).closest?.('input,select,textarea,option')) return
+  e.preventDefault()
+}
