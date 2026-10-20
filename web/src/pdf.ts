@@ -10,8 +10,10 @@ export function loadPdf(src: string | ArrayBuffer) {
   return pdfjs.getDocument(typeof src === 'string' ? { url: src } : { data: src })
 }
 
-// Browsers (especially iOS Safari) fail on very large canvases; keep under ~16 MP.
-export const MAX_CANVAS_PIXELS = 16_000_000
+// Browsers fail on very large canvases. iOS/iPadOS (every browser there is WebKit) kills the
+// whole tab when canvas memory runs out, so keep it much smaller there.
+const IS_IOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+export const MAX_CANVAS_PIXELS = IS_IOS ? 6_000_000 : 16_000_000
 
 export function clampRenderScale(page: PDFPageProxy, wanted: number) {
   const vp = page.getViewport({ scale: 1 })

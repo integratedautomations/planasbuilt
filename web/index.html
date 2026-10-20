@@ -21,11 +21,12 @@
       // If the app fails to start (e.g. an unsupported browser), show why instead of a blank page.
       (function () {
         function show(msg) {
+          setTimeout(function () {
           var r = document.getElementById('root')
           if (!r || r.childElementCount) return
           r.innerHTML = '<div style="font:15px system-ui;padding:24px;color:#0F3D6E"><b>PlanAsBuilt could not start.</b><br>Please update your browser, or send this message to support:<pre style="white-space:pre-wrap;color:#b00"></pre></div>'
-          r.querySelector('pre').textContent = msg + '
-' + navigator.userAgent
+          r.querySelector('pre').textContent = msg + '\n' + navigator.userAgent
+          }, 500)
         }
         window.addEventListener('error', function (e) { show(String(e.message || e.error)) })
         window.addEventListener('unhandledrejection', function (e) { show(String(e.reason && (e.reason.stack || e.reason))) })
