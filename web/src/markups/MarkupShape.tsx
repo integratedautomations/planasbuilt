@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text, Wedge } from 'react-konva'
 import type Konva from 'konva'
+import { FONT_MONO, FONT_UI } from './canvasFonts'
 import { cloudArcs, deviceCenter } from './geometry'
 import { feetOf, formatArea, formatFeetInches, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from './measure'
 import { STATUSES } from './types'
@@ -119,13 +120,13 @@ function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeom
       )}
       <Text text={label} x={cx - 100} y={cy + r + r * 0.12} width={200} align="center"
         fontSize={fontSize} fontStyle="bold" fill={color} stroke="#fff" strokeWidth={fontSize * 0.18}
-        fillAfterStrokeEnabled fontFamily="system-ui, sans-serif" listening={false} />
+        fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />
       {stack && (
         <>
           <Rect x={qx - qw / 2} y={qy - qh / 2} width={qw} height={qh} cornerRadius={qh / 2} fill={color}
             stroke="#fff" strokeWidth={qfs * 0.12} listening={false} />
           <Text text={qtext} x={qx - qw / 2} y={qy - qh / 2} width={qw} height={qh} align="center" verticalAlign="middle"
-            fontSize={qfs} fontStyle="bold" fill="#fff" fontFamily="system-ui, sans-serif" listening={false} />
+            fontSize={qfs} fontStyle="bold" fill="#fff" fontFamily={FONT_MONO} listening={false} />
         </>
       )}
     </>
@@ -145,7 +146,7 @@ function LegendBody({ m, g, rows }: { m: Markup; g: BoxGeometry; rows: LegendRow
   const fs = m.style.fontSize || 12
   const L = legendLayout(rows, s, g.width, fs)
   const ink = m.style.stroke || '#343a40'
-  const font = 'system-ui, sans-serif'
+  const font = FONT_UI
   let x = L.pad
   const colX: Record<string, number> = {}
   for (const c of s.columns) { colX[c] = x; x += L.widths[c] }
@@ -164,8 +165,8 @@ function LegendBody({ m, g, rows }: { m: Markup; g: BoxGeometry; rows: LegendRow
           <Group key={r.key} y={y} listening={false}>
             {s.columns.includes('icon') && <Group x={colX.icon + L.rowH * 0.1}><LegendIcon src={r.icon} color={r.color} size={L.rowH * 0.8} /></Group>}
             {s.columns.includes('name') && <Text text={r.name} x={colX.name} width={L.widths.name - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill={ink} fontFamily={font} />}
-            {s.columns.includes('code') && <Text text={r.code} x={colX.code} width={L.widths.code - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill="#495057" fontFamily={font} />}
-            {s.columns.includes('count') && <Text text={String(r.count)} x={colX.count} width={L.widths.count - 4} height={L.rowH} align="right" verticalAlign="middle" fontSize={fs} fontStyle="bold" fill={ink} fontFamily={font} />}
+            {s.columns.includes('code') && <Text text={r.code} x={colX.code} width={L.widths.code - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill="#495057" fontFamily={FONT_MONO} />}
+            {s.columns.includes('count') && <Text text={String(r.count)} x={colX.count} width={L.widths.count - 4} height={L.rowH} align="right" verticalAlign="middle" fontSize={fs} fontStyle="bold" fill={ink} fontFamily={FONT_MONO} />}
           </Group>
         )
       })}
@@ -233,7 +234,7 @@ function BoxBody({ m, g }: { m: Markup; g: BoxGeometry }) {
           <Rect width={g.width} height={g.height} fill={fill || 'transparent'}
             stroke={stroke || undefined} strokeWidth={stroke ? Math.max(1, strokeWidth / 2) : 0} />
           <Text width={g.width} height={g.height} padding={6} text={m.text || 'Text'}
-            fontSize={m.style.fontSize} fill={stroke || '#000'} fontFamily="system-ui, sans-serif" />
+            fontSize={m.style.fontSize} fill={stroke || '#000'} fontFamily={FONT_UI} />
         </>
       )
     case 'stamp': {
@@ -244,7 +245,7 @@ function BoxBody({ m, g }: { m: Markup; g: BoxGeometry }) {
           <Rect width={g.width} height={g.height} cornerRadius={Math.min(g.height / 4, 10)}
             stroke={stroke || '#e03131'} strokeWidth={Math.max(2, strokeWidth)} fill={fill || 'transparent'} />
           <Text width={g.width} height={g.height} text={label} align="center" verticalAlign="middle"
-            fontSize={fontSize} fontStyle="bold" fill={stroke || '#e03131'} fontFamily="system-ui, sans-serif" />
+            fontSize={fontSize} fontStyle="bold" fill={stroke || '#e03131'} fontFamily={FONT_UI} />
         </>
       )
     }
@@ -262,7 +263,7 @@ function MeasureLabel({ at, text, zoom, fontSize, color, warn }: {
   return (
     <Text text={text} x={at.x - 150} y={at.y - (fs * 1.2 * lines) / 2} width={300} align="center" lineHeight={1.2}
       fontSize={fs} fontStyle="bold" fill={warn ? '#c92a2a' : color} stroke="#fff" strokeWidth={fs * 0.28}
-      fillAfterStrokeEnabled fontFamily="system-ui, sans-serif" listening={false} />
+      fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />
   )
 }
 
@@ -328,7 +329,7 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath }: { m: Markup; g: 
           <Circle x={g.points[0]} y={g.points[1]} radius={r} fill={stroke || '#e03131'} stroke="#fff" strokeWidth={1.5} />
           <Text text={String(countNumber ?? '')} x={g.points[0] - r} y={g.points[1] - r} width={r * 2} height={r * 2}
             align="center" verticalAlign="middle" fontSize={r * (countNumber && countNumber > 9 ? 0.95 : 1.2)} fontStyle="bold" fill="#fff"
-            fontFamily="system-ui, sans-serif" listening={false} />
+            fontFamily={FONT_MONO} listening={false} />
         </>
       )
     }
@@ -388,7 +389,7 @@ function AreaBody({ m, g, zoom, path }: { m: Markup; g: PathGeometry; zoom: numb
   }
   const fs = 14 / zoom, small = 10.5 / zoom, pad = 5 / zoom
   const crumbText = crumbs.length ? `${crumbs.join(' › ')} ›` : ''
-  const halo = { stroke: '#fff', fillAfterStrokeEnabled: true, fontFamily: 'system-ui, sans-serif', lineHeight: 1.15 }
+  const halo = { stroke: '#fff', fillAfterStrokeEnabled: true, fontFamily: FONT_UI, lineHeight: 1.15 }
   return (
     <>
       {!sheet && (

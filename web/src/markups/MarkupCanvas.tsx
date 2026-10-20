@@ -21,6 +21,7 @@ import type { Catalog } from '../catalog/catalog'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 import type { Peer } from '../realtime/presence'
+import { REDLINE } from './canvasFonts'
 
 // Only the left button drags markups: middle pans the plan and right box-selects.
 Konva.dragButtons = [0]
@@ -112,6 +113,17 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean } } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
+  // Plex arrives from Google Fonts after the first draw: re-measure canvas text once it has loaded.
+  useEffect(() => {
+    let live = true
+    document.fonts?.ready.then(() => {
+      const stage = stageRef.current
+      if (!live || !stage) return
+      stage.find('Text').forEach(t => (t as unknown as { _setTextData(): void })._setTextData())
+      stage.batchDraw()
+    })
+    return () => { live = false }
+  }, [])
   /** Ctrl+drag copy in progress: the originals stay drawn in place while the dragged node is the copy. */
   const [copyGhosts, setCopyGhosts] = useState<Markup[] | null>(null)
   const copyDrag = useRef(false)
@@ -573,7 +585,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         ))}
         <Transformer ref={trRef} rotateEnabled keepRatio={selected.length > 0 && selected.every(m => m.type === 'device')} ignoreStroke flipEnabled={false}
           rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={4}
-          anchorSize={11} anchorCornerRadius={2} borderStroke="#1971c2" anchorStroke="#1971c2"
+          anchorSize={11} anchorCornerRadius={2} borderStroke={REDLINE} anchorStroke={REDLINE}
           boundBoxFunc={(oldBox, newBox) => (Math.abs(newBox.width) < 4 || Math.abs(newBox.height) < 4 ? oldBox : newBox)}
           onTransformEnd={onTransformEnd} />
       </Layer>
