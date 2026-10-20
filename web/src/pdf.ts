@@ -1,7 +1,6 @@
 import * as pdfjs from 'pdfjs-dist'
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
+// Wrapper worker loads our polyfills before pdf.js (older iPadOS)
+pdfjs.GlobalWorkerOptions.workerPort = new Worker(new URL('./pdfWorker.ts', import.meta.url), { type: 'module' })
 
 export type PDFDocumentProxy = pdfjs.PDFDocumentProxy
 export type PDFPageProxy = pdfjs.PDFPageProxy

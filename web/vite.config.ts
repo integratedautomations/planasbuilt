@@ -36,6 +36,9 @@ export default defineConfig({
       },
     }),
   ],
+  // Transpile syntax for older Safari / iPadOS; missing APIs are covered by src/polyfills.ts
+  build: { target: ['es2020', 'safari15'] },
+  worker: { format: 'es' },
   server: {
     host: true, // reachable from phones/tablets on the LAN
     proxy: { '/api': { target: 'http://localhost:3001', ws: true } },
