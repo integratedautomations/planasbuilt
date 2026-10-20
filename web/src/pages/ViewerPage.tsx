@@ -1178,7 +1178,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       </div>
       {pickingWindow && pageSize && <WindowPicker page={pageNum} pageSize={pageSize} view={view} onDone={finishWindowPick} />}
       {!isPhone && (
-        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
+        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} tool={activeTool} onTool={chooseTool} hotkeys={hotkeys} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
           scaleLabel={pageScale?.label ?? null}
           scalePanel={<ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
             onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}

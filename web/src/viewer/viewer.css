@@ -150,3 +150,4 @@
 .markup-stage, .markup-stage canvas, .viewport {
   touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
 }
+.viewer .nav-bar .icon-btn.active { background: var(--accent, #3b82f6); color: #fff; }

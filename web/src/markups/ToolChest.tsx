@@ -62,7 +62,7 @@ export function ToolChest(p: Props) {
   const favs = p.favorites.map(id => byId.get(id)).filter((e): e is ToolEntry => !!e && allowed(e))
   const recent = p.recent.map(id => byId.get(id)).filter((e): e is ToolEntry => !!e && allowed(e))
   const searching = q.trim() !== ''
-  const all = orderBy(groupEntries(p.entries.filter(allowed)), g => g.name, p.chest.groupOrder)
+  const all = orderBy(groupEntries(p.entries.filter(e => allowed(e) && e.group !== 'Select / Navigate')), g => g.name, p.chest.groupOrder)
     .map(g => ({ ...g, entries: orderBy(g.entries, e => e.id, p.chest.itemOrder[g.name]) }))
   const shownNames = all.map(g => g.name)
   const groups = all.filter(g => !groupPrefs(p.chest, g.name).hidden)

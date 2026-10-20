@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Icon } from '../ui/Icon'
+import { TOOLS } from '../markups/ToolRail'
+import type { Tool } from '../markups/types'
 
 interface Props {
   pageNum: number
@@ -16,12 +18,16 @@ interface Props {
   scaleLabel: string | null
   /** Content of the scale popover (the scale control). */
   scalePanel: ReactNode
+  /** Active navigation tool and its setter; hotkeys for tooltips. */
+  tool?: Tool
+  onTool?: (t: Tool) => void
+  hotkeys?: Record<string, string>
 }
 
 export const ZOOM_PRESETS = [0.25, 0.5, 1, 2, 4]
 
 /** Floating bar at the bottom centre of the plan: page arrows and number, zoom controls and the sheet scale. */
-export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel }: Props) {
+export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel, tool, onTool, hotkeys }: Props) {
   const [text, setText] = useState(String(pageNum))
   const [menu, setMenu] = useState<'zoom' | 'scale' | null>(null)
   useEffect(() => setText(String(pageNum)), [pageNum])
@@ -29,6 +35,14 @@ export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHin
   const toggle = (m: 'zoom' | 'scale') => setMenu(cur => (cur === m ? null : m))
   return (
     <div className="nav-bar" data-no-pan onPointerDown={e => e.stopPropagation()} role="toolbar" aria-label="Plan navigation">
+      {onTool && (['select', 'pan'] as Tool[]).map(t => {
+        const def = TOOLS.find(x => x.tool === t)!
+        const key = hotkeys?.[`tool.${t}`]
+        return <button key={t} className={'icon-btn' + (tool === t ? ' active' : '')} aria-pressed={tool === t} onClick={() => onTool(t)}
+          title={key ? `${def.label} (${key})` : def.label} aria-label={def.label}>{def.icon}</button>
+      })}
+      <button className="icon-btn" onClick={onFit} title={`Fit page${fitHint ? ` (${fitHint})` : ''}`} aria-label="Fit page"><Icon name="maximize" size={18} /></button>
+      <span className="divider" />
       <button className="icon-btn" onClick={() => onGo(pageNum - 1)} disabled={pageNum <= 1} title={`Previous page (${prevHint ?? 'PageUp'})`} aria-label="Previous page"><Icon name="chevron-left" size={18} /></button>
       <span className="page-indicator">
         <input className="page-input" inputMode="numeric" value={text} aria-label="Page number"
