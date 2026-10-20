@@ -507,3 +507,17 @@ input.invalid { border-color: var(--danger); }
 
 .name-modal form.report-dialog { width: min(560px, 100%); max-height: 92vh; overflow-y: auto; }
 .report-doc { display: flex; flex-direction: column; gap: 2px; }
+
+/* Tool chest grid: device-type initials under the icon */
+.chest-cell { grid-auto-flow: row; gap: 1px; align-content: center; }
+.chest-initials { font-size: 9px; line-height: 1; letter-spacing: 0.02em; color: var(--muted, inherit); opacity: 0.8; max-width: 44px; overflow: hidden; text-overflow: clip; white-space: nowrap; text-align: center; }
+.hotkey-recorder { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; width: min(360px, 100%); box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); }
+.hotkey-prompt { margin: 0; font-weight: 600; }
+
+/* Floating plan navigation bar (bottom centre of the canvas, above any bottom dock) */
+.nav-bar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 2px; padding: 4px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); max-width: calc(100% - 20px); }
+.nav-pop-wrap { position: relative; display: inline-flex; }
+.nav-pop { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); z-index: 5; }
+.nav-menu { display: flex; flex-direction: column; padding: 4px; min-width: 120px; }
+.nav-menu button { text-align: left; border-color: transparent; background: transparent; }
+.nav-scale { padding: 8px 12px; width: 260px; }

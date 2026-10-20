@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assignCombo, comboFromEvent, commandForEvent, COMMANDS, DEFAULT_HOTKEYS, findConflicts, matchCombo, resetCombo, resolveHotkeys } from './hotkeys'
+import { entryIdOfCommand, isDynamicCommand, recordCombo, assignCombo, comboFromEvent, commandForEvent, COMMANDS, DEFAULT_HOTKEYS, findConflicts, matchCombo, resetCombo, resolveHotkeys } from './hotkeys'
 
 const ev = (key: string, mods: Partial<{ ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean }> = {}) =>
   ({ key, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...mods })
@@ -78,5 +78,29 @@ describe('conflicts', () => {
   })
   it('ignores unknown ids in stored overrides', () => {
     expect(resolveHotkeys({ 'bogus.cmd': 'Z' })['bogus.cmd']).toBeUndefined()
+  })
+})
+
+describe('dynamic tool hotkeys', () => {
+  const ev = (key: string) => ({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false })
+  it('keeps and dispatches tool:<entryId> commands', () => {
+    const map = resolveHotkeys({ 'tool:type:ipc': 'F2', bogus: 'F3' })
+    expect(map['tool:type:ipc']).toBe('F2')
+    expect('bogus' in map).toBe(false)
+    expect(commandForEvent(ev('F2'), map)).toBe('tool:type:ipc')
+  })
+  it('detects conflicts with built-ins and reassigns', () => {
+    const r = recordCombo({}, 'tool:type:ipc', 'R')
+    expect(r.conflicts).toEqual(['tool.rect'])
+    expect(r.overrides).toEqual({ 'tool:type:ipc': 'R', 'tool.rect': '' })
+    expect(isDynamicCommand('tool:type:ipc')).toBe(true)
+    expect(isDynamicCommand('tool.rect')).toBe(false)
+    expect(entryIdOfCommand('tool:type:ipc')).toBe('type:ipc')
+  })
+  it('removing a dynamic hotkey drops it from the stored overrides', () => {
+    expect(assignCombo({ 'tool:type:ipc': 'F2' }, 'tool:type:ipc', '')).toEqual({})
+  })
+  it('a dynamic hotkey can take over from another dynamic one', () => {
+    expect(assignCombo({ 'tool:type:a': 'F2' }, 'tool:type:b', 'F2')).toEqual({ 'tool:type:b': 'F2' })
   })
 })

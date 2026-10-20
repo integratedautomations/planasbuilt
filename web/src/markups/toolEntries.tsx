@@ -20,7 +20,21 @@ export interface ToolEntry {
   /** Symbol-set entries: colour and icon image of the set. */
   color?: string
   image?: string
+  /** Device-type entries: 1-4 character abbreviation shown under the icon in grid view. */
+  initials?: string
 }
+
+/** Short label for a device type: its tag prefix (letters/digits, max 4), else the first letters of its words (max 3), else the first 3 letters. */
+export function entryInitials(name: string, tagPrefix?: string | null): string {
+  const prefix = (tagPrefix ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 4)
+  if (prefix) return prefix
+  const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean)
+  if (words.length > 1) return words.slice(0, 3).map(w => w[0]).join('').toUpperCase()
+  return (words[0] ?? '').slice(0, 3).toUpperCase()
+}
+
+/** Hotkey command for an entry: its built-in one, else a dynamic `tool:<entryId>` command. */
+export const entryCommand = (e: { id: string; command?: string }) => e.command ?? `tool:${e.id}`
 
 const GROUPS: Record<string, string> = {
   select: 'Select / Navigate', pan: 'Select / Navigate',
@@ -48,7 +62,7 @@ export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = []): T
   // Set > device types: one tool per device type (the set itself is not a placeable entry)
   const devices: ToolEntry[] = [...sets].sort((a, b) => a.sort - b.sort).flatMap(s => [
     ...types.filter(t => t.symbol_set_id === s.id).sort((a, b) => a.sort - b.sort).map(t => ({
-      id: `type:${t.id}`, label: t.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, typeId: t.id, color: s.color, image: t.icon || s.icon,
+      id: `type:${t.id}`, label: t.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, typeId: t.id, color: s.color, image: t.icon || s.icon, initials: entryInitials(t.name, t.tag_prefix || s.tag_prefix),
     })),
   ])
   return [...GROUP_ORDER.flatMap(g => base.filter(e => e.group === g)), ...devices]

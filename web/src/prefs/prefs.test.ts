@@ -91,3 +91,10 @@ describe('layout', () => {
     expect(normalizeLayout({ sizes: { left: 5000, bottom: 1 } }).sizes).toMatchObject({ left: 600, bottom: 120 })
   })
 })
+
+describe('replaceOnOverlap pref', () => {
+  it('keeps valid values and drops junk', () => {
+    expect(sanitizeStored({ data: { replaceOnOverlap: 'both' } }).data.replaceOnOverlap).toBe('both')
+    expect(sanitizeStored({ data: { replaceOnOverlap: 'sure' } }).data.replaceOnOverlap).toBeUndefined()
+  })
+})

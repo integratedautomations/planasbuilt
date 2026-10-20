@@ -108,9 +108,9 @@ export function SidePanel(p: Props) {
         <button className={tab === 'props' ? 'active' : ''} onClick={() => setTab('props')}>Properties</button>
         <button className={tab === 'measure' ? 'active' : ''} onClick={() => setTab('measure')}>Measure</button>
         <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>Layers</button>
-        <button className={tab === 'areas' ? 'active' : ''} onClick={() => setTab('areas')}>Areas</button>
+        {p.sheet && <button className={tab === 'areas' ? 'active' : ''} onClick={() => setTab('areas')}>Areas</button>}
       </div>
-      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : tab === 'areas' ? <Areas {...p} /> : <Layers {...p} />}
+      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : tab === 'areas' && p.sheet ? <Areas {...p} /> : <Layers {...p} />}
     </aside>
   )
 }
@@ -315,7 +315,8 @@ function AreaProperties(p: Props) {
   )
 }
 
-function Areas({ areas, readOnly, selected }: Props) {
+/** Areas of the current sheet as a tree (its own dock panel on desktop; a Properties tab on phones). */
+export function Areas({ areas, readOnly, selected }: Pick<Props, 'areas' | 'readOnly' | 'selected'>) {
   const kids = new Map<string | null, Markup[]>()
   const ids = new Set(areas.pageAreas.map(a => a.id))
   for (const a of areas.pageAreas) {

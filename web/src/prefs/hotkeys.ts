@@ -56,15 +56,21 @@ export const COMMANDS: Command[] = [
   { id: 'panel.props', label: 'Toggle Properties', group: 'Panels', combo: 'Shift+I' },
   { id: 'panel.pages', label: 'Toggle Pages', group: 'Panels', combo: 'Shift+G' },
   { id: 'panel.compare', label: 'Toggle Compare revisions', group: 'Panels', combo: 'Shift+C' },
+  { id: 'panel.areas', label: 'Toggle Areas', group: 'Panels', combo: 'Shift+A' },
   { id: 'file.print', label: 'Print', group: 'File', combo: 'Ctrl+P' },
 ]
 
 export const DEFAULT_HOTKEYS: Record<string, string> = Object.fromEntries(COMMANDS.map(c => [c.id, c.combo]))
 
-/** Effective map: defaults overlaid with the user's overrides ('' = unassigned). Unknown command ids are dropped. */
+/** Dynamic "activate this Tool chest entry" commands (device types, products...) look like `tool:<entryId>`; they have no default. */
+export const isDynamicCommand = (id: string) => id.startsWith('tool:') && id.length > 5
+export const dynamicCommand = (entryId: string) => `tool:${entryId}`
+export const entryIdOfCommand = (cmd: string) => (isDynamicCommand(cmd) ? cmd.slice(5) : null)
+
+/** Effective map: defaults overlaid with the user's overrides ('' = unassigned). Unknown static command ids are dropped; dynamic tool commands are kept. */
 export function resolveHotkeys(overrides: Record<string, string> | undefined): Record<string, string> {
   const out = { ...DEFAULT_HOTKEYS }
-  for (const [id, combo] of Object.entries(overrides ?? {})) if (id in out && typeof combo === 'string') out[id] = combo
+  for (const [id, combo] of Object.entries(overrides ?? {})) if ((id in out || isDynamicCommand(id)) && typeof combo === 'string') out[id] = combo
   return out
 }
 
@@ -104,6 +110,7 @@ export function matchCombo(e: KeyEventLike, combo: string): boolean {
 /** The command a key event triggers under the given map, or null. First match in registry order wins. */
 export function commandForEvent(e: KeyEventLike, map: Record<string, string>): string | null {
   for (const c of COMMANDS) if (map[c.id] && matchCombo(e, map[c.id])) return c.id
+  for (const [id, combo] of Object.entries(map)) if (isDynamicCommand(id) && combo && matchCombo(e, combo)) return id
   return null
 }
 
@@ -122,12 +129,12 @@ export function comboFromEvent(e: KeyEventLike): string | null {
 /** Other commands already using this combo. */
 export function findConflicts(map: Record<string, string>, id: string, combo: string): string[] {
   if (!combo) return []
-  return COMMANDS.filter(c => c.id !== id && map[c.id] === combo).map(c => c.id)
+  return Object.keys(map).filter(k => k !== id && map[k] === combo)
 }
 
 /** Drops overrides equal to the default so the stored object stays small. */
 export function tidyOverrides(o: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(o).filter(([id, c]) => id in DEFAULT_HOTKEYS && DEFAULT_HOTKEYS[id] !== c))
+  return Object.fromEntries(Object.entries(o).filter(([id, c]) => (id in DEFAULT_HOTKEYS ? DEFAULT_HOTKEYS[id] !== c : isDynamicCommand(id) && !!c)))
 }
 
 /** Assigns a combo to a command, unassigning (reassigning away from) any conflicting command. Returns overrides. */
@@ -148,6 +155,11 @@ export function resetCombo(overrides: Record<string, string>, id: string): Recor
 
 export function formatCombo(combo: string): string {
   return combo ? combo.split('+').join(' + ') : 'Unassigned'
+}
+
+/** What recording a combo for a command leads to: an assignment, or a clash to confirm first. */
+export function recordCombo(overrides: Record<string, string>, id: string, combo: string): { conflicts: string[]; overrides: Record<string, string> } {
+  return { conflicts: findConflicts(resolveHotkeys(overrides), id, combo), overrides: assignCombo(overrides, id, combo) }
 }
 
 export const commandLabel = (id: string) => COMMANDS.find(c => c.id === id)?.label ?? id

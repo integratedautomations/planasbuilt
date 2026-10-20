@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { groupEntries, matchesSearch } from './toolEntries'
+import { entryCommand, groupEntries, matchesSearch } from './toolEntries'
 import type { ToolEntry } from './toolEntries'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
@@ -19,6 +19,9 @@ interface Props {
   onPick: (e: ToolEntry) => void
   onFavorites: (ids: string[]) => void
   onToggleFavorite: (id: string) => void
+  /** Opens the hotkey recorder for an entry. */
+  onAssignHotkey: (e: ToolEntry) => void
+  onRemoveHotkey: (e: ToolEntry) => void
 }
 
 function EntryIcon({ e, px }: { e: ToolEntry; px?: number }) {
@@ -36,6 +39,7 @@ export function ToolChest(p: Props) {
   const [openNow, setOpenNow] = useState<Record<string, boolean>>({})
   const [drag, setDrag] = useState<Drag | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; group: string } | null>(null)
+  const [itemMenu, setItemMenu] = useState<{ x: number; y: number; entry: ToolEntry } | null>(null)
   const byId = new Map(p.entries.map(e => [e.id, e]))
   const allowed = (e: ToolEntry) => !p.readOnly || e.tool === 'select' || e.tool === 'pan'
   const favs = p.favorites.map(id => byId.get(id)).filter((e): e is ToolEntry => !!e && allowed(e))
@@ -46,7 +50,7 @@ export function ToolChest(p: Props) {
   const shownNames = all.map(g => g.name)
   const groups = all.filter(g => !groupPrefs(p.chest, g.name).hidden)
     .map(g => ({ ...g, entries: g.entries.filter(e => matchesSearch(e, q)) })).filter(g => g.entries.length)
-  const keyOf = (e: ToolEntry) => (e.command && p.hotkeys[e.command]) || ''
+  const keyOf = (e: ToolEntry) => p.hotkeys[entryCommand(e)] || ''
 
   const startDrag = (d: Drag) => (ev: React.DragEvent) => { setDrag(d); ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', d.id) }
   const dropOnItem = (g: { name: string; entries: ToolEntry[] }, target: string | null) => (ev: React.DragEvent) => {
@@ -55,20 +59,28 @@ export function ToolChest(p: Props) {
     setDrag(null)
   }
 
+  const openItemMenu = (e: ToolEntry) => (ev: React.MouseEvent) => { ev.preventDefault(); setItemMenu({ x: ev.clientX, y: ev.clientY, entry: e }) }
+  const itemMenuItems = (e: ToolEntry): MenuItem[] => [
+    { label: p.favorites.includes(e.id) ? 'Unpin from favorites' : 'Pin to favorites', onClick: () => p.onToggleFavorite(e.id) },
+    { label: '', separator: true },
+    { label: 'Assign hotkey…', hint: keyOf(e) || undefined, disabled: p.readOnly && e.tool !== 'select' && e.tool !== 'pan', onClick: () => p.onAssignHotkey(e) },
+    { label: 'Remove hotkey', disabled: !keyOf(e), onClick: () => p.onRemoveHotkey(e) },
+  ]
+
   const row = (e: ToolEntry, opts: { favDrag?: boolean; group?: { name: string; entries: ToolEntry[] } } = {}) => {
     const isFav = p.favorites.includes(e.id)
     const g = opts.group
     const canDrag = opts.favDrag || (!!g && !searching)
     return (
       <div key={e.id} className={`chest-row${p.activeId === e.id ? ' active' : ''}${drag?.id === e.id ? ' dragging' : ''}`}
-        draggable={canDrag} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click to ${isFav ? 'unpin' : 'pin'}`}
+        draggable={canDrag} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click for options`}
         onDragStart={canDrag ? startDrag(opts.favDrag ? { kind: 'fav', id: e.id } : { kind: 'item', id: e.id, group: g!.name }) : undefined}
         onDragOver={canDrag ? ev => { if (drag && (opts.favDrag ? drag.kind === 'fav' : drag.kind === 'item' && drag.group === g!.name)) ev.preventDefault() } : undefined}
         onDrop={opts.favDrag
           ? ev => { ev.preventDefault(); if (drag?.kind === 'fav') p.onFavorites(reorderFavorites(p.favorites, drag.id, e.id)); setDrag(null) }
           : g ? dropOnItem(g, e.id) : undefined}
         onDragEnd={() => setDrag(null)}
-        onContextMenu={ev => { ev.preventDefault(); p.onToggleFavorite(e.id) }}>
+        onContextMenu={openItemMenu(e)}>
         <button className="chest-pick" aria-pressed={p.activeId === e.id} onClick={() => p.onPick(e)}>
           <EntryIcon e={e} />
           <span className="chest-label">{e.label}</span>
@@ -82,14 +94,15 @@ export function ToolChest(p: Props) {
 
   const cell = (e: ToolEntry, g: { name: string; entries: ToolEntry[] }, px: number) => (
     <button key={e.id} className={`chest-cell${p.activeId === e.id ? ' active' : ''}${drag?.id === e.id ? ' dragging' : ''}`}
-      draggable={!searching} aria-pressed={p.activeId === e.id} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click to ${p.favorites.includes(e.id) ? 'unpin' : 'pin'}`}
+      draggable={!searching} aria-pressed={p.activeId === e.id} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click for options`}
       aria-label={e.label} style={{ ['--chest-icon' as string]: `${px}px` }}
       onClick={() => p.onPick(e)}
       onDragStart={startDrag({ kind: 'item', id: e.id, group: g.name })}
       onDragOver={ev => { if (drag?.kind === 'item' && drag.group === g.name) ev.preventDefault() }}
       onDrop={dropOnItem(g, e.id)} onDragEnd={() => setDrag(null)}
-      onContextMenu={ev => { ev.preventDefault(); p.onToggleFavorite(e.id) }}>
+      onContextMenu={openItemMenu(e)}>
       <EntryIcon e={e} px={px} />
+      {e.initials && <span className="chest-initials">{e.initials}</span>}
     </button>
   )
 
@@ -162,6 +175,7 @@ export function ToolChest(p: Props) {
           </button>
         )}
       </div>
+      {itemMenu && <ContextMenu x={itemMenu.x} y={itemMenu.y} items={itemMenuItems(itemMenu.entry)} onClose={() => setItemMenu(null)} />}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.group)} onClose={() => setMenu(null)} />}
     </div>
   )

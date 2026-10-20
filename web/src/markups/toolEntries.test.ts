@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { data, sets } from '../catalog/fixtures'
-import { activeEntryId, buildToolEntries, groupEntries } from './toolEntries'
+import { activeEntryId, buildToolEntries, entryCommand, entryInitials, groupEntries } from './toolEntries'
 
 describe('tool entries', () => {
   const entries = buildToolEntries(sets, data.device_types)
@@ -19,5 +19,17 @@ describe('tool entries', () => {
     expect(activeEntryId('device', null, 'sd')).toBe('type:sd')
     expect(activeEntryId('device', null, null)).toBe('tool:device')
     expect(activeEntryId('rect', 'square')).toBe('tool:square')
+  })
+  it('derives initials for device types', () => {
+    expect(entryInitials('Smoke Detector', 'sd')).toBe('SD')
+    expect(entryInitials('Smoke Detector', null)).toBe('SD')
+    expect(entryInitials('Pull Station Wall Mount')).toBe('PSW')
+    expect(entryInitials('Camera')).toBe('CAM')
+    expect(entryInitials('X', 'toolong-1')).toBe('TOOL')
+    expect(entries.filter(e => e.typeId).every(e => !!e.initials)).toBe(true)
+  })
+  it('gives device types a dynamic hotkey command, built-ins their own', () => {
+    expect(entryCommand({ id: 'type:ipc' })).toBe('tool:type:ipc')
+    expect(entryCommand(entries.find(e => e.id === 'tool:rect')!)).toBe('tool.rect')
   })
 })

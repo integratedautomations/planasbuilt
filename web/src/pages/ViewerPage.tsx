@@ -16,7 +16,7 @@ import { detectStacks } from '../markups/stacks'
 import type { Stack } from '../markups/stacks'
 import { ToolRail } from '../markups/ToolRail'
 import { ToolChest } from '../markups/ToolChest'
-import { buildToolEntries, activeEntryId } from '../markups/toolEntries'
+import { buildToolEntries, activeEntryId, entryCommand } from '../markups/toolEntries'
 import type { ToolEntry } from '../markups/toolEntries'
 import { ContextMenu } from '../markups/ContextMenu'
 import type { MenuItem } from '../markups/ContextMenu'
@@ -30,13 +30,18 @@ import { markupBounds } from '../markups/selection'
 import { DockZone } from '../viewer/DockZone'
 import { usePrefs, setPref, getPrefs } from '../prefs/store'
 import { pushRecent, toggleFavorite } from '../prefs/prefs'
-import { commandForEvent, isTypingTarget, keyName, parseCombo, resolveHotkeys } from '../prefs/hotkeys'
+import { assignCombo, commandForEvent, commandLabel as commandLabelOf, entryIdOfCommand, isDynamicCommand, isTypingTarget, keyName, parseCombo, resolveHotkeys } from '../prefs/hotkeys'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
+import { HotkeyRecorder } from '../prefs/HotkeyRecorder'
+import { NavBar } from '../viewer/NavBar'
+import { centerIfOffscreen, unionBox } from '../viewer/visibility'
+import { OverlapPrompt } from '../markups/OverlapPrompt'
+import { decideOverlap, replacePrompt, replaceTargets } from '../markups/placeReplace'
 import { movePanel, panelsIn, PANEL_TITLES, setPanelOpen, setZoneSize } from '../prefs/layout'
 import type { Dock, PanelId } from '../prefs/layout'
-import { SidePanel, sheetHeight } from '../markups/SidePanel'
+import { Areas, SidePanel, sheetHeight } from '../markups/SidePanel'
 import type { PanelTab, SheetSnap } from '../markups/SidePanel'
-import { CalibrateDialog } from '../markups/ScaleControl'
+import { CalibrateDialog, ScaleControl } from '../markups/ScaleControl'
 import type { PageScale } from '../markups/ScaleControl'
 import { pathFromPoints } from '../markups/geometry'
 import type { Pt } from '../markups/geometry'
@@ -586,7 +591,6 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       setScales(prev => { const next = new Map(prev); next.delete(pageNum); return next })
     } catch (e) { setScaleError((e as Error).message) } finally { setScaleBusy(false) }
   }
-  const openMeasure = () => { setPanelTab('measure'); openPanel('props'); setSnap(s => (s === 'peek' ? 'half' : s)) }
   /** Select an area and zoom the plan to fit it (above the phone sheet, if open). */
   const selectArea = (id: string) => {
     const a = areaIndex.byId.get(id)
@@ -627,13 +631,24 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   const goTo = useCallback((n: number) => setPageNum(p => Math.min(Math.max(1, n), pageCount || p)), [pageCount])
 
+  /** Pans (keeping the zoom) so the given markups are in view; does nothing when they already are. */
+  const revealMarkups = useCallback((ids: string[]) => {
+    const vp = viewportRef.current
+    if (!vp || !ids.length) return
+    const box = unionBox(ids.map(id => store.markups.get(id)).filter((m): m is Markup => !!m).map(markupBounds))
+    if (!box) return
+    const at = centerIfOffscreen(view.current, { width: vp.clientWidth, height: vp.clientHeight }, box)
+    if (at) centerOn(at.x, at.y)
+  }, [store, centerOn, view])
+
   const deleteSelected = useCallback(() => {
     if (readOnly) return
     if (!selected.length) return
     const next = selectAfterDelete({ history: selHistory.current, deleted: selected, remaining: store.markups.values() })
     store.commit(selected.map(m => ({ before: m, after: null })))
     setSelectedIds(next)
-  }, [readOnly, selected, store])
+    revealMarkups(next)
+  }, [readOnly, selected, store, revealMarkups])
 
   /** Adds one more device of the stack's set at the same spot; the server numbers it. One undo step. */
   const addToStack = useCallback((stack: Stack) => {
@@ -661,7 +676,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     const next = selectAfterDelete({ history: selHistory.current, deleted: stack.members, remaining: store.markups.values() })
     store.commit(stack.members.map(m => ({ before: m, after: null })))
     setSelectedIds(next)
-  }, [readOnly, store])
+    revealMarkups(next)
+  }, [readOnly, store, revealMarkups])
 
   const updateSelected = useCallback((patch: (m: Markup) => Markup, mergeKey: string) => {
     if (readOnly) return
@@ -669,6 +685,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }, [readOnly, selected, selectedIds, store])
 
   const [replacing, setReplacing] = useState(false)
+  /** Tool chest entry whose hotkey is being recorded. */
+  const [hkEntry, setHkEntry] = useState<ToolEntry | null>(null)
   const selectedDevices = useMemo(() => selected.filter(m => m.type === 'device'), [selected])
   /** Swaps the selected devices for another set / type / product as one undo step. */
   const replaceSelected = useCallback((t: ReplaceTarget) => {
@@ -678,6 +696,34 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       .filter(c => JSON.stringify(c.before) !== JSON.stringify(c.after))
     store.commit(change)
   }, [readOnly, selectedDevices, symbolSets, catalog, store])
+
+  /** A device of another type was placed on an existing one: replace per the saved choice, ask, or place both. */
+  const [overlap, setOverlap] = useState<{ targets: Markup[]; placed: Markup; message: string } | null>(null)
+  const replaceUnder = useCallback((targets: Markup[], placed: Markup) => {
+    const t: ReplaceTarget = { setId: placed.symbol_set_id ?? '', typeId: placed.device_type_id ?? null, productId: placed.product_id ?? undefined }
+    const change = targets.map(m => ({ before: m, after: replaceDevice(m, t, symbolSets, catalog) })).filter(c => JSON.stringify(c.before) !== JSON.stringify(c.after))
+    store.commit(change)
+    setSelectedIds(targets.map(m => m.id))
+  }, [symbolSets, catalog, store])
+  const placeBoth = useCallback((placed: Markup) => { store.commit([{ before: null, after: placed }]); setSelectedIds([placed.id]) }, [store])
+  const onDeviceOverlap = useCallback((target: Markup, placed: Markup) => {
+    const targets = replaceTargets(target, stackIndex)
+    const decision = decideOverlap(getPrefs().replaceOnOverlap, true)
+    if (decision === 'both') return false
+    if (decision === 'replace') { replaceUnder(targets, placed); return true }
+    const oldType = target.device_type_id ? catalog.types.get(target.device_type_id)?.name : undefined
+    const newType = placed.device_type_id ? catalog.types.get(placed.device_type_id)?.name : symbolSets.get(placed.symbol_set_id ?? '')?.name
+    setOverlap({ targets, placed, message: replacePrompt(targets, oldType ?? symbolSets.get(target.symbol_set_id ?? '')?.name ?? '', newType ?? '') })
+    return true
+  }, [stackIndex, catalog, symbolSets, replaceUnder])
+  const answerOverlap = (choice: 'replace' | 'both' | 'cancel', remember: boolean) => {
+    const o = overlap
+    setOverlap(null)
+    if (!o) return
+    if (remember && choice !== 'cancel') setPref('replaceOnOverlap', choice)
+    if (choice === 'replace') replaceUnder(o.targets, o.placed)
+    else if (choice === 'both') placeBoth(o.placed)
+  }
 
   const setClip = useCallback((items: Markup[]) => { clipboard.current = items; setClipCount(items.length) }, [])
 
@@ -848,13 +894,18 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     if (open) setZoneTab(z => ({ ...z, [l.panels[id].dock]: id }))
   }, [isPhone])
   const panelOpen = (id: PanelId) =>
-    isPhone ? (id === 'pages' ? showThumbs : id === 'props' ? showPanel : id === 'markups' ? showList : id === 'compare' ? showCompare : false) : layout.panels[id].open
+    isPhone ? (id === 'pages' ? showThumbs : id === 'props' ? showPanel : id === 'markups' ? showList : id === 'compare' ? showCompare : false) : (layout.panels[id]?.open ?? false)
   const openPanel = (id: PanelId) => setPanel(id, true)
   const togglePanel = (id: PanelId) => setPanel(id, !panelOpen(id))
   const closeCtx = useCallback(() => setCtx(null), [])
 
   /** Runs a hotkey command. Returns false when the id is not handled. */
   const runCommand = (cmd: string): boolean => {
+    if (isDynamicCommand(cmd)) {
+      const entry = entryMap.get(entryIdOfCommand(cmd) ?? '')
+      if (entry && (!readOnly || entry.tool === 'select' || entry.tool === 'pan')) pickEntry(entry)
+      return true
+    }
     if (cmd.startsWith('tool.')) {
       const entry = toolEntries.find(e => e.command === cmd)
       const allowed = (t: Tool) => !readOnly || t === 'select' || t === 'pan'
@@ -885,6 +936,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       case 'panel.props': togglePanel('props'); return true
       case 'panel.pages': togglePanel('pages'); return true
       case 'panel.compare': togglePanel('compare'); return true
+      case 'panel.areas': togglePanel('areas'); return true
       case 'file.print': setPrintSelected([]); setPrintError(''); setPrintOpen(true); return true
       default: return false
     }
@@ -893,7 +945,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   // One key listener for every command in the hotkey registry; ignored while typing or while a menu/dialog is open
   const runRef = useRef(runCommand)
   runRef.current = runCommand
-  const modalOpen = showHotkeys || !!ctx || replacing || printOpen || issueOpen || !!compareReq
+  const modalOpen = showHotkeys || !!hkEntry || !!overlap || !!ctx || replacing || printOpen || issueOpen || !!compareReq
   useEffect(() => {
     if (modalOpen) return
     const panKey = parseCombo(hotkeys['view.panHold'])?.key
@@ -981,13 +1033,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         style={pageSize ? { width: pageSize.width, height: pageSize.height } : { display: 'none' }}>
         <canvas ref={canvasRef} className="page-canvas" />
       </div>
+      {!isPhone && (
+        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} fitHint={hotkeys['view.fit'] || undefined}
+          scaleLabel={pageScale?.label ?? null}
+          scalePanel={<ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
+            onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}
+            onClear={clearScale} onCalibrate={() => chooseTool('calibrate')} />} />
+      )}
       {page && viewportSize.width > 0 && (
         <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
           zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets} catalog={catalog}
           readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
           peers={peersHere} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
-          constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
+          onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
           newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
@@ -1017,6 +1076,13 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     </>
   )
 
+  const areasProps = {
+    pageAreas, parentOf: (id: string) => areaIndex.parents.get(id) ?? null,
+    pathOf: (m: Markup) => areaPathIn(areaIndex, m), deviceCount: (id: string) => counts.get(id) ?? 0,
+    parentChoices: (a: Markup) => parentChoices(areaIndex, a), show: showAreas, onShow: setShowAreas,
+    onSelectArea: selectArea, onDraw: drawArea, onNameSheet: nameSheet,
+  }
+
   const sidePanelEl = (
     <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
       stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
@@ -1026,12 +1092,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
       stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
-      areas={{
-        pageAreas, parentOf: id => areaIndex.parents.get(id) ?? null,
-        pathOf: m => areaPathIn(areaIndex, m), deviceCount: id => counts.get(id) ?? 0,
-        parentChoices: a => parentChoices(areaIndex, a), show: showAreas, onShow: setShowAreas,
-        onSelectArea: selectArea, onDraw: drawArea, onNameSheet: nameSheet,
-      }}
+      areas={areasProps}
       measure={{
         scale: pageScale, pageMarkups, scaleBusy, scaleError, onSelectIds: setSelectedIds,
         onPreset: s => { saveScale(s, false).catch(() => {}) },
@@ -1058,11 +1119,13 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const panelNodes: Record<PanelId, ReactNode> = {
     tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeTypeId)} favorites={prefs.favorites} recent={prefs.recent}
       hotkeys={hotkeys} readOnly={readOnly} chest={prefs.chest} onChest={c => setPref('chest', c)} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
-      onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))} />,
+      onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))}
+      onAssignHotkey={setHkEntry} onRemoveHotkey={e => setPref('hotkeys', assignCombo(getPrefs().hotkeys, entryCommand(e), ''))} />,
     pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} canEdit={pageToolsOn} onAction={onPageAction} /> : <div className="muted small dock-empty">Loading…</div>,
     props: sidePanelEl,
     markups: markupsListEl(true),
     compare: compareEl,
+    areas: <Areas areas={areasProps} readOnly={readOnly} selected={selected} />,
   }
 
   const zone = (d: Dock) => {
@@ -1124,20 +1187,13 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             <span className="divider hide-sm" />
           </>
         )}
-        <button className="icon-btn hide-sm" onClick={() => goTo(pageNum - 1)} disabled={pageNum <= 1} title="Previous page">‹</button>
-        <span className="page-indicator">
-          <input className="page-input" inputMode="numeric" value={pageNum}
-            onChange={e => { const n = parseInt(e.target.value, 10); if (n) goTo(n) }} aria-label="Page number" />
-          <span className="muted">/ {pageCount || '…'}</span>
-        </span>
-        <button className="icon-btn hide-sm" onClick={() => goTo(pageNum + 1)} disabled={pageNum >= pageCount} title="Next page">›</button>
-        <span className="divider hide-sm" />
-        <button className="icon-btn hide-sm" onClick={() => zoomBy(0.8)} title="Zoom out">−</button>
-        <button className="zoom-label hide-sm" onClick={fit} title={'Fit page (' + hotkeys['view.fit'] + ')'}>{Math.round(zoom * 100)}%</button>
-        <button className="icon-btn hide-sm" onClick={() => zoomBy(1.25)} title="Zoom in">+</button>
-        <button className={'scale-badge hide-sm' + (pageScale ? '' : ' warn')} title="Sheet scale (open Measure panel)" onClick={openMeasure}>
-          {pageScale ? pageScale.label : 'No scale'}
-        </button>
+        {isPhone && (
+          <span className="page-indicator">
+            <input className="page-input" inputMode="numeric" value={pageNum}
+              onChange={e => { const n = parseInt(e.target.value, 10); if (n) goTo(n) }} aria-label="Page number" />
+            <span className="muted">/ {pageCount || '…'}</span>
+          </span>
+        )}
         <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
           scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
           projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
@@ -1146,6 +1202,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <button className="icon-btn hide-sm" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShowHotkeys(true)}>⌨</button>
         <button className={'icon-btn' + (panelOpen('markups') ? ' active' : '')} title={'Markups list (' + (hotkeys['panel.markups'] || 'no key') + ')'} aria-label="List" aria-pressed={panelOpen('markups')}
           onClick={() => togglePanel('markups')}>☷<span className="hide-sm list-btn-label">List</span></button>
+        {!isPhone && <button className={'icon-btn' + (panelOpen('areas') ? ' active' : '')} title={'Areas (' + (hotkeys['panel.areas'] || 'no key') + ')'} aria-label="Areas" aria-pressed={panelOpen('areas')} onClick={() => togglePanel('areas')}>▦</button>}
         <button className={'icon-btn' + (panelOpen('props') ? ' active' : '')} title="Properties & layers" aria-pressed={panelOpen('props')} onClick={() => togglePanel('props')}>⚙</button>
       </header>
       <OfflineBanner always={notCached}>{notCached
@@ -1221,7 +1278,11 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <ReplaceDialog devices={selectedDevices} symbolSets={symbolSetList} onApply={replaceSelected} onClose={() => setReplacing(false)} />
       )}
       {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems(ctx)} onClose={closeCtx} />}
-      {showHotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setShowHotkeys(false)} />}
+      {showHotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setShowHotkeys(false)}
+        replaceChoice={prefs.replaceOnOverlap} onReplaceChoice={c => setPref('replaceOnOverlap', c)} />}
+      {hkEntry && <HotkeyRecorder commandId={entryCommand(hkEntry)} label={hkEntry.label} overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setHkEntry(null)}
+        nameOf={id => { const eid = entryIdOfCommand(id); return (eid && entryMap.get(eid)?.label) || commandLabelOf(id) }} />}
+      {overlap && <OverlapPrompt message={overlap.message} onChoose={answerOverlap} />}
     </div>
     </CatalogContext.Provider>
   )

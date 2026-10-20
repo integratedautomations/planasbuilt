@@ -8,6 +8,7 @@ import type { Change } from './useMarkups'
 import { isSheetArea } from './areas'
 import { deviceRadius, findSnapTarget, stackTop, tagRange } from './stacks'
 import type { StackIndex } from './stacks'
+import { findOverlapTarget } from './placeReplace'
 import { deviceCenter } from './geometry'
 import { markupBounds, markupsInBox, rectFromCorners, rectsIntersect } from './selection'
 import { copyMarkup } from './copy'
@@ -82,6 +83,11 @@ interface Props {
   constrain?: boolean
   /** A right-drag box picked markups while a drawing tool was active: the viewer switches to the Select tool so they show as selected. */
   onBoxSelected?: () => void
+  /**
+   * A new device is being placed on a device of another type. Return true when the viewer takes over (asks, or replaces);
+   * false to place the new device normally. Omit to always place.
+   */
+  onDeviceOverlap?: (target: Markup, placed: Markup) => boolean
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
@@ -93,7 +99,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onContextMenu, constrain, onBoxSelected } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onContextMenu, constrain, onBoxSelected, onDeviceOverlap } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -254,10 +260,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         }))
         return
       }
-      finish(newMarkup('device', {
+      const placed = newMarkup('device', {
         x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0,
         ...(set.has_fov ? { fov: { direction: -90, angle: 90, range: 150 } } : {}),
-      }))
+      })
+      // On top of a device of another type: the viewer may replace it or ask first
+      const over = onDeviceOverlap ? findOverlapTarget(markups, p, set.id, newBase.deviceTypeId ?? null) : null
+      if (over && onDeviceOverlap!(over, placed)) { finish(null); return }
+      finish(placed)
       return
     }
     if (t === 'count') {

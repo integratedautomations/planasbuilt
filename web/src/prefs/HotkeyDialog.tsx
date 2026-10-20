@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react'
 import { assignCombo, comboFromEvent, COMMANDS, commandLabel, findConflicts, formatCombo, DEFAULT_HOTKEYS, resetCombo, resolveHotkeys } from './hotkeys'
 
-interface Props { overrides: Record<string, string>; onChange: (o: Record<string, string>) => void; onClose: () => void }
+import type { ReplaceChoice } from '../markups/placeReplace'
+
+interface Props {
+  overrides: Record<string, string>; onChange: (o: Record<string, string>) => void; onClose: () => void
+  /** What happens when a device is placed on a device of another type. */
+  replaceChoice?: ReplaceChoice; onReplaceChoice?: (c: ReplaceChoice) => void
+}
 
 /** Lists every command with its hotkey. Click a combo, press the new keys; a clash asks before reassigning. */
-export function HotkeyDialog({ overrides, onChange, onClose }: Props) {
+export function HotkeyDialog({ overrides, onChange, onClose, replaceChoice, onReplaceChoice }: Props) {
   const [recording, setRecording] = useState<string | null>(null)
   const [pending, setPending] = useState<{ id: string; combo: string; conflicts: string[] } | null>(null)
   const [filter, setFilter] = useState('')
@@ -47,6 +53,15 @@ export function HotkeyDialog({ overrides, onChange, onClose }: Props) {
           <button onClick={() => { if (window.confirm('Restore every shortcut to its default?')) onChange({}) }} disabled={!dirty}>Restore Defaults</button>
           <button onClick={onClose}>Done</button>
         </div>
+        {replaceChoice && onReplaceChoice && (
+          <label className="field hotkey-pref">Placing a device on a different device type
+            <select value={replaceChoice} onChange={e => onReplaceChoice(e.target.value as ReplaceChoice)}>
+              <option value="ask">Ask me</option>
+              <option value="replace">Replace it</option>
+              <option value="both">Place both</option>
+            </select>
+          </label>
+        )}
         {pending && (
           <div className="hotkey-warn" role="alert">
             {formatCombo(pending.combo)} is already used by {pending.conflicts.map(commandLabel).join(', ')}.

@@ -3,6 +3,8 @@ import { DEFAULT_LAYOUT, normalizeLayout } from './layout'
 import type { LayoutPrefs } from './layout'
 import { DEFAULT_CHEST, normalizeChest } from './chest'
 import type { ChestPrefs } from './chest'
+import { isReplaceChoice } from '../markups/placeReplace'
+import type { ReplaceChoice } from '../markups/placeReplace'
 
 export interface Prefs {
   /** Only the combos the user changed ('' = unassigned); see hotkeys.resolveHotkeys. */
@@ -22,10 +24,12 @@ export interface Prefs {
   reportOptions: Record<string, unknown>
   /** Last choices in the print dialog (see pdfio/printPlan). */
   printOptions: Record<string, unknown>
+  /** Placing a device on a device of another type: ask, replace it, or place both. */
+  replaceOnOverlap: ReplaceChoice
 }
 
 export type PrefKey = keyof Prefs
-export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions']
+export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap']
 
 export const RECENT_MAX = 10
 export const DEFAULT_POPUP_FIELDS = ['tag', 'type', 'status', 'area']
@@ -40,6 +44,7 @@ export const DEFAULT_PREFS: Prefs = {
   chest: DEFAULT_CHEST,
   reportOptions: {},
   printOptions: {},
+  replaceOnOverlap: 'ask',
 }
 
 /** What is stored locally and on the server: the values the user set, each stamped with when (ms since epoch). */
@@ -73,6 +78,7 @@ export function sanitizeStored(raw: unknown): StoredPrefs {
   if (d.chest && typeof d.chest === 'object') keep('chest', normalizeChest(d.chest))
   for (const k of ['reportOptions', 'printOptions'] as const)
     if (d[k] && typeof d[k] === 'object' && !Array.isArray(d[k])) keep(k, d[k] as Record<string, unknown>)
+  if (isReplaceChoice(d.replaceOnOverlap)) keep('replaceOnOverlap', d.replaceOnOverlap)
   return { data, stamps }
 }
 
