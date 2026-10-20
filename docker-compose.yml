@@ -36,11 +36,12 @@ services:
 
   # Public HTTPS via Cloudflare Tunnel: public hostname -> http://app:3001 (WebSockets work by default)
   cloudflared:
+    profiles: ["tunnel"] # enabled by COMPOSE_PROFILES=tunnel in .env; left off for local testing
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN}
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     depends_on:
       app:
         condition: service_healthy

@@ -1,0 +1,8 @@
+# Local test on Docker Desktop (Windows/Mac), no Cloudflare Tunnel:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+# Open http://localhost:8080, or http://<this PC's LAN IP>:8080 from a phone on the same Wi-Fi.
+# Camera/barcode scanning and installing the app need HTTPS, so those only work through the tunnel.
+services:
+  app:
+    ports:
+      - "8080:3001"
