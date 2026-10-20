@@ -611,3 +611,8 @@ input.invalid { border-color: var(--danger); }
 .markup-stage.no-cursor, .markup-stage.no-cursor canvas { cursor: none !important; }
 /* Select and Pan live in the bottom bar on desktop; phones keep them in the rail */
 @media (min-width: 641px) { .tool-rail .rail-nav { display: none; } }
+
+.nav-devsize { padding: 8px 12px; width: 240px; }
+.device-size { display: flex; flex-direction: column; gap: 6px; }
+.device-size-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.device-size-row input[type=range] { flex: 1; min-width: 0; }

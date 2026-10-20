@@ -136,6 +136,10 @@ export class Realtime {
   scalesChanged(documentId: string, by: string, clientId?: string | null) {
     this.toRoom(documentId, { type: 'scales', by }, clientId)
   }
+  /** The plan's device size multiplier changed. */
+  deviceScaleChanged(documentId: string, deviceScale: number, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'device_scale', deviceScale, by }, clientId)
+  }
   revisionChanged(documentId: string, revisionId: string, revision: number, by: string, clientId?: string | null) {
     this.toRoom(documentId, { type: 'revision', revisionId, revision, by }, clientId)
   }

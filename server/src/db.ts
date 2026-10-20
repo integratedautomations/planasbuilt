@@ -218,6 +218,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_key text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_version int NOT NULL DEFAULT 0;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_at timestamptz;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS device_scale double precision NOT NULL DEFAULT 1;
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,
   value jsonb NOT NULL DEFAULT '{}'

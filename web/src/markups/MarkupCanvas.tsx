@@ -75,6 +75,8 @@ interface Props {
   multiSelect: boolean
   /** Global coverage cone switch. */
   showCones: boolean
+  /** Device size multiplier: new devices and the cursor ghost are drawn at 24 x this. */
+  deviceScale?: number
   /** Live rows of each legend on this page (by markup id). */
   legendRows?: Map<string, LegendRow[]>
   /** Device stacks on this page (same-set devices on one spot). */
@@ -277,7 +279,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (t === 'device') {
       const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
       if (!set) return
-      const size = 24
+      const size = 24 * (props.deviceScale ?? 1)
       const covFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
       // Close to a device of the same set: land exactly on it so it joins its stack
       const snap = findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)
@@ -728,7 +730,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[4 / zoom, 3 / zoom]} opacity={0.7} />}
         {devGhost && newBase.symbolSetId && symbolSets.get(newBase.symbolSetId) && (() => {
           const set = symbolSets.get(newBase.symbolSetId!)!
-          const gm = newMarkup('device', { x: devGhost.x - 12, y: devGhost.y - 12, width: 24, height: 24, rotation: 0 })
+          const gm = newMarkup('device', { x: devGhost.x - 12 * (props.deviceScale ?? 1), y: devGhost.y - 12 * (props.deviceScale ?? 1), width: 24 * (props.deviceScale ?? 1), height: 24 * (props.deviceScale ?? 1), rotation: 0 })
           return (
             <Group opacity={0.5} listening={false}>
               <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost' }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}

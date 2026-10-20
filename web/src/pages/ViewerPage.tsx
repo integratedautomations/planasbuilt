@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import '../viewer/viewer.css'
 import { Icon } from '../ui/Icon'
-import { post } from '../api'
+import { api, post } from '../api'
 import type { DocumentRevision, Project } from '../api'
 import { clampRenderScale, loadPdf } from '../pdf'
 import type { PDFDocumentProxy, PDFPageProxy } from '../pdf'
@@ -11,6 +11,7 @@ import { Thumbnails } from '../viewer/Thumbnails'
 import type { PageAction } from '../viewer/Thumbnails'
 import { usePanZoom } from '../viewer/usePanZoom'
 import type { View } from '../viewer/usePanZoom'
+import { clampDeviceScale, scaleDevice, scaleDevices, unscaleChange } from '../markups/deviceScale'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { SelectionBar } from '../markups/SelectionBar'
@@ -272,6 +273,9 @@ export function ViewerPage() {
   const [naming, setNaming] = useState<{ id: string | null; sheet: boolean; initial: string } | null>(null)
   const [panelTab, setPanelTab] = useState<PanelTab>('props')
   const [scales, setScales] = useState<Map<number, PageScale>>(new Map())
+  /** Plan-wide device size multiplier, stored on the document so everyone sees the same size. */
+  const [deviceScale, setDeviceScaleState] = useState(1)
+  const deviceScaleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [scaleBusy, setScaleBusy] = useState(false)
   const [scaleError, setScaleError] = useState('')
   const [calLine, setCalLine] = useState<[Pt, Pt] | null>(null)
@@ -395,7 +399,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   useEffect(() => {
     let cancelled = false
-    loadDocMeta(documentId).then(r => { if (!cancelled) setMeta(r.data) }).catch(e => { if (!cancelled) setError(e.message) })
+    loadDocMeta(documentId).then(r => { if (!cancelled) { setMeta(r.data); setDeviceScaleState(clampDeviceScale(r.data.device_scale ?? 1)) } }).catch(e => { if (!cancelled) setError(e.message) })
     loadProject(projectId).then(r => { if (!cancelled) setProject(r.data) }).catch(() => {})
     loadLayers(projectId).then(r => { if (!cancelled) setLayers(r.data) }).catch(() => {})
     loadSymbolSets().then(({ data: sets }) => {
@@ -431,7 +435,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   // Things other people changed (or that we missed while disconnected): refetch the lists we show.
   useEffect(() => {
     const offs = [
-      onSocket('scales', () => { loadScales(documentId).then(({ data: rows }) =>
+      onSocket('device_scale', (m: { deviceScale?: number }) => setDeviceScaleState(clampDeviceScale(m.deviceScale ?? 1))),
+      onSocket('scales', () => { loadDocMeta(documentId).then(r => { if (!r.fromCache) setDeviceScaleState(clampDeviceScale(r.data.device_scale ?? 1)) }).catch(() => {}); loadScales(documentId).then(({ data: rows }) =>
         setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {}) }),
       // A new revision was uploaded (or we missed one while offline): drop the stored PDF and reload.
       onSocket('revision', () => {
@@ -517,7 +522,13 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const pageAreas = useMemo(() => [...areaIndex.byId.values()].filter(a => a.page === pageNum), [areaIndex, pageNum])
   const areaPaths = useMemo(() => new Map(pageAreas.map(a => [a.id, areaPathIn(areaIndex, a)])), [areaIndex, pageAreas])
   const counts = useMemo(() => deviceCounts(areaIndex, allMarkups.values()), [areaIndex, allMarkups])
-  const canvasMarkups = useMemo(() => showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area'), [pageMarkups, showAreas])
+  const canvasMarkups = useMemo(() => {
+    const list = showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area')
+    return scaleDevices(list, deviceScale)
+  }, [pageMarkups, showAreas, deviceScale])
+  /** Edits made on the scaled devices go back to the store as real (unscaled) geometry. */
+  const canvasCommit = useCallback((change: Parameters<typeof store.commit>[0]) =>
+    store.commit(unscaleChange(change, deviceScale, id => allMarkups.get(id))), [store, deviceScale, allMarkups])
   /** Markups kept from an earlier revision whose pages the current PDF no longer has. */
   const orphaned = useMemo(() => {
     const pages = new Set<number>()
@@ -749,7 +760,9 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     setSelectedIds(targets.map(m => m.id))
   }, [symbolSets, catalog, store])
   const placeBoth = useCallback((placed: Markup) => { store.commit([{ before: null, after: placed }]); setSelectedIds([placed.id]) }, [store])
-  const onDeviceOverlap = useCallback((target: Markup, placed: Markup) => {
+  const onDeviceOverlap = useCallback((shownTarget: Markup, shownPlaced: Markup) => {
+    const target = allMarkups.get(shownTarget.id) ?? shownTarget
+    const placed = scaleDevice(shownPlaced, 1 / deviceScale)
     const targets = replaceTargets(target, stackIndex)
     const decision = decideOverlap(getPrefs().replaceOnOverlap, true)
     if (decision === 'both') return false
@@ -758,7 +771,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     const newType = placed.device_type_id ? catalog.types.get(placed.device_type_id)?.name : symbolSets.get(placed.symbol_set_id ?? '')?.name
     setOverlap({ targets, placed, message: replacePrompt(targets, oldType ?? symbolSets.get(target.symbol_set_id ?? '')?.name ?? '', newType ?? '') })
     return true
-  }, [stackIndex, catalog, symbolSets, replaceUnder])
+  }, [stackIndex, catalog, symbolSets, replaceUnder, allMarkups, deviceScale])
   const answerOverlap = (choice: 'replace' | 'both' | 'cancel', remember: boolean) => {
     const o = overlap
     setOverlap(null)
@@ -798,6 +811,18 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   // ---- revisions, page tools, print
   const scaleMap = useCallback(() => new Map([...scales].map(([p, sc]) => [p, sc.pointsPerFoot] as const)), [scales])
+
+  /** Changes the plan's device size: shown at once, saved (and pushed to everyone) shortly after the last change. */
+  const changeDeviceScale = useCallback((v: number) => {
+    if (readOnly) return
+    const next = clampDeviceScale(v)
+    setDeviceScaleState(next)
+    if (deviceScaleTimer.current) clearTimeout(deviceScaleTimer.current)
+    deviceScaleTimer.current = setTimeout(() => {
+      api(`/documents/${documentId}`, { method: 'PATCH', body: JSON.stringify({ device_scale: next }) }).catch(e => setToast(`Could not save the device size: ${(e as Error).message}`))
+    }, 300)
+  }, [readOnly, documentId])
+  const deviceDisplay = { deviceScale, onDeviceScale: changeDeviceScale, deviceScaleReadOnly: readOnly }
 
   /** The PDF being shown, as fresh bytes (pdf.js takes ownership of the ones it was given). */
   const currentPdfBytes = useCallback(
@@ -842,7 +867,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     setPageBusy('Extracting pages…')
     try {
       const bytes = await buildSubset({
-        pdfBytes: await currentPdfBytes(), pages, markups: [...allMarkups.values()], symbolSets, scales: scaleMap(),
+        pdfBytes: await currentPdfBytes(), pages, markups: scaleDevices(allMarkups.values(), deviceScale), symbolSets, scales: scaleMap(),
         icons: await loadIcons(symbolSets.values(), catalog.types.values()), mode: 'annotate', showCones, catalog,
       })
       downloadBytes(bytes, exportFileName(meta?.name ?? 'plan', `page${pages.length === 1 ? '' : 's'}-${pages.slice(0, 6).join('_')}${pages.length > 6 ? '_etc' : ''}`))
@@ -866,7 +891,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const pageToolsOn = canEditRole && !viewingOld
 
   const printArgs = async () => ({
-    documentId, markups: allMarkups.values(), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
+    documentId, markups: scaleDevices(allMarkups.values(), deviceScale), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
     pdfBytes: revParam ? await fetchRevisionPdf(documentId, revParam) : undefined, showOriginalAnnots: showOrig,
   })
 
@@ -1178,7 +1203,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       </div>
       {pickingWindow && pageSize && <WindowPicker page={pageNum} pageSize={pageSize} view={view} onDone={finishWindowPick} />}
       {!isPhone && (
-        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} tool={activeTool} onTool={chooseTool} hotkeys={hotkeys} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
+        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} tool={activeTool} onTool={chooseTool} hotkeys={hotkeys} deviceScale={deviceScale} onDeviceScale={changeDeviceScale} deviceScaleReadOnly={readOnly} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
           scaleLabel={pageScale?.label ?? null}
           scalePanel={<ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
             onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}
@@ -1187,7 +1212,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       {page && viewportSize.width > 0 && (
         <MarkupCanvas ref={markupRef} width={viewportSize.width} height={viewportSize.height}
           zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets} catalog={catalog}
-          readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
+          readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={canvasCommit} deviceScale={deviceScale}
           peers={peersHere} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
           onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
@@ -1232,7 +1257,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
       layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
       hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
-      display={{ showCones, onShowCones: setShowCones }}
+      display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }}
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
       stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
@@ -1275,7 +1300,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     areas: <Areas areas={areasProps} readOnly={readOnly} selected={selected} onDelete={deleteSelected} />,
     layers: <Layers layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId} hidden={hidden} locked={locked}
       onToggleHidden={toggleHidden} onToggleLocked={toggleLocked} onAddLayer={addLayer} readOnly={readOnly} symbolSets={symbolSets}
-      display={{ showCones, onShowCones: setShowCones }} />,
+      display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }} />,
   }
 
   const zone = (d: Dock) => {
@@ -1351,7 +1376,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           </>
         )}
         <MoreMenu title="More: PDF, revisions, print, panels, settings">
-          <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
+          <PdfMenu deviceScale={deviceScale} documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
             scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
             projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintDraft(null); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
           <MenuSep />

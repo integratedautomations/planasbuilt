@@ -15,6 +15,7 @@ import { circleStats, formatArea, formatFeetInches, summarize } from './measure'
 import type { MeasureTotal } from './measure'
 import { commonValue } from './mixed'
 import { tagRange } from './stacks'
+import { DeviceSizeControl } from '../viewer/DeviceSize'
 import type { Stack, StackIndex } from './stacks'
 
 export type PanelTab = 'props' | 'measure' | 'layers' | 'areas'
@@ -96,7 +97,7 @@ interface Props {
   textRef: React.RefObject<HTMLTextAreaElement | null>
   symbolSets: Map<string, SymbolSet>
   /** Per-viewer display options shown at the top of the Layers tab. */
-  display: { showCones: boolean; onShowCones: (v: boolean) => void }
+  display: { showCones: boolean; onShowCones: (v: boolean) => void; deviceScale?: number; onDeviceScale?: (v: number) => void; deviceScaleReadOnly?: boolean }
   /** Device stacks on this page and the actions the stack panel needs. */
   stacks: StackIndex
   onSelectIds: (ids: string[]) => void
@@ -581,6 +582,12 @@ export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, o
     <div className="panel-body">
       <div className="panel-heading">Display</div>
       <label className="check"><input type="checkbox" checked={display.showCones} onChange={e => display.onShowCones(e.target.checked)} /> Show coverage</label>
+      {display.onDeviceScale && (
+        <>
+          <div className="panel-heading">Device size</div>
+          <DeviceSizeControl value={display.deviceScale ?? 1} readOnly={display.deviceScaleReadOnly} onChange={display.onDeviceScale} />
+        </>
+      )}
       <div className="panel-heading">Layers</div>
       <p className="muted small">The selected layer gets new markups.</p>
       <ul className="layer-list">

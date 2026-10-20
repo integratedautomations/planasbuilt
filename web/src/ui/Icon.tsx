@@ -40,6 +40,7 @@ const P: Record<string, ReactNode> = {
   palette: <><path d="M12 4a8 8 0 100 16c1.2 0 1.8-.8 1.8-1.7 0-1.5-1.3-1.6-1.3-3 0-1 .8-1.8 1.9-1.8H17a3.5 3.5 0 003.5-3.5C20.5 6.7 16.8 4 12 4z" /><circle cx="8" cy="11" r=".6" /><circle cx="11" cy="7.5" r=".6" /><circle cx="15" cy="8" r=".6" /></>,
   tools: <><path d="M4 8h16v11H4z" /><path d="M9 8V5h6v3" /><path d="M4 13h16" /></>,
   pages: <><rect x="6" y="3" width="12" height="18" rx="1.5" /><path d="M9 8h6M9 12h6M9 16h3" /></>,
+  'device-size': <><circle cx="8.5" cy="15.5" r="3.5" /><circle cx="15" cy="9" r="6" /></>,
   more: <><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></>,
 }
 

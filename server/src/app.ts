@@ -427,7 +427,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const { id } = req.params as any
     if (!(await requireRole(req, reply, id, 'viewer'))) return
     return db.query(
-      `SELECT d.id, d.name, d.created_at, r.id AS revision_id, r.revision, r.page_count
+      `SELECT d.id, d.name, d.created_at, d.device_scale, r.id AS revision_id, r.revision, r.page_count
        FROM documents d
        JOIN LATERAL (SELECT * FROM document_revisions WHERE document_id = d.id ORDER BY revision DESC LIMIT 1) r ON true
        WHERE d.project_id = $1 ORDER BY d.name`, [id])
@@ -475,9 +475,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.patch('/api/documents/:id', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'editor')
     if (!doc) return
-    const name = String((req.body as any)?.name ?? '').trim()
-    if (!name) return reply.code(400).send({ error: 'Name is required' })
-    const [updated] = await db.query('UPDATE documents SET name = $1 WHERE id = $2 RETURNING *', [name, doc.id])
+    const b = (req.body ?? {}) as any
+    const hasScale = b.device_scale !== undefined
+    const hasName = b.name !== undefined || !hasScale
+    const name = String(b.name ?? '').trim()
+    if (hasName && !name) return reply.code(400).send({ error: 'Name is required' })
+    const ds = Number(b.device_scale)
+    if (hasScale && !(Number.isFinite(ds) && ds >= 0.25 && ds <= 4)) return reply.code(400).send({ error: 'device_scale must be between 0.25 and 4' })
+    const [updated] = await db.query(
+      'UPDATE documents SET name = $1, device_scale = $2 WHERE id = $3 RETURNING *',
+      [hasName ? name : doc.name, hasScale ? Math.round(ds * 100) / 100 : doc.device_scale, doc.id])
+    if (hasScale) realtime.deviceScaleChanged(doc.id, updated.device_scale, req.user.id, cid(req))
     return updated
   })
 

@@ -71,6 +71,18 @@ describe('milestone 1 api', () => {
     expect((await app.inject({ method: 'DELETE', url: `/api/documents/${docId}`, headers: vh })).statusCode).toBe(403)
   })
 
+  it('stores a per-plan device size', async () => {
+    const h = { authorization: `Bearer ${admin}` }
+    expect((await app.inject({ url: `/api/documents/${docId}`, headers: h })).json().device_scale).toBe(1)
+    const r = await app.inject({ method: 'PATCH', url: `/api/documents/${docId}`, headers: h, payload: { device_scale: 1.5 } })
+    expect(r.statusCode).toBe(200)
+    expect(r.json().device_scale).toBe(1.5)
+    expect(r.json().name).toBeTruthy()
+    expect((await app.inject({ method: 'PATCH', url: `/api/documents/${docId}`, headers: h, payload: { device_scale: 9 } })).statusCode).toBe(400)
+    expect((await app.inject({ url: `/api/documents/${docId}`, headers: h })).json().device_scale).toBe(1.5)
+    await app.inject({ method: 'PATCH', url: `/api/documents/${docId}`, headers: h, payload: { device_scale: 1 } })
+  })
+
   it('saves, updates and deletes markups and layers', async () => {
     const h = { authorization: `Bearer ${admin}` }
     const layer = (await app.inject({ method: 'POST', url: `/api/projects/${projectId}/layers`, headers: h,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Icon } from '../ui/Icon'
+import { DeviceSizeControl, formatDeviceScale } from './DeviceSize'
 import { TOOLS } from '../markups/ToolRail'
 import type { Tool } from '../markups/types'
 
@@ -22,17 +23,21 @@ interface Props {
   tool?: Tool
   onTool?: (t: Tool) => void
   hotkeys?: Record<string, string>
+  /** Plan-wide device size multiplier (1 = normal) and its setter; viewers get the read-only control. */
+  deviceScale?: number
+  onDeviceScale?: (v: number) => void
+  deviceScaleReadOnly?: boolean
 }
 
 export const ZOOM_PRESETS = [0.25, 0.5, 1, 2, 4]
 
 /** Floating bar at the bottom centre of the plan: page arrows and number, zoom controls and the sheet scale. */
-export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel, tool, onTool, hotkeys }: Props) {
+export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel, tool, onTool, hotkeys, deviceScale = 1, onDeviceScale, deviceScaleReadOnly }: Props) {
   const [text, setText] = useState(String(pageNum))
-  const [menu, setMenu] = useState<'zoom' | 'scale' | null>(null)
+  const [menu, setMenu] = useState<'zoom' | 'scale' | 'devsize' | null>(null)
   useEffect(() => setText(String(pageNum)), [pageNum])
   const commit = () => { const n = parseInt(text, 10); if (n) onGo(n); else setText(String(pageNum)) }
-  const toggle = (m: 'zoom' | 'scale') => setMenu(cur => (cur === m ? null : m))
+  const toggle = (m: 'zoom' | 'scale' | 'devsize') => setMenu(cur => (cur === m ? null : m))
   return (
     <div className="nav-bar" data-no-pan onPointerDown={e => e.stopPropagation()} role="toolbar" aria-label="Plan navigation">
       {onTool && (['select', 'pan'] as Tool[]).map(t => {
@@ -64,6 +69,13 @@ export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHin
       </span>
       <button className="icon-btn" onClick={() => onZoomBy(1.25)} title="Zoom in (=)" aria-label="Zoom in"><Icon name="plus" size={18} /></button>
       <span className="divider" />
+      {onDeviceScale && (
+        <span className="nav-pop-wrap">
+          <button className={'icon-btn' + (deviceScale !== 1 ? ' active' : '')} aria-haspopup="dialog" aria-expanded={menu === 'devsize'}
+            title={`Device size (${formatDeviceScale(deviceScale)})`} aria-label="Device size" onClick={() => toggle('devsize')}><Icon name="device-size" size={18} /></button>
+          {menu === 'devsize' && <div className="nav-pop nav-devsize" role="dialog" aria-label="Device size"><DeviceSizeControl value={deviceScale} readOnly={deviceScaleReadOnly} onChange={onDeviceScale} /></div>}
+        </span>
+      )}
       <span className="nav-pop-wrap">
         <button className={'scale-badge' + (scaleLabel ? '' : ' warn')} aria-haspopup="dialog" aria-expanded={menu === 'scale'} title="Sheet scale" onClick={() => toggle('scale')}>
           {scaleLabel ?? 'No scale'}

@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import type { PDFFont, PDFPage } from 'pdf-lib'
+import { scaleDevices } from '../markups/deviceScale'
 import { naturalCompare } from '../markups/stacks'
 import { HARDWARE_FIELDS } from '../markups/types'
 import { EMPTY_CATALOG, fieldDefsFor } from '../catalog/catalog'
@@ -23,6 +24,8 @@ export interface ReportSheet {
   pdfBytes: ArrayBuffer | Uint8Array
   /** Points per foot by page (1-based). */
   scales: Map<number, number>
+  /** Device size multiplier of this plan (default 1). */
+  deviceScale?: number
 }
 
 export interface ReportInput {
@@ -177,7 +180,7 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
     const src = await PDFDocument.load(s.pdfBytes, { ignoreEncryption: true })
     const res = await prepareResources(src, input.icons)
     const ex: ExportInput = {
-      pdfBytes: s.pdfBytes, markups: input.markups.filter(m => m.document_id === s.documentId),
+      pdfBytes: s.pdfBytes, markups: scaleDevices(input.markups.filter(m => m.document_id === s.documentId), s.deviceScale ?? 1),
       symbolSets: input.symbolSets, scales: s.scales, icons: input.icons,
     }
     applyMarkups(src, 'flatten', ex, res)

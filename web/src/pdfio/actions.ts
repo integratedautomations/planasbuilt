@@ -58,7 +58,7 @@ export async function exportProjectReport(projectId: string, projectName: string
   const [icons, sheets] = await Promise.all([
     loadIcons(sets, catData.device_types),
     Promise.all(docs.filter(d => !options.docIds || options.docIds.includes(d.id)).map(async d => ({
-      documentId: d.id, name: d.name, pdfBytes: await loadPdfBytes(d.id),
+      documentId: d.id, name: d.name, pdfBytes: await loadPdfBytes(d.id), deviceScale: d.device_scale ?? 1,
       scales: new Map(scaleRows.filter(s => s.document_id === d.id).map(s => [s.page, s.points_per_foot])),
     }))),
   ])
