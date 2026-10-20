@@ -12,6 +12,7 @@ import type { ReportOptions } from '../pdfio/reportOptions'
 import { exportProjectSchedule } from '../schedule/exportProject'
 import { makeRevisionCurrent } from '../revisions/api'
 import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
+import { Brand } from '../Brand'
 
 export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
@@ -153,7 +154,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   return (
     <div className="page">
       <header className="topbar">
-        <Link to="/" className="brand">PlanAsBuilt</Link>
+        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
         <span className="muted">/</span>
         <span className="crumb">{project?.name ?? '…'}</span>
         <span className="spacer" />

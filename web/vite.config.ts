@@ -7,13 +7,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'prompt', // UpdateToast asks the user before swapping versions
-      includeAssets: ['favicon.svg'],
+      includeAssets: ['favicon.ico', 'favicon.svg', 'favicon-16.png', 'favicon-32.png', 'favicon-48.png', 'apple-touch-icon.png', 'icon.svg', 'icon-dark.svg', 'logo-light.svg', 'logo-dark.svg'],
       manifest: {
         name: 'PlanAsBuilt',
         short_name: 'PlanAsBuilt',
         description: 'Mark up plans and document devices in the field, online or off.',
-        theme_color: '#1f2937',
-        background_color: '#1f2937',
+        theme_color: '#0F3D6E',
+        background_color: '#F4F8FC',
         display: 'standalone',
         start_url: '/',
         scope: '/',

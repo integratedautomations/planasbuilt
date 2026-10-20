@@ -4,6 +4,7 @@ import { post, Project, User } from '../api'
 import { loadProjects } from '../offline/cache'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { UsersDialog } from './UsersDialog'
+import { Brand } from '../Brand'
 
 interface Props { user: User; onSignOut: () => void }
 
@@ -27,7 +28,7 @@ export function ProjectsPage({ user, onSignOut }: Props) {
   return (
     <div className="page">
       <header className="topbar">
-        <span className="brand">PlanAsBuilt</span>
+        <span className="brand"><Brand onChrome /></span>
         <span className="spacer" />
         <Link to="/symbols" className="btn-link">Catalog</Link>
         {user.is_admin && <button onClick={() => setShowUsers(true)}>Users</button>}

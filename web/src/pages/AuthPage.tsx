@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { api, post, User } from '../api'
+import { Brand } from '../Brand'
 
 interface Props { onSignedIn: (token: string, user: User) => void }
 
@@ -35,7 +36,7 @@ export function AuthPage({ onSignedIn }: Props) {
   return (
     <div className="center">
       <form className="card auth-card" onSubmit={submit}>
-        <h1 className="brand">PlanAsBuilt</h1>
+        <h1 className="brand"><Brand /></h1>
         <p className="muted">
           {needsSetup ? 'Create the first admin account.' : 'Sign in to your team workspace.'}
         </p>
