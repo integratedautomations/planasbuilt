@@ -84,6 +84,8 @@ export function usePanZoom(
     if (!el) return
     const pointers = new Map<number, { x: number; y: number; pan: boolean }>()
     let pinch: { dist: number; mid: { x: number; y: number } } | null = null
+    // After a pinch the finger left on the glass must not pan or act until every finger has lifted
+    let pinched = false
 
     const local = (e: PointerEvent | MouseEvent) => {
       const r = el.getBoundingClientRect()
@@ -113,6 +115,7 @@ export function usePanZoom(
       const pan = middle || (opts.current.shouldPan?.(e) ?? true)
       pointers.set(e.pointerId, { ...local(e), pan })
       if (pointers.size === 2) {
+        pinched = true
         pinch = pinchState()
         opts.current.onPinchStart?.()
       }
@@ -126,7 +129,7 @@ export function usePanZoom(
       if (!prev) return
       const p = { ...local(e), pan: prev.pan }
       pointers.set(e.pointerId, p)
-      if (pointers.size === 1 && prev.pan) {
+      if (pointers.size === 1 && prev.pan && !pinched) {
         apply({ ...view.current, x: view.current.x + p.x - prev.x, y: view.current.y + p.y - prev.y })
       } else if (pointers.size === 2 && pinch) {
         const next = pinchState()
@@ -138,7 +141,7 @@ export function usePanZoom(
     const onUp = (e: PointerEvent) => {
       pointers.delete(e.pointerId)
       pinch = pointers.size === 2 ? pinchState() : null
-      if (pointers.size === 0) el.classList.remove('panning')
+      if (pointers.size === 0) { el.classList.remove('panning'); pinched = false }
     }
 
     // Middle button: no browser autoscroll / paste-on-Linux, whatever the page does with the press

@@ -13,6 +13,7 @@ import { exportProjectSchedule } from '../schedule/exportProject'
 import { makeRevisionCurrent } from '../revisions/api'
 import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 import { Brand } from '../Brand'
+import { Icon } from '../ui/Icon'
 import { UserMenu } from '../settings/UserMenu'
 import { MembersPanel } from '../settings/MembersPanel'
 
@@ -34,6 +35,29 @@ async function openPdf(docId: string, revisionId: string, onError: (m: string) =
     tab?.close()
     onError(`Could not open the PDF: ${(err as Error).message}`)
   }
+}
+
+/** A ⋯ bubble + pop-up menu. Closes on outside press, Escape, or choosing an item. */
+function PopMenu({ label, className = '', children }: { label: string; className?: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const down = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('pointerdown', down, true)
+    window.addEventListener('keydown', key)
+    return () => { window.removeEventListener('pointerdown', down, true); window.removeEventListener('keydown', key) }
+  }, [open])
+  return (
+    <div className={`pp-menu ${className}`} ref={ref}>
+      <button type="button" className="pp-bubble" aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label}
+        onClick={() => setOpen(o => !o)}>
+        <Icon name="dots" size={20} />
+      </button>
+      {open && <div className="pp-popup right" role="menu" onClick={e => { if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false) }}>{children}</div>}
+    </div>
+  )
 }
 
 export function ProjectPage({ user }: { user: User }) {
@@ -182,11 +206,15 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
         <span className="muted">/</span>
-        <span className="crumb">{project?.name ?? '…'}</span>
-        {project?.status === 'completed' && <span className="muted small">Completed</span>}
+        <span className="crumb" title={project?.name}>{project?.name ?? '…'}</span>
+        {project?.status === 'completed' && <span className="muted small hide-narrow">Completed</span>}
         <span className="spacer" />
         {canEdit && project && (
-          <button onClick={toggleComplete}>{project.status === 'completed' ? 'Reopen project' : 'Mark complete'}</button>
+          <button className="pp-complete" onClick={toggleComplete}>
+            {project.status === 'completed'
+              ? <><span className="hide-narrow">Reopen project</span><span className="show-narrow">Reopen</span></>
+              : <><span className="hide-narrow">Mark complete</span><span className="show-narrow"><Icon name="check" size={16} /> Done</span></>}
+          </button>
         )}
         <UserMenu />
       </header>
@@ -198,31 +226,45 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         </div>
         {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
         {tab === 'plans' && <>
-        <div className="row">
+        <div className="row pp-toolbar">
           <h2>Plans</h2>
           <span className="spacer" />
-          <button disabled={!!progress || docs.length === 0} onClick={makeOffline}
-            title="Download every plan, its markups, layers, symbols and scales to this device">
-            {allOffline ? 'Refresh offline copy' : 'Make available offline'}
-          </button>
-          <Link className="btn-link" to={`/projects/${projectId}/bom`} title="Bill of materials: quantities, cost and labor">BOM</Link>
-          <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
-            {exporting ? 'Exporting…' : 'Export schedule'}
-          </button>
-          <button disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}
-            title="One PDF: every sheet with markups, then a page per device with its details and photos">
-            {reporting ? `Building report… ${reporting}` : 'As-built report'}
-          </button>
+          <div className="pp-inline row">
+            <button disabled={!!progress || docs.length === 0} onClick={makeOffline}
+              title="Download every plan, its markups, layers, symbols and scales to this device">
+              {allOffline ? 'Refresh offline copy' : 'Make available offline'}
+            </button>
+            <Link className="btn-link" to={`/projects/${projectId}/bom`} title="Bill of materials: quantities, cost and labor">BOM</Link>
+            <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
+              {exporting ? 'Exporting…' : 'Export schedule'}
+            </button>
+            <button disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}
+              title="One PDF: every sheet with markups, then a page per device with its details and photos">
+              {reporting ? `Building report… ${reporting}` : 'As-built report'}
+            </button>
+          </div>
           {canEdit && (
             <>
               <input ref={revInput} type="file" accept="application/pdf,.pdf" hidden onChange={e => uploadRevision(e.target.files?.[0])} />
               <input ref={fileInput} type="file" accept="application/pdf,.pdf" multiple hidden
                 onChange={e => upload(e.target.files)} />
-              <button className="primary" disabled={!!uploading} onClick={() => fileInput.current?.click()}>
+              <button className="primary pp-upload" disabled={!!uploading} onClick={() => fileInput.current?.click()}>
                 {uploading ? `Uploading ${uploading}…` : 'Upload PDF'}
               </button>
             </>
           )}
+          <PopMenu label="More actions" className="pp-more">
+            <button role="menuitem" className="vmenu-item" disabled={!!progress || docs.length === 0} onClick={makeOffline}>
+              <span className="vmenu-label">{allOffline ? 'Refresh offline copy' : 'Make available offline'}</span>
+            </button>
+            <Link role="menuitem" className="vmenu-item" to={`/projects/${projectId}/bom`}><span className="vmenu-label">BOM</span></Link>
+            <button role="menuitem" className="vmenu-item" disabled={!project || exporting} onClick={exportSchedule}>
+              <span className="vmenu-label">{exporting ? 'Exporting…' : 'Export schedule'}</span>
+            </button>
+            <button role="menuitem" className="vmenu-item" disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}>
+              <span className="vmenu-label">{reporting ? `Building report… ${reporting}` : 'As-built report'}</span>
+            </button>
+          </PopMenu>
         </div>
         {progress && (
           <div>
@@ -236,25 +278,35 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         {error && <div className="error">{error}</div>}
         {revNotice && <div className="muted small" role="status">{revNotice}</div>}
         {docs.length === 0 ? <p className="muted">No plans yet.{canEdit && ' Upload a PDF to start.'}</p> : (
-          <ul className="list">
+          <ul className="plan-grid">
             {docs.map(d => (
-              <li key={d.id} className="list-row">
-                <Link to={`/projects/${projectId}/documents/${d.id}`} className="list-item grow">
-                  <span className="list-title">{d.name}</span>
-                  <span className="muted">{d.page_count} page{d.page_count === 1 ? '' : 's'} · Rev {d.revision}
+              <li key={d.id} className="plan-card">
+                <Link to={`/projects/${projectId}/documents/${d.id}`} className="plan-link">
+                  <span className="list-title plan-name">{d.name}</span>
+                  <span className="muted small">{d.page_count} page{d.page_count === 1 ? '' : 's'} · Rev {d.revision}
                     {offlineState.get(d.id)?.offline && <span className="offline-badge" title="Available offline"> · offline ✓</span>}</span>
                 </Link>
-                <button onClick={() => showRevisions(d)} aria-expanded={openRevs === d.id}>Revisions</button>
-                {canEdit && (
-                  <button disabled={!!revising} title="Upload a newer PDF of this plan; markups carry forward"
-                    onClick={() => { revTarget.current = d; revInput.current?.click() }}>
-                    {revising === d.id ? 'Uploading…' : 'New revision'}
+                <PopMenu label={`Actions for ${d.name}`} className="pp-card-menu">
+                  <button role="menuitem" className="vmenu-item" aria-expanded={openRevs === d.id} onClick={() => showRevisions(d)}>
+                    <span className="vmenu-label">Revisions</span>
                   </button>
-                )}
-                {canEdit && (
-                  <button title="Freeze this plan's PDF and all markups as a named revision" onClick={() => setIssuing(d)}>Issue revision</button>
-                )}
-                {isAdmin && <button className="danger" onClick={() => remove(d)}>Delete</button>}
+                  {canEdit && (
+                    <button role="menuitem" className="vmenu-item" disabled={!!revising} title="Upload a newer PDF of this plan; markups carry forward"
+                      onClick={() => { revTarget.current = d; revInput.current?.click() }}>
+                      <span className="vmenu-label">{revising === d.id ? 'Uploading…' : 'New revision'}</span>
+                    </button>
+                  )}
+                  {canEdit && (
+                    <button role="menuitem" className="vmenu-item" title="Freeze this plan's PDF and all markups as a named revision" onClick={() => setIssuing(d)}>
+                      <span className="vmenu-label">Issue revision</span>
+                    </button>
+                  )}
+                  {isAdmin && (
+                    <button role="menuitem" className="vmenu-item pp-danger" onClick={() => remove(d)}>
+                      <span className="vmenu-label">Delete</span>
+                    </button>
+                  )}
+                </PopMenu>
                 {openRevs === d.id && (
                   <ul className="rev-list small">
                     {revs.length === 0 && <li className="muted">Loading…</li>}

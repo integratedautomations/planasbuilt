@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Arrow, Image as KImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import { queuePhotoAnnotated } from '../offline/sync'
 import { useAuthedUrl } from '../useAuthedUrl'
+import { createTouchArbiter } from '../viewer/touchGesture'
 import './photos.css'
 
 type Kind = 'pen' | 'arrow' | 'rect' | 'text'
@@ -37,6 +38,9 @@ export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: 
   const pinch = useRef<{ dist: number; cx: number; cy: number; view: View } | null>(null)
   const viewRef = useRef(view); viewRef.current = view
   const fit = useRef(1)
+  // Touch text placement waits for a clean one-finger tap (the first finger of a pinch must not open the caption box)
+  const arb = useRef(createTouchArbiter())
+  const textTap = useRef<{ x: number; y: number } | null>(null)
 
   // The unannotated original is always the base, so re-annotating never stacks on old marks.
   useEffect(() => {
@@ -79,6 +83,8 @@ export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: 
     if (!img || textAt) return
     box.current!.setPointerCapture(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const touch = e.pointerType === 'touch'
+    if (touch && arb.current.down(e.pointerId, e.clientX, e.clientY) === 'cancel') textTap.current = null
     if (pointers.current.size === 2) {
       setDraftBoth(null)
       const [a, b] = [...pointers.current.values()]
@@ -87,13 +93,17 @@ export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: 
     }
     if (pointers.current.size > 2) return
     const p = toImage(e.clientX, e.clientY)
-    if (tool === 'text') { setTextAt(p); setTextVal(''); return }
+    if (tool === 'text') {
+      if (touch) { textTap.current = p; return }
+      setTextAt(p); setTextVal(''); return
+    }
     setDraftBoth({ kind: tool, color, width: strokeW, points: tool === 'pen' ? [p.x, p.y] : [p.x, p.y, p.x, p.y] })
   }
 
   const onMove = (e: React.PointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (e.pointerType === 'touch' && arb.current.move(e.pointerId, e.clientX, e.clientY) === 'drag-start') textTap.current = null
     if (pinch.current && pointers.current.size >= 2) {
       const [a, b] = [...pointers.current.values()]
       const p0 = pinch.current
@@ -118,7 +128,10 @@ export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: 
   const onUp = (e: React.PointerEvent) => {
     const had = pointers.current.delete(e.pointerId)
     if (pointers.current.size < 2) pinch.current = null
+    const act = e.pointerType === 'touch' ? arb.current.up(e.pointerId) : 'none'
     if (!had) return
+    if (act === 'tap' && textTap.current) { setTextAt(textTap.current); setTextVal('') }
+    if (pointers.current.size === 0) textTap.current = null
     const d = draftRef.current
     if (d && pointers.current.size === 0) {
       const tiny = d.kind !== 'pen' && Math.hypot(d.points[2] - d.points[0], d.points[3] - d.points[1]) < 4 * k

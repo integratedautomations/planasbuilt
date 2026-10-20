@@ -145,3 +145,8 @@
 }
 
 .viewer .markup-popup { top: 44px; background: var(--panel-bg); border-color: var(--divider); }
+
+/* Touch: the canvas owns every gesture (no browser pan/zoom/select/callout); page scroll elsewhere is untouched */
+.markup-stage, .markup-stage canvas, .viewport {
+  touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+}

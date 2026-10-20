@@ -388,7 +388,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const { zoom, settledZoom, fit, zoomBy, centerOn, view } = usePanZoom(viewportRef, stageRef,
     pageSize ? { width: pageSize.width, height: pageSize.height } : null, {
       shouldPan: () => { const owned = consumedRef.current; consumedRef.current = false; return !owned },
-      onPinchStart: () => markupRef.current?.cancelDraft(),
+      onPinchStart: () => markupRef.current?.cancelGesture(),
       onView: syncStage,
     })
   useEffect(() => { syncStage(view.current) })

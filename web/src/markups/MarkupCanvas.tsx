@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text, Transformer } from 'react-konva'
 import Konva from 'konva'
 import { bakeBox, bakePath, boxFromDrag, pathFromPoints, hasDrawableGeometry, simplify, snap45 } from './geometry'
@@ -23,6 +24,7 @@ import { uuid } from '../uuid'
 import { initialCoverage } from './coverage'
 import type { Peer } from '../realtime/presence'
 import { REDLINE } from './canvasFonts'
+import { createTouchArbiter, isDoubleTap, LONG_PRESS_MS } from '../viewer/touchGesture'
 
 // Only the left button drags markups: middle pans the plan and right box-selects.
 Konva.dragButtons = [0]
@@ -33,6 +35,8 @@ export interface ContextInfo { clientX: number; clientY: number; hitId: string |
 export interface MarkupCanvasHandle {
   stage: () => Konva.Stage | null
   cancelDraft: () => void
+  /** A second finger arrived / a touch was lost: drop the in-flight tap or drag, keep points already placed. */
+  cancelGesture: () => void
   finishDraft: () => void
 }
 
@@ -115,6 +119,15 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const marqueeRect = useRef<Box | null>(null)
   /** Armed device tool: where the semi-transparent preview of the device follows the pointer (null when hidden). */
   const [devGhost, setDevGhost] = useState<Pt | null>(null)
+  // Touch: nothing commits on pointerdown. The arbiter decides tap / drag / pinch; window listeners follow the finger
+  // (the viewport captures the pointer for panning, so the stage never sees its move/up).
+  const arb = useRef(createTouchArbiter())
+  const touch = useRef<{ ev: Konva.KonvaEventObject<PointerEvent> | null; pt: Pt; kind: 'draw' | 'marquee' | 'tap' | 'other'; hitId: string | null; handle: boolean; dragged: boolean; cancelled: boolean; timer: number; lastTap: { x: number; y: number; t: number } | null; unlisten: (() => void) | null }>(
+    { ev: null, pt: { x: 0, y: 0 }, kind: 'other', hitId: null, handle: false, dragged: false, cancelled: false, timer: 0, lastTap: null, unlisten: null })
+  const pointerOverride = useRef<Pt | null>(null)
+  const tapMode = useRef(false)
+  const [touchUi, setTouchUi] = useState(false)
+  const latest = useRef<Record<string, (...a: never[]) => unknown>>({})
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
   // Plex arrives from Google Fonts after the first draw: re-measure canvas text once it has loaded.
   useEffect(() => {
@@ -149,7 +162,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     tr.getLayer()?.batchDraw()
   })
 
-  const pointer = (): Pt => stageRef.current!.getRelativePointerPosition() ?? { x: 0, y: 0 }
+  const pointer = (): Pt => pointerOverride.current ?? stageRef.current!.getRelativePointerPosition() ?? { x: 0, y: 0 }
 
   const newMarkup = (type: MarkupType, geometry: BoxGeometry | PathGeometry): Markup => ({
     id: uuid(), document_id: newBase.document_id, page: newBase.page, type, geometry,
@@ -181,6 +194,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   useImperativeHandle(ref, () => ({
     stage: () => stageRef.current,
     cancelDraft: () => { cancelMarquee(); finish(null) },
+    cancelGesture: () => cancelGesture(),
     finishDraft: finishClickPath,
   }))
 
@@ -206,7 +220,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     return null
   }
 
-  function onPointerDown(e: Konva.KonvaEventObject<PointerEvent>) {
+  function handleDown(e: Konva.KonvaEventObject<PointerEvent>) {
     if (e.evt.button === 2) {
       // Right button: box-select in any tool; released without dragging it is a context-menu click
       const p = pointer()
@@ -230,7 +244,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         if (e.evt.shiftKey || multiSelect) {
           onSelect(group.every(i => selectedIds.includes(i)) ? selectedIds.filter(i => !group.includes(i)) : [...selectedIds, ...group.filter(i => !selectedIds.includes(i))])
         } else if (!group.every(i => selectedIds.includes(i))) onSelect(group)
-      } else if (boxSelect || e.evt.shiftKey) {
+      } else if ((boxSelect || e.evt.shiftKey) && !tapMode.current) {
         consumedRef.current = true // empty space with Shift / box mode: marquee
         const p = pointer()
         marqueeStart.current = { p, add: e.evt.shiftKey || multiSelect }
@@ -319,9 +333,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
   }
 
-  function onPointerMove(e: Konva.KonvaEventObject<PointerEvent>) {
+  function handleMove(e: Konva.KonvaEventObject<PointerEvent>) {
     if (onCursor) onCursor(stageRef.current?.getRelativePointerPosition() ?? null)
-    if (tool === 'device' && !readOnly && newBase.symbolSetId) setDevGhost((e.evt.buttons & 4) ? null : pointer())
+    if (e.evt.pointerType === 'touch') { setDevGhost(null); setSnapHint(null) }
+    else if (tool === 'device' && !readOnly && newBase.symbolSetId) setDevGhost((e.evt.buttons & 4) ? null : pointer())
     else if (devGhost) setDevGhost(null)
     if (marqueeStart.current) {
       const r = marqueeStart.current.right
@@ -333,7 +348,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       setMarquee(marqueeRect.current)
       return
     }
-    if (tool === 'device' && !draft && !readOnly) {
+    if (tool === 'device' && !draft && !readOnly && e.evt.pointerType !== 'touch') {
       const t = findSnapTarget(markups, pointer(), newBase.symbolSetId, 1.2, newBase.deviceTypeId ?? null)
       if (t) {
         const c = deviceCenter(t.geometry as BoxGeometry)
@@ -367,7 +382,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
   }
 
-  function onPointerUp(e: Konva.KonvaEventObject<PointerEvent>) {
+  function handleUp(e: Konva.KonvaEventObject<PointerEvent>) {
     const ms = marqueeStart.current, box = marqueeRect.current
     if (ms?.right) {
       if (e.evt.button !== 2) return
@@ -422,9 +437,136 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
   }
 
+  latest.current = { handleDown, handleMove, handleUp, cancelGesture } as never
+
+  /** Drop the in-flight tap/drag (second finger, lost touch, long press). Points already placed on a polyline stay. */
+  function cancelGesture() {
+    const t = touch.current
+    window.clearTimeout(t.timer)
+    t.cancelled = true
+    cancelMarquee()
+    if (clickPts.current.length === 0) finish(null)
+    const dd = (Konva.DD as unknown as { _dragElements: Map<number, { node: Konva.Node }> })._dragElements
+    for (const el of [...dd.values()]) el.node.stopDrag()
+    setSnapHint(null); setDevGhost(null)
+  }
+
+  const stagePoint = (ev: PointerEvent) => { stageRef.current?.setPointersPositions(ev); return pointer() }
+  const asKonva = (ev: PointerEvent) => ({ evt: ev, target: stageRef.current! }) as unknown as Konva.KonvaEventObject<PointerEvent>
+
+  function stopTouchListening() { touch.current.unlisten?.(); touch.current.unlisten = null }
+
+  function onStageDown(e: Konva.KonvaEventObject<PointerEvent>) {
+    const t = touch.current
+    if (e.evt.pointerType !== 'touch') {
+      t.cancelled = false; t.ev = null; t.dragged = false
+      setTouchUi(false)
+      handleDown(e)
+      return
+    }
+    setTouchUi(true)
+    const a = arb.current
+    const r = a.down(e.evt.pointerId, e.evt.clientX, e.evt.clientY)
+    if (r === 'cancel') { cancelGesture(); return }
+    if (r !== 'start') return
+    // First finger: classify, but commit nothing yet
+    t.cancelled = false; t.dragged = false; t.ev = e; t.pt = pointer()
+    const target = e.target
+    t.handle = target.getParent()?.getClassName?.() === 'Transformer' || target.name() === 'point-handle'
+    t.hitId = markupIdOf(target)
+    const drawDrag = isDrawTool && (tool === 'area-rect' || DRAG_TOOLS.includes((tool === 'calibrate' ? 'line' : tool) as MarkupType))
+    t.kind = drawDrag ? 'draw' : isDrawTool ? 'tap'
+      : tool === 'select' && !t.handle && !t.hitId && boxSelect ? 'marquee' : 'other'
+    // Markup drags, handles, drawing: the layer owns the finger. Everything else pans.
+    consumedRef.current = isDrawTool ? drawDrag : tool === 'select' && (t.handle || !!t.hitId || boxSelect)
+    window.clearTimeout(t.timer)
+    if (onContextMenu && !t.handle) {
+      t.timer = window.setTimeout(() => {
+        if (a.phase !== 'pending') return
+        a.kill()
+        cancelGesture()
+        const hitId = markupAt(t.pt, t.hitId)
+        if (hitId && !selectedIds.includes(hitId)) {
+          const stk = stacks.byId.get(hitId)
+          onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
+        }
+        onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt })
+      }, LONG_PRESS_MS)
+    }
+    if (!t.unlisten) {
+      const mv = (ev: PointerEvent) => {
+        if (ev.pointerType !== 'touch') return
+        const res = a.move(ev.pointerId, ev.clientX, ev.clientY)
+        if (res === 'none') return
+        const h = latest.current as unknown as { handleDown: typeof handleDown; handleMove: typeof handleMove }
+        if (res === 'drag-start') {
+          window.clearTimeout(t.timer)
+          t.dragged = true
+          if ((t.kind === 'draw' || t.kind === 'marquee') && t.ev) {
+            pointerOverride.current = t.pt
+            try { h.handleDown(t.ev) } finally { pointerOverride.current = null }
+          }
+        }
+        if (t.kind === 'draw' || t.kind === 'marquee') { stagePoint(ev); h.handleMove(asKonva(ev)) }
+      }
+      const up = (ev: PointerEvent) => {
+        if (ev.pointerType !== 'touch') return
+        const h = latest.current as unknown as { handleDown: typeof handleDown; handleUp: typeof handleUp }
+        const res = a.up(ev.pointerId)
+        if (res === 'tap') { window.clearTimeout(t.timer); tapAction(ev, h.handleDown) }
+        else if (res === 'drag-end' && (t.kind === 'draw' || t.kind === 'marquee')) { stagePoint(ev); h.handleUp(asKonva(ev)) }
+        if (a.count === 0) stopTouchListening()
+      }
+      const cancel = (ev: PointerEvent) => {
+        if (ev.pointerType !== 'touch') return
+        if (a.abort(ev.pointerId) === 'cancel') (latest.current as unknown as { cancelGesture: () => void }).cancelGesture()
+        if (a.count === 0) stopTouchListening()
+      }
+      window.addEventListener('pointermove', mv)
+      window.addEventListener('pointerup', up)
+      window.addEventListener('pointercancel', cancel)
+      t.unlisten = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel) }
+    }
+  }
+
+  /** A finished one-finger tap: this is where the tool finally acts. */
+  function tapAction(ev: PointerEvent, down: typeof handleDown) {
+    const t = touch.current
+    const src = t.ev
+    if (!src) return
+    const p = t.pt
+    const now = Date.now()
+    const prevTap = t.lastTap
+    t.lastTap = { x: p.x, y: p.y, t: now }
+    if (t.kind === 'draw') {
+      if (tool === 'text') {
+        const b = boxFromDrag(p, p)
+        finish({ ...newMarkup('text', { ...b, width: 180, height: 40 }) })
+      }
+      return // a tap with any other drawing tool makes nothing
+    }
+    // Double-tap closes a polyline / area / cable run
+    if (t.kind === 'tap' && CLICK_PATHS.includes(tool as MarkupType) && clickPts.current.length >= 3
+      && isDoubleTap(prevTap, p, now, 14 / zoom)) { finishClickPath(); t.lastTap = null; return }
+    if (t.kind === 'marquee' || t.kind === 'other' || t.kind === 'tap') {
+      if (t.kind === 'other' && tool === 'pan') return
+      pointerOverride.current = p; tapMode.current = true
+      try { down(src) } finally { pointerOverride.current = null; tapMode.current = false }
+    }
+    void ev
+  }
+
+  useEffect(() => () => { window.clearTimeout(touch.current.timer); touch.current.unlisten?.() }, [])
+
   function onTransformEnd() {
     const stage = stageRef.current
     if (!stage) return
+    if (touch.current.cancelled) {
+      // A second finger interrupted the resize/rotate: put every node back
+      for (const m of selected) stage.findOne<Konva.Group>('#' + m.id)?.setAttrs({ x: m.geometry.x, y: m.geometry.y, rotation: 'rotation' in m.geometry ? m.geometry.rotation : 0, scaleX: 1, scaleY: 1 })
+      stage.batchDraw()
+      return
+    }
     const change: Change = []
     for (const m of selected) {
       const node = stage.findOne<Konva.Group>('#' + m.id)
@@ -463,6 +605,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const stage = stageRef.current
     const id = markupIdOf(e.target)
     if (!stage || !id || e.target.name() !== 'markup') return
+    const tc = touch.current
+    if (tc.cancelled || (tc.ev && !tc.dragged)) {
+      // Drag interrupted by a second finger, or a "drag" that never left the tap slop: back to where it was
+      const orig = byId.get(id)
+      if (orig) { e.target.position({ x: orig.geometry.x, y: orig.geometry.y }); e.target.getLayer()?.batchDraw() }
+      setCopyGhosts(null)
+      return
+    }
     // Everything selected moves rigidly with the dragged node (a stack's members move as one step)
     const dragged = byId.get(id)
     if (!dragged) return
@@ -521,10 +671,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const drawable = markups.filter(hasDrawableGeometry)
   const ordered = [...drawable.filter(m => m.type === 'area'), ...drawable.filter(m => m.type !== 'area')]
 
+  const multiPointActive = touchUi && !!draft && CLICK_PATHS.includes(draft.type) && !readOnly
+  const btn: React.CSSProperties = { minHeight: 44, padding: '0 20px', borderRadius: 22, border: '1px solid var(--border, #888)', background: 'var(--surface, #fff)', color: 'inherit', font: 'inherit', fontWeight: 600, boxShadow: '0 4px 16px rgb(0 0 0 / 0.3)' }
+
   return (
+    <>
     <Stage ref={stageRef} width={width} height={height} className={devGhost ? 'markup-stage no-cursor' : 'markup-stage'}
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => { onCursor?.(null); setDevGhost(null) }}
-      onDblClick={onDoubleClick} onDblTap={onDoubleClick}>
+      onPointerDown={onStageDown} onPointerMove={e => { if (e.evt.pointerType === 'touch') return; handleMove(e) }} onPointerUp={e => { if (e.evt.pointerType === 'touch') return; handleUp(e) }} onPointerLeave={() => { onCursor?.(null); setDevGhost(null) }}
+      onDblClick={onDoubleClick}>
       <Layer>
         {ordered.map(m => {
           const shown = pointOverride?.id === m.id && 'points' in m.geometry
@@ -547,6 +701,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               onFovChange={(fov, done) => {
                 if (!done) { setFovOverride({ id: m.id, fov }); return }
                 setFovOverride(null)
+                if (touch.current.cancelled) return
                 commit([{ before: m, after: { ...m, geometry: { ...(m.geometry as BoxGeometry), fov } } }])
               }}
               draggable={canDrag(m)}
@@ -555,6 +710,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               onPointsChange={(points, done) => {
                 if (!done) { setPointOverride({ id: m.id, points }); return }
                 setPointOverride(null)
+                if (touch.current.cancelled) return
                 commit([{ before: m, after: { ...m, geometry: { ...(m.geometry as PathGeometry), points } } }])
               }}
               onDragStart={onDragStart} onDragEnd={onDragEnd} />
@@ -607,5 +763,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           onTransformEnd={onTransformEnd} />
       </Layer>
     </Stage>
+    {multiPointActive && createPortal(
+      <div data-no-pan style={{ position: 'fixed', left: 0, right: 0, bottom: 24, zIndex: 50, display: 'flex', gap: 12, justifyContent: 'center', pointerEvents: 'none', touchAction: 'manipulation' }}>
+        <button type="button" style={{ ...btn, pointerEvents: 'auto' }} onClick={() => { cancelMarquee(); finish(null) }}>Cancel</button>
+        <button type="button" style={{ ...btn, pointerEvents: 'auto', background: REDLINE, color: '#fff', borderColor: REDLINE }} onClick={finishClickPath}>Finish</button>
+      </div>, document.body)}
+    </>
   )
 })

@@ -224,7 +224,7 @@ function FovCone({ innerRef, center, fov, color, zoom, ppf, editable, onChange }
     onChange?.({ ...fov, angle: clampAngle(diff * 2) }, done)
   }
   const ft = rangeFeet(fov, ppf)
-  const label = `${ft !== null ? formatRange(ft) : `${Math.round(range)} pt`} · ${Math.round(fov.angle)}°`
+  const label = `${ft !== null ? formatRange(ft) : `${Math.round(range)} pt`} Â· ${Math.round(fov.angle)}Â°`
   const hr = 7 / zoom, fs = 12 / zoom
   return (
     <Group ref={innerRef} x={center.x} y={center.y} listening={editable}>
