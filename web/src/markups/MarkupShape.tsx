@@ -123,6 +123,7 @@ function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeom
   const status = mixed ? undefined : STATUSES.find(s => s.value === distinct[0])
   const fontSize = Math.max(4, r * 0.7)
   const label = (stack ? stack.label : m.tag) || set?.tag_prefix || '?'
+  const labelW = label.length * fontSize * 0.62 + fontSize * 0.4
   const bx = cx + r * 0.75, by = cy - r * 0.75, br = r * 0.3
   const mixColors = distinct.map(v => STATUSES.find(s => s.value === v)?.color ?? '#adb5bd')
   // Quantity pill: sized in screen pixels so it stays readable at any zoom
@@ -142,7 +143,8 @@ function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeom
           <Circle x={bx} y={by} radius={br} stroke="#fff" strokeWidth={r * 0.08} />
         </>
       )}
-      <Text text={label} x={cx - 100} y={cy + r + r * 0.12} width={200} align="center"
+      {/* Monospace, so the box is only as wide as the tag; a fixed wide box would bloat the selection bounds */}
+      <Text text={label} x={cx - labelW / 2} y={cy + r + r * 0.12} width={labelW} align="center" wrap="none"
         fontSize={fontSize} fontStyle="bold" fill={color} stroke="#fff" strokeWidth={fontSize * 0.18}
         fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />
       {stack && (
