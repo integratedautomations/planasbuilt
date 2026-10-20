@@ -1,0 +1,11 @@
+# Unraid override: pull the prebuilt image from GHCR instead of building, and publish a LAN port.
+#   docker compose -f docker-compose.yml -f docker-compose.unraid.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.unraid.yml up -d
+# The image is private: run `docker login ghcr.io` once on Unraid (username + a PAT with read:packages).
+# Pin a version with PLANASBUILT_TAG=sha-<commit> in .env to roll back.
+services:
+  app:
+    image: ghcr.io/integratedautomations/planasbuilt:${PLANASBUILT_TAG:-latest}
+    pull_policy: always
+    ports:
+      - "${PLANASBUILT_PORT:-8080}:3001"
