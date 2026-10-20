@@ -256,6 +256,15 @@ button { touch-action: manipulation; }
 .set-icon { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; flex-shrink: 0; overflow: hidden; }
 .set-icon img { width: 70%; height: 70%; object-fit: contain; }
 .modal.wide { width: min(640px, 100%); }
+.modal.xwide { width: min(1040px, 100%); }
+.btx-table { table-layout: fixed; }
+.btx-table th, .btx-table td { overflow-wrap: anywhere; }
+.btx-table .c-chk { width: 28px; text-align: center; }
+.btx-table .c-icon { width: 44px; }
+.btx-table .c-pfx { width: 80px; }
+.product-table.btx-table select, .product-table.btx-table input { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.btx-table img { object-fit: contain; display: block; }
+.btx-group td { background: rgb(128 128 128 / 0.12); font-weight: 600; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .grid2 input[type="color"] { width: 64px; padding: 2px; }
 .grid2 input[type="file"] { min-width: 0; flex: 1; border: none; padding: 0; }
