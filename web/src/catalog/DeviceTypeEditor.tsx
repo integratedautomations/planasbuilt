@@ -98,7 +98,7 @@ export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: 
         </div>
       </div>
       {picking && (
-        <IconPicker color={set?.color ?? '#1971c2'} onClose={() => setPicking(false)}
+        <IconPicker color={set?.color ?? '#1971c2'} suggestName={draft.name} onClose={() => setPicking(false)}
           onPick={url => { setDraft({ ...draft, icon: url }); setPicking(false) }} />
       )}
     </>

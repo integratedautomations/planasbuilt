@@ -616,3 +616,4 @@ input.invalid { border-color: var(--danger); }
 .device-size { display: flex; flex-direction: column; gap: 6px; }
 .device-size-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .device-size-row input[type=range] { flex: 1; min-width: 0; }
+.icon-class { display: flex; align-items: center; gap: 8px; padding: 2px 0; }

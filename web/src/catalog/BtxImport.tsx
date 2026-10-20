@@ -3,6 +3,8 @@ import { api, post } from '../api'
 import type { SymbolSet } from '../markups/types'
 import { parseBtxSet } from './btx'
 import type { BtxTool } from './btx'
+import { autoIconFor } from './icons/classIcons'
+import { IconPicker } from './icons/IconPicker'
 import { shrinkImage } from './readIcon'
 import type { CatalogData, DeviceType } from './types'
 
@@ -15,6 +17,8 @@ interface Row {
   /** existing symbol set id, or "new:<name>" */
   setKey: string
   typeId: string
+  /** Icon to store: the tool's own drawing, else the matching class's option A, else none. */
+  icon: string
 }
 
 const NEW = 'new:'
@@ -32,6 +36,7 @@ export function BtxImport({ data, sets, onClose, onDone }: { data: CatalogData; 
   const [error, setError] = useState('')
   const [result, setResult] = useState('')
   const [busy, setBusy] = useState(false)
+  const [picking, setPicking] = useState<number | null>(null)
 
   const typesIn = (setKey: string) => setKey.startsWith(NEW) ? [] : data.device_types.filter(t => t.symbol_set_id === setKey)
   const match = (setKey: string, name: string) => typesIn(setKey).find(t => lc(t.name) === lc(name))?.id ?? ''
@@ -51,7 +56,7 @@ export function BtxImport({ data, sets, onClose, onDone }: { data: CatalogData; 
           const existing = (tool.layer && findSet(tool.layer)) || findSet(fallback)
           const setKey = existing ? existing.id : NEW + fallback
           const name = tool.name || tool.subject || tool.title
-          out.push({ file: file.name, tool, include: true, name, prefix: cleanPrefix(tool.label ?? ''), setKey, typeId: match(setKey, name) })
+          out.push({ file: file.name, tool, include: true, name, prefix: cleanPrefix(tool.label ?? ''), setKey, typeId: match(setKey, name), icon: tool.icon ?? autoIconFor(tool.name || tool.subject || tool.title) ?? '' })
         }
       } catch { bad.push(file.name) }
     }
@@ -81,7 +86,7 @@ export function BtxImport({ data, sets, onClose, onDone }: { data: CatalogData; 
           }
           setId = made[nm]
         }
-        let icon = r.tool.icon ?? ''
+        let icon = r.icon
         if (icon && !icon.startsWith('data:image/svg+xml')) icon = await shrinkImage(icon).catch(() => '')
         const existing = r.typeId && !r.setKey.startsWith(NEW) ? data.device_types.find(x => x.id === r.typeId) : undefined
         if (existing) {
@@ -103,6 +108,7 @@ export function BtxImport({ data, sets, onClose, onDone }: { data: CatalogData; 
   const chosen = (rows ?? []).filter(r => r.include && r.name.trim()).length
   const fileNames = [...new Set((rows ?? []).map(r => r.file))]
   return (
+    <>
     <div className="modal-backdrop" onClick={onClose}>
       <div className="card modal xwide" onClick={e => e.stopPropagation()}>
         <div className="row"><h3>Import Revu tool set (.btx)</h3><span className="spacer" /><button onClick={onClose}>Close</button></div>
@@ -125,7 +131,8 @@ export function BtxImport({ data, sets, onClose, onDone }: { data: CatalogData; 
                       {rows.map((r, i) => r.file !== fn ? null : (
                         <tr key={i}>
                           <td className="c-chk"><input type="checkbox" aria-label="Import" checked={r.include} onChange={e => patch(i, { include: e.target.checked })} /></td>
-                          <td className="c-icon">{r.tool.icon ? <img src={r.tool.icon} alt="" width={36} height={36} /> : <span className="muted">-</span>}</td>
+                          <td className="c-icon"><button type="button" title="Change icon" aria-label={`Change icon for ${r.name}`} onClick={() => setPicking(i)}>
+                            {r.icon ? <img src={r.icon} alt="" width={36} height={36} style={r.icon !== r.tool.icon ? { background: '#868e96', borderRadius: 6 } : undefined} /> : <span className="muted">Pick</span>}</button></td>
                           <td>
                             <input value={r.name} onChange={e => patch(i, { name: e.target.value, typeId: match(r.setKey, e.target.value) })} />
                             {r.tool.model && <div className="muted small">Model: {r.tool.model}</div>}
@@ -156,5 +163,10 @@ export function BtxImport({ data, sets, onClose, onDone }: { data: CatalogData; 
         )}
       </div>
     </div>
+      {picking !== null && rows && rows[picking] && (
+        <IconPicker color="#868e96" suggestName={rows[picking].name} original={rows[picking].tool.icon}
+          onClose={() => setPicking(null)} onPick={url => { patch(picking, { icon: url }); setPicking(null) }} />
+      )}
+    </>
   )
 }

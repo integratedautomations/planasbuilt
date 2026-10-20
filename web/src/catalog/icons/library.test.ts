@@ -31,3 +31,26 @@ describe('icon library', () => {
     expect(searchIcons('zzzz')).toEqual([])
   })
 })
+
+import { ICON_CLASSES, autoIconFor, classForName } from './classIcons'
+describe('class icons', () => {
+  it('gives every class two distinct, well formed options', () => {
+    expect(new Set(ICON_CLASSES.map(c => c.id)).size).toBe(ICON_CLASSES.length)
+    for (const c of ICON_CLASSES) {
+      expect(c.a.body, c.id).not.toBe(c.b.body)
+      for (const i of [c.a, c.b]) {
+        const svg = iconSvg(i, '#000')
+        expect(svg.match(/</g)?.length, i.id).toBe(svg.match(/>/g)?.length)
+        expect(i.body.length, i.id).toBeGreaterThan(20)
+      }
+    }
+  })
+  it('recognises Revu tool names', () => {
+    const cases: Record<string, string> = { 'Horn Strobe': 'fa-horn-strobe', 'Smoke Detector': 'fa-smoke', 'Smoke/CO': 'fa-co', 'Data Jack x2': 'net-jack',
+      'PTZ Camera': 'cam-ptz', 'Fisheye': 'cam-fisheye', 'Request to Exit': 'ac-rex', 'Single Mag Lock': 'ac-maglock', 'Glass Break Detector': 'in-glass',
+      'Wifi Access Point': 'net-wap', 'Speaker Strobe': 'fa-speaker-strobe', 'Network Video Recorder': 'video-nvr' }
+    for (const [n, id] of Object.entries(cases)) expect(classForName(n)?.id, n).toBe(id)
+    expect(classForName('Footing')).toBeUndefined()
+    expect(autoIconFor('Card Reader')).toMatch(/^data:image\/svg\+xml/)
+  })
+})
