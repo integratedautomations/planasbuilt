@@ -609,3 +609,5 @@ input.invalid { border-color: var(--danger); }
 .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 
 .markup-stage.no-cursor, .markup-stage.no-cursor canvas { cursor: none !important; }
+/* Select and Pan live in the bottom bar on desktop; phones keep them in the rail */
+@media (min-width: 641px) { .tool-rail .rail-nav { display: none; } }

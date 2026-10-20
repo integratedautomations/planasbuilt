@@ -48,7 +48,7 @@ export function ToolRail({ hotkeys, tool, onTool, readOnly, boxSelect, onBoxSele
   return (
     <nav className="tool-rail" aria-label="Markup tools">
       {tools.map(t => (
-        <button key={t.tool} className={`tool-btn${tool === t.tool ? ' active' : ''}${PRIMARY.includes(t.tool) ? '' : ' secondary'}`}
+        <button key={t.tool} className={`tool-btn${tool === t.tool ? ' active' : ''}${PRIMARY.includes(t.tool) ? '' : ' secondary'}${t.tool === 'select' || t.tool === 'pan' ? ' rail-nav' : ''}`}
           title={hotkeys[`tool.${t.tool}`] ? `${t.label} (${hotkeys[`tool.${t.tool}`]})` : t.label} aria-pressed={tool === t.tool} onClick={() => pick(t.tool)}>
           {t.icon}
         </button>
