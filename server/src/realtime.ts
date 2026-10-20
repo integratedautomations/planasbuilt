@@ -126,6 +126,10 @@ export class Realtime {
   revisionChanged(documentId: string, revisionId: string, revision: number, by: string, clientId?: string | null) {
     this.toRoom(documentId, { type: 'revision', revisionId, revision, by }, clientId)
   }
+  /** The document's markups were replaced wholesale (a revision was restored): clients reload them. */
+  markupsReset(documentId: string, by: string, clientId?: string | null) {
+    this.toRoom(documentId, { type: 'markups_reset', by }, clientId)
+  }
   layersChanged(documentIds: string[], by: string, clientId?: string | null) {
     for (const id of documentIds) this.toRoom(id, { type: 'layers', by }, clientId)
   }

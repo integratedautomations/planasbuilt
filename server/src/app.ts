@@ -355,7 +355,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     return s
   }
 
-  interface NewRevision { kind: 'upload' | 'issued'; label: string; note: string; fileKey: string; pageCount: number; userId: string; snapshot?: Snapshot | null }
+  interface NewRevision { kind: 'upload' | 'issued' | 'restore'; label: string; note: string; fileKey: string; pageCount: number; userId: string; snapshot?: Snapshot | null }
   async function insertRevision(q: Q, docId: string, r: NewRevision) {
     const [rev] = await q(
       `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by, kind, label, note, markups_snapshot, attachments_snapshot, scales_snapshot)
@@ -409,6 +409,73 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     })
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
     return rev
+  })
+
+  // Make an older revision current without deleting newer ones: the present state is frozen first, then a new revision
+  // points at the older PDF and the live markups / scales are replaced by that revision's snapshot.
+  app.post('/api/documents/:id/revisions/:rid/make-current', { preHandler: auth }, async (req, reply) => {
+    const doc = await documentWithAccess(req, reply, 'editor')
+    if (!doc) return
+    const { rid } = req.params as any
+    const [src] = UUID_RE.test(String(rid)) ? await db.query(
+      `SELECT id, revision, file_key, page_count, markups_snapshot, scales_snapshot
+       FROM document_revisions WHERE document_id = $1 AND id = $2`, [doc.id, rid]) : []
+    if (!src) return reply.code(404).send({ error: 'Revision not found' })
+    const [latest] = await db.query('SELECT id, file_key, page_count FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+    if (latest.id === src.id) return reply.code(400).send({ error: 'That revision is already the current one' })
+    if (!src.markups_snapshot) return reply.code(400).send({ error: 'That revision has no saved markups to restore' })
+    const snapMarkups = src.markups_snapshot as any[]
+    const snapScales = (src.scales_snapshot ?? []) as any[]
+    const userId = req.user.id
+    const result = await db.transaction(async q => {
+      const before = await liveSnapshot(q, doc.id)
+      await freezeLatest(q, doc.id)
+      await insertRevision(q, doc.id, {
+        kind: 'restore', label: `Before restoring Rev ${src.revision}`, note: '', fileKey: latest.file_key, pageCount: latest.page_count, userId, snapshot: before })
+      const created = await insertRevision(q, doc.id, {
+        kind: 'restore', label: '', note: '', fileKey: src.file_key, pageCount: src.page_count, userId })
+      const label = `Rev ${created.revision} (restored from Rev ${src.revision})`
+      await q('UPDATE document_revisions SET label = $2 WHERE id = $1', [created.id, label])
+
+      // References that may have been deleted since the snapshot was taken fall back to null
+      const known = async (table: string, ids: string[]) => new Set(ids.length
+        ? (await q<{ id: string }>(`SELECT id FROM ${table} WHERE id = ANY($1::uuid[])`, [ids])).map(r => r.id) : [])
+      const uniq = (k: string) => [...new Set(snapMarkups.map(m => m[k]).filter(Boolean))] as string[]
+      const layers = await known('layers', uniq('layer_id'))
+      const sets = await known('symbol_sets', uniq('symbol_set_id'))
+      const types = await known('device_types', uniq('device_type_id'))
+      const products = await known('products', uniq('product_id'))
+      const keep = new Set(snapMarkups.map(m => m.id))
+      const liveRows = await q<{ id: string }>('SELECT id FROM markups WHERE document_id = $1 AND NOT deleted', [doc.id])
+      const removed = liveRows.filter(r => !keep.has(r.id)).map(r => r.id)
+      if (removed.length) {
+        await q('UPDATE markups SET deleted = true, version = version + 1, updated_by = $2, updated_at = now() WHERE id = ANY($1::uuid[])', [removed, userId])
+        await q(`INSERT INTO markup_events (markup_id, user_id, action, changes)
+                 SELECT unnest($1::uuid[]), $2, 'deleted', $3::jsonb`, [removed, userId, JSON.stringify({ reason: `restored Rev ${src.revision}` })])
+      }
+      for (const m of snapMarkups) {
+        await q(
+          `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by, device_type_id, product_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
+             style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id, symbol_set_id = EXCLUDED.symbol_set_id,
+             device_type_id = EXCLUDED.device_type_id, product_id = EXCLUDED.product_id, tag = EXCLUDED.tag, status = EXCLUDED.status,
+             fields = EXCLUDED.fields, deleted = false, version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+          [m.id, doc.id, m.page, m.type, JSON.stringify(m.geometry), JSON.stringify(m.style ?? {}), m.text ?? '',
+            layers.has(m.layer_id) ? m.layer_id : null, sets.has(m.symbol_set_id) ? m.symbol_set_id : null, m.tag ?? '', m.status ?? '',
+            JSON.stringify(m.fields ?? {}), m.created_by ?? userId, userId,
+            types.has(m.device_type_id) ? m.device_type_id : null, products.has(m.product_id) ? m.product_id : null])
+      }
+      await q('DELETE FROM page_scales WHERE document_id = $1', [doc.id])
+      for (const s of snapScales)
+        await q('INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by) VALUES ($1,$2,$3,$4,$5)',
+          [doc.id, s.page, s.points_per_foot, s.label ?? '', userId])
+      return { ...created, label, restored_from: src.revision, removed_markups: removed.length, restored_markups: snapMarkups.length }
+    })
+    realtime.revisionChanged(doc.id, result.id, result.revision, userId, cid(req))
+    realtime.markupsReset(doc.id, userId, cid(req))
+    realtime.scalesChanged(doc.id, userId, cid(req))
+    return result
   })
 
   // One revision: meta plus the markups (and photo references / scales) as they were. The newest revision, which is
@@ -830,6 +897,22 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     if (!row) return reply.code(404).send({ error: 'Not found' })
     realtime.symbolSetsChanged(req.user.id, cid(req))
     return row
+  })
+
+  // Reorder a set's device types: body { ids } lists them in the wanted order (unlisted types keep their place after them)
+  app.put('/api/symbol-sets/:id/device-types/order', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const setId = (req.params as any).id
+    const ids = (req.body as any)?.ids
+    if (!UUID_RE.test(String(setId)) || !Array.isArray(ids) || ids.some((i: unknown) => typeof i !== 'string' || !UUID_RE.test(i)) || new Set(ids).size !== ids.length)
+      return reply.code(400).send({ error: 'ids must be a list of device type ids' })
+    const rows = await db.query<{ id: string }>('SELECT id FROM device_types WHERE symbol_set_id = $1 ORDER BY sort, created_at', [setId])
+    const have = new Set(rows.map(r => r.id))
+    if (ids.some((i: string) => !have.has(i))) return reply.code(400).send({ error: 'Unknown device type for this symbol set' })
+    const order = [...ids, ...rows.map(r => r.id).filter(i => !ids.includes(i))]
+    await db.transaction(async q => { for (let i = 0; i < order.length; i++) await q('UPDATE device_types SET sort = $1 WHERE id = $2', [i + 1, order[i]]) })
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return { ok: true, order }
   })
 
   // Archive so existing device markups keep their type

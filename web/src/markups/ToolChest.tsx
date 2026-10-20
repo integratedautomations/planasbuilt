@@ -1,7 +1,11 @@
 import { useState } from 'react'
 import { groupEntries, matchesSearch } from './toolEntries'
 import type { ToolEntry } from './toolEntries'
+import { ContextMenu } from './ContextMenu'
+import type { MenuItem } from './ContextMenu'
 import { reorderFavorites } from '../prefs/prefs'
+import { groupPrefs, hiddenGroupCount, ICON_PX, moveGroup, moveItem, orderBy, resetChestOrder, setGroup, showAllGroups } from '../prefs/chest'
+import type { ChestPrefs, ChestSize } from '../prefs/chest'
 
 interface Props {
   entries: ToolEntry[]
@@ -10,38 +14,60 @@ interface Props {
   recent: string[]
   hotkeys: Record<string, string>
   readOnly: boolean
+  chest: ChestPrefs
+  onChest: (c: ChestPrefs) => void
   onPick: (e: ToolEntry) => void
   onFavorites: (ids: string[]) => void
   onToggleFavorite: (id: string) => void
 }
 
-function EntryIcon({ e }: { e: ToolEntry }) {
-  if (e.image) return <span className="set-icon" style={{ background: e.color }}><img src={e.image} alt="" /></span>
-  return <span className="chest-icon">{e.icon}</span>
+function EntryIcon({ e, px }: { e: ToolEntry; px?: number }) {
+  const size = px ? { width: px + 8, height: px + 8 } : undefined
+  if (e.image) return <span className="set-icon" style={{ background: e.color, ...size }}><img src={e.image} alt="" /></span>
+  return <span className="chest-icon" style={px ? { ['--chest-icon' as string]: `${px}px` } : undefined}>{e.icon}</span>
 }
 
-/** Toolbox-style tool list: favorites bar, recent tools, then every tool grouped. Searchable. */
+type Drag = { kind: 'fav' | 'item' | 'group'; id: string; group?: string }
+
+/** Toolbox-style tool list: favorites bar, recent tools, then every tool grouped. Searchable; groups and items can be reordered by dragging. */
 export function ToolChest(p: Props) {
   const [q, setQ] = useState('')
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [dragId, setDragId] = useState<string | null>(null)
+  /** Groups the user opened or closed this session (otherwise the saved "start expanded" setting applies). */
+  const [openNow, setOpenNow] = useState<Record<string, boolean>>({})
+  const [drag, setDrag] = useState<Drag | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; group: string } | null>(null)
   const byId = new Map(p.entries.map(e => [e.id, e]))
   const allowed = (e: ToolEntry) => !p.readOnly || e.tool === 'select' || e.tool === 'pan'
   const favs = p.favorites.map(id => byId.get(id)).filter((e): e is ToolEntry => !!e && allowed(e))
   const recent = p.recent.map(id => byId.get(id)).filter((e): e is ToolEntry => !!e && allowed(e))
   const searching = q.trim() !== ''
-  const groups = groupEntries(p.entries.filter(allowed)).map(g => ({ ...g, entries: g.entries.filter(e => matchesSearch(e, q)) })).filter(g => g.entries.length)
+  const all = orderBy(groupEntries(p.entries.filter(allowed)), g => g.name, p.chest.groupOrder)
+    .map(g => ({ ...g, entries: orderBy(g.entries, e => e.id, p.chest.itemOrder[g.name]) }))
+  const shownNames = all.map(g => g.name)
+  const groups = all.filter(g => !groupPrefs(p.chest, g.name).hidden)
+    .map(g => ({ ...g, entries: g.entries.filter(e => matchesSearch(e, q)) })).filter(g => g.entries.length)
   const keyOf = (e: ToolEntry) => (e.command && p.hotkeys[e.command]) || ''
 
-  const row = (e: ToolEntry, opts: { drag?: boolean } = {}) => {
+  const startDrag = (d: Drag) => (ev: React.DragEvent) => { setDrag(d); ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', d.id) }
+  const dropOnItem = (g: { name: string; entries: ToolEntry[] }, target: string | null) => (ev: React.DragEvent) => {
+    ev.preventDefault()
+    if (drag?.kind === 'item' && drag.group === g.name) p.onChest(moveItem(p.chest, g.name, g.entries.map(e => e.id), drag.id, target))
+    setDrag(null)
+  }
+
+  const row = (e: ToolEntry, opts: { favDrag?: boolean; group?: { name: string; entries: ToolEntry[] } } = {}) => {
     const isFav = p.favorites.includes(e.id)
+    const g = opts.group
+    const canDrag = opts.favDrag || (!!g && !searching)
     return (
-      <div key={e.id} className={`chest-row${p.activeId === e.id ? ' active' : ''}${dragId === e.id ? ' dragging' : ''}`}
-        draggable={opts.drag} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click to ${isFav ? 'unpin' : 'pin'}`}
-        onDragStart={opts.drag ? ev => { setDragId(e.id); ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', e.id) } : undefined}
-        onDragOver={opts.drag ? ev => { if (dragId) ev.preventDefault() } : undefined}
-        onDrop={opts.drag ? ev => { ev.preventDefault(); if (dragId) p.onFavorites(reorderFavorites(p.favorites, dragId, e.id)); setDragId(null) } : undefined}
-        onDragEnd={() => setDragId(null)}
+      <div key={e.id} className={`chest-row${p.activeId === e.id ? ' active' : ''}${drag?.id === e.id ? ' dragging' : ''}`}
+        draggable={canDrag} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click to ${isFav ? 'unpin' : 'pin'}`}
+        onDragStart={canDrag ? startDrag(opts.favDrag ? { kind: 'fav', id: e.id } : { kind: 'item', id: e.id, group: g!.name }) : undefined}
+        onDragOver={canDrag ? ev => { if (drag && (opts.favDrag ? drag.kind === 'fav' : drag.kind === 'item' && drag.group === g!.name)) ev.preventDefault() } : undefined}
+        onDrop={opts.favDrag
+          ? ev => { ev.preventDefault(); if (drag?.kind === 'fav') p.onFavorites(reorderFavorites(p.favorites, drag.id, e.id)); setDrag(null) }
+          : g ? dropOnItem(g, e.id) : undefined}
+        onDragEnd={() => setDrag(null)}
         onContextMenu={ev => { ev.preventDefault(); p.onToggleFavorite(e.id) }}>
         <button className="chest-pick" aria-pressed={p.activeId === e.id} onClick={() => p.onPick(e)}>
           <EntryIcon e={e} />
@@ -54,6 +80,38 @@ export function ToolChest(p: Props) {
     )
   }
 
+  const cell = (e: ToolEntry, g: { name: string; entries: ToolEntry[] }, px: number) => (
+    <button key={e.id} className={`chest-cell${p.activeId === e.id ? ' active' : ''}${drag?.id === e.id ? ' dragging' : ''}`}
+      draggable={!searching} aria-pressed={p.activeId === e.id} title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''} - right-click to ${p.favorites.includes(e.id) ? 'unpin' : 'pin'}`}
+      aria-label={e.label} style={{ ['--chest-icon' as string]: `${px}px` }}
+      onClick={() => p.onPick(e)}
+      onDragStart={startDrag({ kind: 'item', id: e.id, group: g.name })}
+      onDragOver={ev => { if (drag?.kind === 'item' && drag.group === g.name) ev.preventDefault() }}
+      onDrop={dropOnItem(g, e.id)} onDragEnd={() => setDrag(null)}
+      onContextMenu={ev => { ev.preventDefault(); p.onToggleFavorite(e.id) }}>
+      <EntryIcon e={e} px={px} />
+    </button>
+  )
+
+  const menuItems = (name: string): MenuItem[] => {
+    const gp = groupPrefs(p.chest, name)
+    const set = (patch: Parameters<typeof setGroup>[2]) => () => p.onChest(setGroup(p.chest, name, patch))
+    const mark = (on: boolean, label: string) => (on ? `✓ ${label}` : label)
+    const sizes: ChestSize[] = ['small', 'medium', 'large']
+    const hidden = hiddenGroupCount(p.chest)
+    return [
+      { label: gp.expanded ? 'Start collapsed' : 'Start expanded', onClick: set({ expanded: !gp.expanded }) },
+      { label: '', separator: true },
+      { label: mark(gp.view === 'list', 'List view'), onClick: set({ view: 'list' }) },
+      { label: mark(gp.view === 'grid', 'Grid view (icons only)'), onClick: set({ view: 'grid' }) },
+      { label: 'Icon size', sub: sizes.map(s => ({ label: mark(gp.size === s, s[0].toUpperCase() + s.slice(1)), onClick: set({ size: s }) })) },
+      { label: '', separator: true },
+      { label: 'Hide group', onClick: set({ hidden: true }) },
+      { label: hidden ? `Show hidden groups (${hidden})` : 'Show hidden groups', disabled: !hidden, onClick: () => p.onChest(showAllGroups(p.chest)) },
+      { label: 'Reset order', onClick: () => p.onChest(resetChestOrder(p.chest)) },
+    ]
+  }
+
   return (
     <div className="tool-chest">
       <input type="search" className="chest-search" placeholder="Search tools" aria-label="Search tools" value={q} onChange={e => setQ(e.target.value)} />
@@ -63,9 +121,9 @@ export function ToolChest(p: Props) {
             <div className="chest-heading">Favorites</div>
             {favs.length === 0 && <div className="muted small chest-empty">Click a star to pin a tool here. Drag to reorder.</div>}
             <div className="chest-favs"
-              onDragOver={ev => { if (dragId) ev.preventDefault() }}
-              onDrop={ev => { if (ev.target === ev.currentTarget && dragId) { ev.preventDefault(); p.onFavorites(reorderFavorites(p.favorites, dragId, null)); setDragId(null) } }}>
-              {favs.map(e => row(e, { drag: true }))}
+              onDragOver={ev => { if (drag?.kind === 'fav') ev.preventDefault() }}
+              onDrop={ev => { if (ev.target === ev.currentTarget && drag?.kind === 'fav') { ev.preventDefault(); p.onFavorites(reorderFavorites(p.favorites, drag.id, null)); setDrag(null) } }}>
+              {favs.map(e => row(e, { favDrag: true }))}
             </div>
           </section>
         )}
@@ -76,19 +134,35 @@ export function ToolChest(p: Props) {
           </section>
         )}
         {groups.map(g => {
-          const open = searching || !collapsed.has(g.name)
+          const gp = groupPrefs(p.chest, g.name)
+          const open = searching || (openNow[g.name] ?? gp.expanded)
+          const px = ICON_PX[gp.size]
           return (
-            <section key={g.name} aria-label={g.name}>
-              <button className="chest-heading chest-group" aria-expanded={open}
-                onClick={() => setCollapsed(prev => { const n = new Set(prev); if (n.has(g.name)) n.delete(g.name); else n.add(g.name); return n })}>
+            <section key={g.name} aria-label={g.name} className={`chest-section${drag?.kind === 'group' && drag.id === g.name ? ' dragging' : ''}`}
+              onDragOver={ev => { if (drag?.kind === 'group') ev.preventDefault() }}
+              onDrop={ev => { if (drag?.kind === 'group') { ev.preventDefault(); p.onChest(moveGroup(p.chest, shownNames, drag.id, g.name)); setDrag(null) } }}>
+              <button className="chest-heading chest-group" aria-expanded={open} draggable={!searching}
+                title="Drag to reorder. Right-click for group options."
+                onDragStart={startDrag({ kind: 'group', id: g.name })} onDragEnd={() => setDrag(null)}
+                onContextMenu={ev => { ev.preventDefault(); setMenu({ x: ev.clientX, y: ev.clientY, group: g.name }) }}
+                onClick={() => setOpenNow(prev => ({ ...prev, [g.name]: !open }))}>
                 <span aria-hidden>{open ? '▾' : '▸'}</span> {g.name}{g.isSet && <span className="muted small"> (symbols)</span>}
               </button>
-              {open && g.entries.map(e => row(e))}
+              {open && (gp.view === 'grid'
+                ? <div className="chest-grid" onDragOver={ev => { if (drag?.kind === 'item' && drag.group === g.name) ev.preventDefault() }}
+                    onDrop={ev => { if (ev.target === ev.currentTarget) dropOnItem(g, null)(ev) }}>{g.entries.map(e => cell(e, g, px))}</div>
+                : g.entries.map(e => row(e, { group: g })))}
             </section>
           )
         })}
         {searching && groups.length === 0 && <div className="muted small chest-empty">No tools match.</div>}
+        {!searching && hiddenGroupCount(p.chest) > 0 && (
+          <button className="link-btn small chest-hidden" onClick={() => p.onChest(showAllGroups(p.chest))}>
+            Show {hiddenGroupCount(p.chest)} hidden group{hiddenGroupCount(p.chest) === 1 ? '' : 's'}
+          </button>
+        )}
       </div>
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.group)} onClose={() => setMenu(null)} />}
     </div>
   )
 }

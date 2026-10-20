@@ -15,7 +15,7 @@ import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
 import { mergeServerMarkups } from './sync'
 
 /** revisions are newest first. */
-export interface DocMeta { id: string; name: string; revisions: { id?: string; revision: number; page_count: number; kind?: 'upload' | 'issued'; label?: string }[] }
+export interface DocMeta { id: string; name: string; revisions: { id?: string; revision: number; page_count: number; kind?: 'upload' | 'issued' | 'restore'; label?: string }[] }
 export interface ServerScale { page: number; points_per_foot: number; label: string; updated_at?: string }
 
 export interface Loaded<T> { data: T; fromCache: boolean }

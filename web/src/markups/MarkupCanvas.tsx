@@ -80,6 +80,8 @@ interface Props {
   onContextMenu?: (info: ContextInfo) => void
   /** Drawn rectangles/ellipses are forced to squares/circles (Square and Circle tools). */
   constrain?: boolean
+  /** A right-drag box picked markups while a drawing tool was active: the viewer switches to the Select tool so they show as selected. */
+  onBoxSelected?: () => void
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length']
@@ -91,7 +93,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'rect', 'el
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onContextMenu, constrain } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onContextMenu, constrain, onBoxSelected } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -104,6 +106,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean } } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
+  /** Ctrl+drag copy in progress: the originals stay drawn in place while the dragged node is the copy. */
+  const [copyGhosts, setCopyGhosts] = useState<Markup[] | null>(null)
+  const copyDrag = useRef(false)
   const [fovOverride, setFovOverride] = useState<{ id: string; fov: Fov } | null>(null)
 
   const byId = new Map(markups.map(m => [m.id, m]))
@@ -350,6 +355,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       }
       const ids = box ? markupsInBox(markups, box, lockedIds) : []
       onSelect(ms.add ? [...selectedIds, ...ids.filter(i => !selectedIds.includes(i))] : ids)
+      if (ids.length && isDrawTool) onBoxSelected?.()
       return
     }
     if (e.evt.button !== 0) return
@@ -408,7 +414,24 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     commit(change)
   }
 
+  /** The markups a Ctrl+drag of `id` copies (one device when dragging out of a stack). */
+  function copySources(id: string): Markup[] {
+    const grp = stacks.byId.get(id)
+    const srcIds = grp ? [id] : selectedIds.includes(id) ? selectedIds : [id]
+    return srcIds.map(i => byId.get(i)).filter((m): m is Markup => !!m && !lockedIds.has(m.id) && !isSheetArea(m))
+  }
+
+  function onDragStart(e: Konva.KonvaEventObject<DragEvent>) {
+    const id = markupIdOf(e.target)
+    if (!id || e.target.name() !== 'markup' || readOnly || !(e.evt.ctrlKey || e.evt.metaKey)) return
+    copyDrag.current = true
+    setCopyGhosts(copySources(id).filter(m => m.id === id || !stacks.byId.get(id)))
+  }
+
   function onDragEnd(e: Konva.KonvaEventObject<DragEvent>) {
+    const wasCopy = copyDrag.current
+    copyDrag.current = false
+    setCopyGhosts(null)
     const stage = stageRef.current
     const id = markupIdOf(e.target)
     if (!stage || !id || e.target.name() !== 'markup') return
@@ -418,13 +441,12 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const dx = e.target.x() - dragged.geometry.x, dy = e.target.y() - dragged.geometry.y
     if (dx === 0 && dy === 0) return
     const grp = stacks.byId.get(id)
-    if (e.evt.ctrlKey || e.evt.metaKey) {
+    if (wasCopy || e.evt.ctrlKey || e.evt.metaKey) {
       // Ctrl+drag: the original stays and a copy lands at the drop point (one device when dragging out of a stack)
       e.target.position({ x: dragged.geometry.x, y: dragged.geometry.y })
       e.target.getLayer()?.batchDraw()
       if (readOnly) return
-      const srcIds = grp ? [id] : selectedIds.includes(id) ? selectedIds : [id]
-      const copies = srcIds.map(i => byId.get(i)).filter((m): m is Markup => !!m && !lockedIds.has(m.id) && !isSheetArea(m))
+      const copies = copySources(id)
         .map(m => copyMarkup(m, { dx, dy, set: m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined }))
       if (!copies.length) return
       commit(copies.map(after => ({ before: null, after })))
@@ -506,9 +528,15 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
                 setPointOverride(null)
                 commit([{ before: m, after: { ...m, geometry: { ...(m.geometry as PathGeometry), points } } }])
               }}
-              onDragEnd={onDragEnd} />
+              onDragStart={onDragStart} onDragEnd={onDragEnd} />
           )
         })}
+        {copyGhosts?.map(g => (
+          <MarkupShape key={`copy-ghost:${g.id}`} markup={{ ...g, id: `copy-ghost:${g.id}` }} zoom={zoom} scale={scale} listening={false}
+            symbolSet={g.symbol_set_id ? symbolSets.get(g.symbol_set_id) : undefined}
+            iconSrc={g.type === 'device' ? deviceIcon(g, g.symbol_set_id ? symbolSets.get(g.symbol_set_id) : undefined, catalog) : undefined}
+            showCones={showCones} areaPath={g.type === 'area' ? areaPaths.get(g.id) : undefined} />
+        ))}
         {marquee && <Rect x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} listening={false}
           stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} fill="rgba(25,113,194,0.12)" />}
         {snapHint && <Circle x={snapHint.x} y={snapHint.y} radius={snapHint.r * 1.2} listening={false}

@@ -7,7 +7,10 @@ import type { Progress } from '../offline/cache'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { loadPdf } from '../pdf'
 import { exportProjectReport } from '../pdfio/actions'
+import { ReportDialog } from '../pdfio/ReportDialog'
+import type { ReportOptions } from '../pdfio/reportOptions'
 import { exportProjectSchedule } from '../schedule/exportProject'
+import { makeRevisionCurrent } from '../revisions/api'
 import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 
 export function ProjectPage({ user }: { user: User }) {
@@ -19,6 +22,7 @@ export function ProjectPage({ user }: { user: User }) {
   const [uploading, setUploading] = useState('')
   const [exporting, setExporting] = useState(false)
   const [reporting, setReporting] = useState<string>('')
+  const [reportOpen, setReportOpen] = useState(false)
   const revInput = useRef<HTMLInputElement>(null)
   const revTarget = useRef<DocumentSummary | null>(null)
   const [revising, setRevising] = useState('')
@@ -89,10 +93,11 @@ export function ProjectPage({ user }: { user: User }) {
     finally { setExporting(false) }
   }
 
-  async function asBuiltReport() {
+  async function asBuiltReport(options: ReportOptions) {
     if (!project) return
+    setReportOpen(false)
     setReporting('Starting…'); setError('')
-    try { await exportProjectReport(project.id, project.name, (d, t, label) => setReporting(`${d}/${t} ${label}`)) }
+    try { await exportProjectReport(project.id, project.name, options, (d, t, label) => setReporting(`${d}/${t} ${label}`)) }
     catch (err) { setError(`Report failed: ${(err as Error).message}`) }
     finally { setReporting('') }
   }
@@ -125,6 +130,20 @@ export function ProjectPage({ user }: { user: User }) {
     finally { setRevising('') }
   }
 
+  async function setAsCurrent(doc: DocumentSummary, r: DocumentRevision) {
+    if (!confirm(`Make Rev ${r.revision}${r.label ? ` (${r.label})` : ''} the current plan?
+
+Its PDF, markups and scales are restored as a new revision. The present state is saved first as "Before restoring Rev ${r.revision}"; no revision is deleted.`)) return
+    setError(''); setRevNotice('')
+    try {
+      const res = await makeRevisionCurrent(doc.id, r.id)
+      await invalidatePdf(doc.id)
+      setDocs(ds => ds.map(d => d.id === doc.id ? { ...d, revision: res.revision, revision_id: res.id, page_count: res.page_count } : d))
+      setRevs(await api<DocumentRevision[]>(`/documents/${doc.id}/revisions`))
+      setRevNotice(`${doc.name}: ${res.label}.`)
+    } catch (err) { setError((err as Error).message) }
+  }
+
   async function remove(doc: DocumentSummary) {
     if (!confirm(`Delete "${doc.name}"? This removes the plan and its markups.`)) return
     await api(`/documents/${doc.id}`, { method: 'DELETE' })
@@ -153,7 +172,7 @@ export function ProjectPage({ user }: { user: User }) {
           <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
             {exporting ? 'Exporting…' : 'Export schedule'}
           </button>
-          <button disabled={!project || !!reporting || docs.length === 0} onClick={asBuiltReport}
+          <button disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}
             title="One PDF: every sheet with markups, then a page per device with its details and photos">
             {reporting ? `Building report… ${reporting}` : 'As-built report'}
           </button>
@@ -204,13 +223,14 @@ export function ProjectPage({ user }: { user: User }) {
                     {revs.length === 0 && <li className="muted">Loading…</li>}
                     {revs.map(r => (
                       <li key={r.id}>
-                        <strong>Rev {r.revision}</strong>{r.label && ` · ${r.label}`}{r.kind === 'issued' && <> <span className="rev-kind">issued</span></>}
+                        <strong>Rev {r.revision}</strong>{r.label && ` · ${r.label}`}{r.kind === 'issued' && <> <span className="rev-kind">issued</span></>}{r.kind === 'restore' && <> <span className="rev-kind">restore</span></>}
                         {r.revision === d.revision && ' (current)'} · {new Date(r.created_at).toLocaleDateString()}
                         {r.uploaded_by_name && ` · ${r.uploaded_by_name}`} · {r.page_count} page{r.page_count === 1 ? '' : 's'}
                         {r.note && <div className="muted">{r.note}</div>}
                         {' · '}<Link to={`/projects/${projectId}/documents/${d.id}${r.revision === d.revision ? '' : `?rev=${r.id}`}`}>View</Link>
                         {r.revision !== d.revision && <>{' · '}<Link to={`/projects/${projectId}/documents/${d.id}?compare=${r.id}`}>Compare with current</Link></>}
                         {' · '}<a href={documentFileUrl(d.id, r.id)} target="_blank" rel="noreferrer">Open PDF</a>
+                        {canEdit && r.revision !== d.revision && r.has_snapshot && <>{' · '}<button className="link-btn" title="Restore this revision as a new current one; newer revisions are kept" onClick={() => setAsCurrent(d, r)}>Set as current</button></>}
                       </li>
                     ))}
                   </ul>
@@ -218,6 +238,9 @@ export function ProjectPage({ user }: { user: User }) {
               </li>
             ))}
           </ul>
+        )}
+        {reportOpen && project && (
+          <ReportDialog projectName={project.name} docs={docs} busy={!!reporting} onGenerate={asBuiltReport} onClose={() => setReportOpen(false)} />
         )}
         {issuing && (
           <IssueRevisionDialog documentId={issuing.id} documentName={issuing.name} nextRevision={issuing.revision + 1}

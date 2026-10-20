@@ -22,6 +22,10 @@ import { ContextMenu } from '../markups/ContextMenu'
 import type { MenuItem } from '../markups/ContextMenu'
 import { MarkupPopup } from '../markups/MarkupInfo'
 import { copyMarkup } from '../markups/copy'
+import { pushSelection, selectAfterDelete } from '../markups/selectionHistory'
+import { isSameDevice, replaceDevice } from '../markups/replaceDevice'
+import type { ReplaceTarget } from '../markups/replaceDevice'
+import { ReplaceDialog } from '../markups/ReplaceDialog'
 import { markupBounds } from '../markups/selection'
 import { DockZone } from '../viewer/DockZone'
 import { usePrefs, setPref, getPrefs } from '../prefs/store'
@@ -57,8 +61,10 @@ import { usePeers } from '../realtime/hooks'
 import { joinDocument, on as onSocket, sendPresence } from '../realtime/socket'
 import { PdfMenu } from '../pdfio/PdfMenu'
 import { PrintDialog } from '../pdfio/PrintDialog'
-import { buildPrintPdf, printPdfBytes } from '../pdfio/print'
-import type { PrintSettings } from '../pdfio/print'
+import { buildPrintPdf } from '../pdfio/print'
+import { markupsForPrint } from '../pdfio/printPlan'
+import type { PrintOptions } from '../pdfio/printPlan'
+import { printImages, renderPrintImages } from '../pdfio/printRaster'
 import { buildSubset } from '../pdfio/pageSubset'
 import { loadIcons } from '../pdfio/icons'
 import { downloadBytes } from '../pdfio/download'
@@ -71,7 +77,7 @@ import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 import { RevisionMenu } from '../revisions/RevisionMenu'
 import { cloudChange } from '../revisions/clouds'
 import type { CloudInput } from '../revisions/clouds'
-import { deletePages, fetchRevisionPdf, insertPages, listRevisions, loadRevision, moveOrder, replacePages, reorderPages, revisionName, rotatePages } from '../revisions/api'
+import { deletePages, fetchRevisionPdf, insertPages, listRevisions, loadRevision, makeRevisionCurrent, moveOrder, replacePages, reorderPages, revisionName, rotatePages } from '../revisions/api'
 import type { PageOpResult, RevisionDetail } from '../revisions/api'
 import { MarkupsList } from '../schedule/MarkupsList'
 import type { JumpTarget } from '../schedule/MarkupsList'
@@ -185,7 +191,9 @@ export function ViewerPage() {
   const [compareMode, setCompareMode] = useState<CompareMode>('side')
   const [showCompare, setShowCompare] = useState(false)
   const [printOpen, setPrintOpen] = useState(false)
-  const [printBusy, setPrintBusy] = useState(false)
+  const [printBusy, setPrintBusy] = useState('')
+  /** Pages picked in the Pages panel when Print was opened from it. */
+  const [printSelected, setPrintSelected] = useState<number[]>([])
   const [printError, setPrintError] = useState('')
   const [pageBusy, setPageBusy] = useState('')
   const pickFile = useRef<HTMLInputElement>(null)
@@ -276,6 +284,24 @@ export function ViewerPage() {
     setRevDetail(null)
     reloadScales()
   }, [setSearchParams, reloadScales])
+  /** "Set as current": restores an older revision as a new one, keeping the newer ones. */
+  async function makeCurrent(r: DocumentRevision) {
+    if (!canEditRole || pageBusy) return
+    if (!confirm(`Make ${revisionName(r)} the current plan?
+
+Its PDF, markups and scales are restored as a new revision. The present state is saved first as "Before restoring Rev ${r.revision}", and no revision is deleted.`)) return
+    setPageBusy('Restoring revision…')
+    try {
+      await flushWrites()
+      const res = await makeRevisionCurrent(documentId, r.id)
+      backToCurrent()
+      await invalidatePdf(documentId)
+      await store.reload()
+      reloadScales(); refreshRevs(); setSelectedIds([])
+      setReloadTick(t => t + 1)
+      setToast(`${res.label}: ${res.restored_markups} markup${res.restored_markups === 1 ? '' : 's'} restored.`)
+    } catch (e) { setToast((e as Error).message) } finally { setPageBusy('') }
+  }
   const viewRevision = useCallback((id: string | null) => {
     if (!id) { backToCurrent(); return }
     setSearchParams(p => { p.set('rev', id); return p })
@@ -373,6 +399,11 @@ export function ViewerPage() {
         loadDocMeta(documentId).then(r => {
           const latest = r.data.revisions[0]
           if (r.fromCache || !latest || latest.id === loadedRevision.current || revParamRef.current) return
+          if (latest.kind === 'restore') {
+            setToast(`${latest.label || `Rev ${latest.revision}`}: the plan was restored; reloading.`)
+            void invalidatePdf(documentId).then(() => { void storeRef.current.reload(); reloadScales(); setReloadTick(t => t + 1) })
+            return
+          }
           if (latest.kind === 'issued') { // same PDF and markups: only the revision list changed
             setToast(`Rev ${latest.revision} was issued${latest.label ? `: ${latest.label}` : ''}.`)
             return
@@ -381,6 +412,7 @@ export function ViewerPage() {
           void invalidatePdf(documentId).then(() => { void storeRef.current.reload(); reloadScales(); setReloadTick(t => t + 1) })
         }).catch(() => {})
       }),
+      onSocket('markups_reset', () => { void storeRef.current.reload(); setSelectedIds([]) }),
       onSocket('layers', () => { loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {}) }),
       onSocket('symbol_sets', () => { loadSymbolSets().then(r => setSymbolSetList(r.data)).catch(() => {}) }),
       onSocket('markup', msg => {
@@ -516,6 +548,10 @@ export function ViewerPage() {
 
   // Keep the selected markup visible above the sheet.
   const selectedKey = selectedIds.join(',')
+  /** Earlier selections (newest last), so deleting a markup can go back to the one selected before it. */
+  const selHistory = useRef<string[][]>([])
+  useEffect(() => { selHistory.current = pushSelection(selHistory.current, selectedIds) }, [selectedKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { selHistory.current = [] }, [documentId, pageNum])
   useEffect(() => {
     const vp = viewportRef.current
     const m = selected[0]
@@ -593,8 +629,10 @@ export function ViewerPage() {
 
   const deleteSelected = useCallback(() => {
     if (readOnly) return
+    if (!selected.length) return
+    const next = selectAfterDelete({ history: selHistory.current, deleted: selected, remaining: store.markups.values() })
     store.commit(selected.map(m => ({ before: m, after: null })))
-    setSelectedIds([])
+    setSelectedIds(next)
   }, [readOnly, selected, store])
 
   /** Adds one more device of the stack's set at the same spot; the server numbers it. One undo step. */
@@ -620,14 +658,26 @@ export function ViewerPage() {
 
   const deleteStack = useCallback((stack: Stack) => {
     if (readOnly) return
+    const next = selectAfterDelete({ history: selHistory.current, deleted: stack.members, remaining: store.markups.values() })
     store.commit(stack.members.map(m => ({ before: m, after: null })))
-    setSelectedIds([])
+    setSelectedIds(next)
   }, [readOnly, store])
 
   const updateSelected = useCallback((patch: (m: Markup) => Markup, mergeKey: string) => {
     if (readOnly) return
     store.commit(selected.map(m => ({ before: m, after: patch(m) })), `${mergeKey}:${selectedIds.join(',')}`)
   }, [readOnly, selected, selectedIds, store])
+
+  const [replacing, setReplacing] = useState(false)
+  const selectedDevices = useMemo(() => selected.filter(m => m.type === 'device'), [selected])
+  /** Swaps the selected devices for another set / type / product as one undo step. */
+  const replaceSelected = useCallback((t: ReplaceTarget) => {
+    setReplacing(false)
+    if (readOnly) return
+    const change = selectedDevices.filter(m => !isSameDevice(m, t) || t.productId !== undefined).map(m => ({ before: m, after: replaceDevice(m, t, symbolSets, catalog) }))
+      .filter(c => JSON.stringify(c.before) !== JSON.stringify(c.after))
+    store.commit(change)
+  }, [readOnly, selectedDevices, symbolSets, catalog, store])
 
   const setClip = useCallback((items: Markup[]) => { clipboard.current = items; setClipCount(items.length) }, [])
 
@@ -713,6 +763,7 @@ export function ViewerPage() {
   const onPageAction = (a: PageAction) => {
     switch (a.type) {
       case 'extract': void extractPages(a.pages); break
+      case 'print': setPrintSelected(a.pages); setPrintError(''); setPrintOpen(true); break
       case 'rotate': void runPageTool(() => rotatePages(documentId, a.pages)); break
       case 'delete':
         if (confirm(`Delete ${pageList(a.pages)}? Their markups leave the plan but stay in the previous revision, which you can still open.`))
@@ -725,16 +776,32 @@ export function ViewerPage() {
   }
   const pageToolsOn = canEditRole && !viewingOld
 
-  async function doPrint(settings: PrintSettings) {
-    setPrintBusy(true); setPrintError('')
+  const printArgs = async () => ({
+    documentId, markups: allMarkups.values(), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
+    pdfBytes: revParam ? await fetchRevisionPdf(documentId, revParam) : undefined, showOriginalAnnots: showOrig,
+  })
+
+  /** Renders the chosen pages to images and hands them to the browser's print dialog (printer and paper are picked there). */
+  async function doPrint(o: PrintOptions, pages: number[]) {
+    setPrintBusy('Preparing pages…'); setPrintError('')
     try {
-      const bytes = await buildPrintPdf({
-        documentId, markups: allMarkups.values(), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
-        pdfBytes: revParam ? await fetchRevisionPdf(documentId, revParam) : undefined,
-      }, settings, pageNum, pageCount)
-      await printPdfBytes(bytes)
+      const raster = await renderPrintImages(await printArgs(), o, pages, (d, t) => setPrintBusy(`Preparing page ${d} of ${t}…`))
+      await printImages(raster, o, meta?.name ?? 'Plan')
       setPrintOpen(false)
-    } catch (e) { setPrintError((e as Error).message) } finally { setPrintBusy(false) }
+    } catch (e) { setPrintError((e as Error).message) } finally { setPrintBusy('') }
+  }
+
+  /** The earlier route: build a print-ready PDF and download it. */
+  async function savePrintPdf(o: PrintOptions, pages: number[]) {
+    setPrintBusy('Building PDF…'); setPrintError('')
+    try {
+      const a = await printArgs()
+      const bytes = await buildPrintPdf({ ...a, markups: markupsForPrint(a.markups, o) ?? [] }, {
+        range: 'custom', custom: pages.join(','), fit: o.fit, includeMarkups: o.includeMarkups, hiddenLayers: [],
+      }, pageNum, pageCount)
+      downloadBytes(bytes, exportFileName(meta?.name ?? 'plan', 'print'))
+      setPrintOpen(false)
+    } catch (e) { setPrintError((e as Error).message) } finally { setPrintBusy('') }
   }
 
   // Project page links here with ?compare=<older revision>: open the Compare panel against the newest one.
@@ -745,6 +812,12 @@ export function ViewerPage() {
   }, [compareParam, revList.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const toolEntries = useMemo(() => buildToolEntries(symbolSetList, catalogData.device_types), [symbolSetList, catalogData.device_types])
+  // The symbol set itself is no longer a tool (only its device types are): drop favorites and recents that pointed at one
+  useEffect(() => {
+    const p = getPrefs()
+    if (p.favorites.some(id => id.startsWith('set:'))) setPref('favorites', p.favorites.filter(id => !id.startsWith('set:')))
+    if (p.recent.some(id => id.startsWith('set:'))) setPref('recent', p.recent.filter(id => !id.startsWith('set:')))
+  }, [prefs.favorites, prefs.recent])
   const entryMap = useMemo(() => new Map(toolEntries.map(e => [e.id, e])), [toolEntries])
 
   const chooseTool = useCallback((t: Tool, shape: 'square' | 'circle' | null = null) => {
@@ -812,7 +885,7 @@ export function ViewerPage() {
       case 'panel.props': togglePanel('props'); return true
       case 'panel.pages': togglePanel('pages'); return true
       case 'panel.compare': togglePanel('compare'); return true
-      case 'file.print': setPrintError(''); setPrintOpen(true); return true
+      case 'file.print': setPrintSelected([]); setPrintError(''); setPrintOpen(true); return true
       default: return false
     }
   }
@@ -820,7 +893,7 @@ export function ViewerPage() {
   // One key listener for every command in the hotkey registry; ignored while typing or while a menu/dialog is open
   const runRef = useRef(runCommand)
   runRef.current = runCommand
-  const modalOpen = showHotkeys || !!ctx || printOpen || issueOpen || !!compareReq
+  const modalOpen = showHotkeys || !!ctx || replacing || printOpen || issueOpen || !!compareReq
   useEffect(() => {
     if (modalOpen) return
     const panKey = parseCombo(hotkeys['view.panHold'])?.key
@@ -857,11 +930,16 @@ export function ViewerPage() {
         <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
       )}
       {activeTool === 'device' && (
-        <div className="symbol-palette" onPointerDown={e => e.stopPropagation()}>
+        <div className="symbol-palette" data-no-pan onPointerDown={e => e.stopPropagation()}>
           {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
           {symbolSetList.map(set => (
             <button key={set.id} className={'palette-item' + (set.id === activeSetId ? ' on' : '')}
-              title={set.name} onClick={() => { setActiveSetId(set.id); setActiveTypeId(null); setActiveProductId(null) }}>
+              title={set.name} onClick={() => {
+                const first = catalog.typesBySet.get(set.id)?.[0]
+                setActiveSetId(set.id)
+                setActiveTypeId(first?.id ?? null)
+                setActiveProductId(first ? defaultProductId(catalog, first.id) : null)
+              }}>
               <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
               <span className="hide-sm">{set.name}</span>
             </button>
@@ -909,7 +987,7 @@ export function ViewerPage() {
           readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={store.commit}
           peers={peersHere} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
-          constrain={!!shapeLock}
+          constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
           newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
@@ -945,6 +1023,7 @@ export function ViewerPage() {
       layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
       hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
       display={{ showCones, onShowCones: setShowCones }}
+      onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
       stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
       areas={{
@@ -977,8 +1056,8 @@ export function ViewerPage() {
   )
 
   const panelNodes: Record<PanelId, ReactNode> = {
-    tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeSetId, activeTypeId)} favorites={prefs.favorites} recent={prefs.recent}
-      hotkeys={hotkeys} readOnly={readOnly} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
+    tools: <ToolChest entries={toolEntries} activeId={activeEntryId(tool, shapeLock, activeTypeId)} favorites={prefs.favorites} recent={prefs.recent}
+      hotkeys={hotkeys} readOnly={readOnly} chest={prefs.chest} onChest={c => setPref('chest', c)} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
       onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))} />,
     pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} canEdit={pageToolsOn} onAction={onPageAction} /> : <div className="muted small dock-empty">Loading…</div>,
     props: sidePanelEl,
@@ -1014,6 +1093,7 @@ export function ViewerPage() {
         { label: 'Paste in place', hint: hint('edit.pasteInPlace'), disabled: !canPaste, onClick: () => paste({ inPlace: true }) },
         { label: 'Delete', hint: hint('edit.delete'), disabled: readOnly, onClick: deleteSelected },
         { label: 'Duplicate', hint: hint('edit.duplicate'), disabled: readOnly, onClick: duplicateSelected },
+        ...(selectedDevices.length ? [{ label: 'Replace with…', disabled: readOnly, onClick: () => setReplacing(true) }] : []),
         { label: '', separator: true },
         ...tools,
       ]
@@ -1060,9 +1140,9 @@ export function ViewerPage() {
         </button>
         <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
           scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
-          projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
+          projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
         <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
-          onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} />
+          onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
         <button className="icon-btn hide-sm" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShowHotkeys(true)}>⌨</button>
         <button className={'icon-btn' + (panelOpen('markups') ? ' active' : '')} title={'Markups list (' + (hotkeys['panel.markups'] || 'no key') + ')'} aria-label="List" aria-pressed={panelOpen('markups')}
           onClick={() => togglePanel('markups')}>☷<span className="hide-sm list-btn-label">List</span></button>
@@ -1130,12 +1210,15 @@ export function ViewerPage() {
           onIssued={rev => { setIssueOpen(false); refreshRevs(); setToast(`Issued ${revisionName(rev)}`) }} />
       )}
       {printOpen && (
-        <PrintDialog pageCount={pageCount} currentPage={pageNum} layers={layers} symbolSets={symbolSetList} hidden={hidden}
-          busy={printBusy} error={printError} onPrint={doPrint} onClose={() => setPrintOpen(false)} />
+        <PrintDialog pageCount={pageCount} currentPage={pageNum} selectedPages={printSelected} layers={layers} symbolSets={symbolSetList} hidden={hidden}
+          busy={printBusy} error={printError} onPrint={doPrint} onSavePdf={savePrintPdf} onClose={() => setPrintOpen(false)} />
       )}
       {compareReq && (
         <CompareView documentId={documentId} a={compareReq.a} b={compareReq.b} mode={compareMode} onMode={setCompareMode}
           symbolSets={symbolSets} initialPage={compareReq.page} focus={compareReq.focus} onClose={() => setCompareReq(null)} />
+      )}
+      {replacing && selectedDevices.length > 0 && (
+        <ReplaceDialog devices={selectedDevices} symbolSets={symbolSetList} onApply={replaceSelected} onClose={() => setReplacing(false)} />
       )}
       {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems(ctx)} onClose={closeCtx} />}
       {showHotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setShowHotkeys(false)} />}

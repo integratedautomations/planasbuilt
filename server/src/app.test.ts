@@ -650,3 +650,79 @@ describe('milestone 12 revision snapshots and page tools', () => {
     expect((await PDFDocument.load(file.rawPayload)).getPage(2).getRotation().angle).toBe(90)
   })
 })
+
+describe('restore a revision and device type order', () => {
+  const pdfBytes = (tag: string) => Buffer.from(`%PDF-1.4\n%%EOF\n% ${tag}\n`)
+  const mp = (pages: number, bytes: Buffer, b = 'MC') => Buffer.concat([
+    Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="pageCount"\r\n\r\n${pages}\r\n`),
+    Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="P.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    bytes, Buffer.from(`\r\n--${b}--\r\n`)])
+  const send = (url: string, token: string, payload: Buffer) => app.inject({ method: 'POST', url,
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'multipart/form-data; boundary=MC' }, payload })
+  const idOf = (n: number) => `${String(n).repeat(8)}-7a7a-47a7-87a7-a7a7a7a7a7a7`
+
+  it('makes an older revision current: snapshots first, restores markups and scales, keeps newer revisions', async () => {
+    const admin = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'boss@x.com', password: 'password1' } })).json().token
+    const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    const h = { authorization: `Bearer ${admin}` }
+    const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: h, payload: { name: 'Restore project' } })).json().id
+    await app.inject({ method: 'PUT', url: `/api/projects/${project}/members`, headers: h, payload: { email: 'tech@x.com', role: 'viewer' } })
+    const doc = (await send(`/api/projects/${project}/documents`, admin, mp(1, pdfBytes('one')))).json().id
+    const put = (id: string, x: number) => app.inject({ method: 'PUT', url: `/api/documents/${doc}/markups/${id}`, headers: h,
+      payload: { page: 1, type: 'rect', geometry: { x, y: 0, width: 5, height: 5, rotation: 0 } } })
+    const live = async () => (await app.inject({ url: `/api/documents/${doc}/markups`, headers: h })).json() as any[]
+    expect((await put(idOf(1), 10)).statusCode).toBe(200); const p2 = await put(idOf(2), 20); expect(p2.statusCode, p2.body).toBe(200)
+    await app.inject({ method: 'PUT', url: `/api/documents/${doc}/scales/1`, headers: h, payload: { points_per_foot: 12, label: 'Old' } })
+    // second revision freezes revision 1 (two markups); then edit the live set
+    expect((await send(`/api/documents/${doc}/revisions`, admin, mp(1, pdfBytes('two')))).statusCode).toBe(200)
+    await put(idOf(1), 99); await put(idOf(3), 30)
+    await app.inject({ method: 'DELETE', url: `/api/documents/${doc}/markups/${idOf(2)}`, headers: h })
+    await app.inject({ method: 'PUT', url: `/api/documents/${doc}/scales/1`, headers: h, payload: { points_per_foot: 24, label: 'New' } })
+    const revs = (await app.inject({ url: `/api/documents/${doc}/revisions`, headers: h })).json()
+    const rev1 = revs.find((r: any) => r.revision === 1)
+
+    const url = `/api/documents/${doc}/revisions/${rev1.id}/make-current`
+    expect((await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${viewer}` } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/documents/${doc}/revisions/${revs[0].id}/make-current`, headers: h })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'POST', url: `/api/documents/${doc}/revisions/99999999-9999-4999-8999-999999999999/make-current`, headers: h })).statusCode).toBe(404)
+    const res = await app.inject({ method: 'POST', url, headers: h })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toMatchObject({ revision: 4, label: 'Rev 4 (restored from Rev 1)', kind: 'restore', removed_markups: 1, restored_markups: 2 })
+
+    const list = (await app.inject({ url: `/api/documents/${doc}/revisions`, headers: h })).json()
+    expect(list.map((r: any) => [r.revision, r.label])).toEqual([[4, 'Rev 4 (restored from Rev 1)'], [3, 'Before restoring Rev 1'], [2, ''], [1, '']])
+    expect(list[1].has_snapshot).toBe(true)
+    expect(list[0].has_snapshot).toBe(false)
+    const now = Object.fromEntries((await live()).map(m => [m.id, m.geometry.x]))
+    expect(now).toEqual({ [idOf(1)]: 10, [idOf(2)]: 20 })
+    const before = (await app.inject({ url: `/api/documents/${doc}/revisions/${list[1].id}`, headers: h })).json()
+    expect(Object.fromEntries(before.markups.map((m: any) => [m.id, m.geometry.x]))).toEqual({ [idOf(1)]: 99, [idOf(3)]: 30 })
+    expect(before.scales[0]).toMatchObject({ label: 'New' })
+    expect((await app.inject({ url: `/api/documents/${doc}/scales`, headers: h })).json()).toMatchObject([{ page: 1, points_per_foot: 12, label: 'Old' }])
+    const file = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}` })
+    expect(file.rawPayload.toString()).toContain('one')
+  })
+
+  it('reorders device types of a set (admin only) and validates ids', async () => {
+    const admin = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'boss@x.com', password: 'password1' } })).json().token
+    const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
+    const h = { authorization: `Bearer ${admin}` }
+    const cat = (await app.inject({ url: '/api/catalog', headers: h })).json()
+    const fire = (await app.inject({ url: '/api/symbol-sets', headers: h })).json().find((s: any) => s.tag_prefix === 'FA')
+    const types = cat.device_types.filter((t: any) => t.symbol_set_id === fire.id).sort((a: any, b: any) => a.sort - b.sort)
+    expect(types.length).toBeGreaterThan(2)
+    const wanted = [...types].reverse().map((t: any) => t.id)
+    const url = `/api/symbol-sets/${fire.id}/device-types/order`
+    const sorted = async () => (await app.inject({ url: '/api/catalog', headers: h })).json().device_types
+      .filter((t: any) => t.symbol_set_id === fire.id).sort((a: any, b: any) => a.sort - b.sort).map((t: any) => t.id)
+    expect((await app.inject({ method: 'PUT', url, headers: { authorization: `Bearer ${viewer}` }, payload: { ids: wanted } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PUT', url, headers: h, payload: { ids: ['x'] } })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'PUT', url, headers: h, payload: { ids: ['99999999-9999-4999-8999-999999999999'] } })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'PUT', url, headers: h, payload: { ids: wanted } })).statusCode).toBe(200)
+    expect(await sorted()).toEqual(wanted)
+    await app.inject({ method: 'PUT', url, headers: h, payload: { ids: [wanted[wanted.length - 1]] } })
+    const partial = await sorted()
+    expect(partial[0]).toBe(wanted[wanted.length - 1])
+    expect(partial).toHaveLength(wanted.length)
+  })
+})

@@ -31,6 +31,7 @@ interface Props {
   /** Global "Show coverage cones" switch (default true). */
   showCones?: boolean
   onFovChange?: (fov: Fov, done: boolean) => void
+  onDragStart?: (e: Konva.KonvaEventObject<DragEvent>) => void
   onDragEnd?: (e: Konva.KonvaEventObject<DragEvent>) => void
   onDblClick?: () => void
   /** Set on the drawn (top) member of a device stack. */
@@ -51,7 +52,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 export function MarkupShape(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && symbolSet?.has_fov && 'width' in g && showCones && !g.fov?.hidden ? g.fov : undefined
@@ -72,7 +73,7 @@ export function MarkupShape(props: Props) {
       <Group id={m.id} name="markup" x={g.x} y={g.y} rotation={g.rotation}
         draggable={draggable} listening={listening && !ghost} opacity={m.style.opacity}
         onDragMove={fov ? onDragMove : undefined}
-        onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
+        onDragStart={onDragStart} onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
         {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
             : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} zoom={zoom} stack={stack} />)

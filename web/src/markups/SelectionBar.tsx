@@ -13,7 +13,7 @@ interface Props {
 export function SelectionBar({ count, canPaste, multi, onMulti, onCopy, onPaste, onDuplicate, onDelete }: Props) {
   const has = count > 0
   return (
-    <div className="selection-bar" role="toolbar" aria-label="Selection actions" onPointerDown={e => e.stopPropagation()}>
+    <div className="selection-bar" data-no-pan role="toolbar" aria-label="Selection actions" onPointerDown={e => e.stopPropagation()}>
       {has && <span className="selection-count">{count}</span>}
       {has && <button onClick={onCopy} title="Copy (Ctrl+C)">Copy</button>}
       {canPaste && <button onClick={onPaste} title="Paste (Ctrl+V)">Paste</button>}

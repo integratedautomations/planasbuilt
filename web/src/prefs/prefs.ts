@@ -1,6 +1,8 @@
 // Per-user preferences: shape, defaults and the merge used when this device and the server disagree.
 import { DEFAULT_LAYOUT, normalizeLayout } from './layout'
 import type { LayoutPrefs } from './layout'
+import { DEFAULT_CHEST, normalizeChest } from './chest'
+import type { ChestPrefs } from './chest'
 
 export interface Prefs {
   /** Only the combos the user changed ('' = unassigned); see hotkeys.resolveHotkeys. */
@@ -14,10 +16,16 @@ export interface Prefs {
   popupFields: string[]
   /** Markups list columns to show (ids from listColumns); null = all. */
   listColumns: string[] | null
+  /** Tool chest layout: group/item order and per-group display options. */
+  chest: ChestPrefs
+  /** Last choices in the as-built report options dialog (see pdfio/reportOptions). */
+  reportOptions: Record<string, unknown>
+  /** Last choices in the print dialog (see pdfio/printPlan). */
+  printOptions: Record<string, unknown>
 }
 
 export type PrefKey = keyof Prefs
-export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns']
+export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions']
 
 export const RECENT_MAX = 10
 export const DEFAULT_POPUP_FIELDS = ['tag', 'type', 'status', 'area']
@@ -29,6 +37,9 @@ export const DEFAULT_PREFS: Prefs = {
   recent: [],
   popupFields: DEFAULT_POPUP_FIELDS,
   listColumns: null,
+  chest: DEFAULT_CHEST,
+  reportOptions: {},
+  printOptions: {},
 }
 
 /** What is stored locally and on the server: the values the user set, each stamped with when (ms since epoch). */
@@ -59,6 +70,9 @@ export function sanitizeStored(raw: unknown): StoredPrefs {
   if (strings(d.recent)) keep('recent', d.recent.slice(0, RECENT_MAX))
   if (strings(d.popupFields)) keep('popupFields', d.popupFields)
   if (d.listColumns === null || strings(d.listColumns)) keep('listColumns', d.listColumns as string[] | null)
+  if (d.chest && typeof d.chest === 'object') keep('chest', normalizeChest(d.chest))
+  for (const k of ['reportOptions', 'printOptions'] as const)
+    if (d[k] && typeof d[k] === 'object' && !Array.isArray(d[k])) keep(k, d[k] as Record<string, unknown>)
   return { data, stamps }
 }
 

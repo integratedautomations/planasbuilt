@@ -57,8 +57,8 @@ export const documentFileUrl = (id: string, revisionId?: string) =>
 export interface DocumentRevision {
   id: string; revision: number; page_count: number; created_at: string
   uploaded_by?: string | null; uploaded_by_name?: string | null
-  /** 'upload' (a new PDF or page edit) or 'issued' (a named snapshot of the same PDF). */
-  kind?: 'upload' | 'issued'
+  /** 'upload' (a new PDF or page edit) or 'issued' (a named snapshot of the same PDF) or 'restore' (an older revision made current again). */
+  kind?: 'upload' | 'issued' | 'restore'
   label?: string; note?: string
   /** False only for the newest revision, whose markups are still the live ones. */
   has_snapshot?: boolean

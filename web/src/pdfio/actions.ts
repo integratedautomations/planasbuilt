@@ -11,6 +11,8 @@ import { loadIcons } from './icons'
 import { planImport } from './importPlan'
 import type { ImportPlan } from './importPlan'
 import { buildReport } from './report'
+import { DEFAULT_REPORT_OPTIONS } from './reportOptions'
+import type { ReportOptions } from './reportOptions'
 import type { ReportPhoto } from './report'
 
 export interface DocExportArgs {
@@ -41,7 +43,7 @@ export async function planImportFile(file: File, documentId: string, existing: M
 interface ProjectScaleRow { document_id: string; page: number; points_per_foot: number }
 
 /** Builds and downloads the as-built report for a whole project. */
-export async function exportProjectReport(projectId: string, projectName: string, onProgress?: (done: number, total: number, label: string) => void) {
+export async function exportProjectReport(projectId: string, projectName: string, options: ReportOptions = DEFAULT_REPORT_OPTIONS, onProgress?: (done: number, total: number, label: string) => void) {
   const [docs, markups, scaleRows, sets, catData] = await Promise.all([
     // (catalog is optional: older servers / offline just report without product columns)
     api<DocumentSummary[]>(`/projects/${projectId}/documents`),
@@ -54,7 +56,7 @@ export async function exportProjectReport(projectId: string, projectName: string
   const symbolSets = new Map(sets.map(s => [s.id, s]))
   const [icons, sheets] = await Promise.all([
     loadIcons(sets, catData.device_types),
-    Promise.all(docs.map(async d => ({
+    Promise.all(docs.filter(d => !options.docIds || options.docIds.includes(d.id)).map(async d => ({
       documentId: d.id, name: d.name, pdfBytes: await loadPdfBytes(d.id),
       scales: new Map(scaleRows.filter(s => s.document_id === d.id).map(s => [s.page, s.points_per_foot])),
     }))),
@@ -70,6 +72,6 @@ export async function exportProjectReport(projectId: string, projectName: string
     }
     return out
   }
-  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress })
+  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress, options })
   downloadBytes(bytes, exportFileName(projectName, 'as-built-report'))
 }

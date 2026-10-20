@@ -94,6 +94,8 @@ interface Props {
   onAddToStack: (stack: Stack) => void
   onPullOut: (m: Markup) => void
   onDeleteStack: (stack: Stack) => void
+  /** Opens the "Replace with..." dialog for the selected devices. */
+  onReplace?: () => void
 }
 
 export function SidePanel(p: Props) {
@@ -170,6 +172,7 @@ function Properties(p: Props) {
           heading={whole ? `Stack ×${selected.length} · ${tagRange(selected.map(m => m.tag ?? ''))}` : undefined}
           areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
         <LayerSelect {...p} />
+        {!readOnly && p.onReplace && <button onClick={p.onReplace} title="Swap for another symbol set, device type or product; keeps position, photos and matching fields">Replace with…</button>}
         {!readOnly && stack && (one || whole) && (
           <div className="stack-actions">
             <button onClick={() => p.onAddToStack(stack)}>+1 to stack</button>

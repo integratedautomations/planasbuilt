@@ -35,7 +35,7 @@ const CIRCLE_ICON = icon(<circle cx="12" cy="12" r="7" />)
 
 export const GROUP_ORDER = ['Select / Navigate', 'Shapes', 'Text', 'Measure', 'Site']
 
-/** Everything the Tool chest lists, in display order. Symbol sets replace the generic Device tool. */
+/** Everything the Tool chest lists, in display order. Device types replace the generic Device tool. */
 export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = []): ToolEntry[] {
   const base: ToolEntry[] = []
   for (const t of TOOLS) {
@@ -45,9 +45,8 @@ export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = []): T
     if (t.tool === 'ellipse') base.push({ id: 'tool:circle', label: 'Circle', group: 'Shapes', icon: CIRCLE_ICON, tool: 'ellipse', shape: 'circle', command: 'tool.circle' })
   }
   const deviceIcon = TOOLS.find(t => t.tool === 'device')!.icon
-  // Set > device types: each set keeps a generic entry (no type), followed by one tool per device type
+  // Set > device types: one tool per device type (the set itself is not a placeable entry)
   const devices: ToolEntry[] = [...sets].sort((a, b) => a.sort - b.sort).flatMap(s => [
-    { id: `set:${s.id}`, label: s.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, color: s.color, image: s.icon },
     ...types.filter(t => t.symbol_set_id === s.id).sort((a, b) => a.sort - b.sort).map(t => ({
       id: `type:${t.id}`, label: t.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, typeId: t.id, color: s.color, image: t.icon || s.icon,
     })),
@@ -67,8 +66,8 @@ export function matchesSearch(e: ToolEntry, q: string): boolean {
 }
 
 /** Id of the entry that is active for the current tool state. */
-export function activeEntryId(tool: Tool, shape: 'square' | 'circle' | null, setId: string | null, typeId: string | null = null): string {
-  if (tool === 'device') return typeId ? `type:${typeId}` : setId ? `set:${setId}` : 'tool:device'
+export function activeEntryId(tool: Tool, shape: 'square' | 'circle' | null, typeId: string | null = null): string {
+  if (tool === 'device') return typeId ? `type:${typeId}` : 'tool:device'
   if (tool === 'rect' && shape === 'square') return 'tool:square'
   if (tool === 'ellipse' && shape === 'circle') return 'tool:circle'
   return `tool:${tool}`

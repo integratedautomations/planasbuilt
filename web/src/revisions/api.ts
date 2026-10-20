@@ -19,6 +19,10 @@ export const loadRevision = (documentId: string, revisionId: string) => api<Revi
 export const issueRevision = (documentId: string, label: string, note: string) =>
   post<DocumentRevision>(`/documents/${documentId}/revisions/issue`, { label, note })
 
+/** Makes an older revision current again; newer ones are kept. The markups and scales of that revision are restored. */
+export const makeRevisionCurrent = (documentId: string, revisionId: string) =>
+  post<DocumentRevision & { restored_from: number; removed_markups: number; restored_markups: number }>(`/documents/${documentId}/revisions/${revisionId}/make-current`, {})
+
 /** The bytes of one revision's PDF (not cached: the offline cache holds only the current one). */
 export async function fetchRevisionPdf(documentId: string, revisionId: string): Promise<ArrayBuffer> {
   const res = await fetch(documentFileUrl(documentId, revisionId))

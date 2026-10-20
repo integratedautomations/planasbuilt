@@ -7,6 +7,8 @@ import { CatalogImport, exportCatalogExcel } from '../catalog/CatalogImport'
 import { FieldsEditor } from '../catalog/FieldsEditor'
 import { ProductsTable } from '../catalog/ProductsTable'
 import { readIcon } from '../catalog/readIcon'
+import { IconPicker } from '../catalog/icons/IconPicker'
+import { moveBefore } from '../prefs/chest'
 import type { DeviceType } from '../catalog/types'
 import { useCatalog } from '../catalog/useCatalog'
 import type { FieldDef, SymbolSet } from '../markups/types'
@@ -26,6 +28,10 @@ export function SymbolSetsPage({ user }: { user: User }) {
   const [typeDraft, setTypeDraft] = useState<(TypeDraft & { setId: string }) | null>(null)
   const [sel, setSel] = useState<Sel>(null)
   const [dialog, setDialog] = useState<'excel' | 'btx' | null>(null)
+  /** Which editor the icon picker fills in. */
+  const [picking, setPicking] = useState<'set' | 'type' | null>(null)
+  const [dragType, setDragType] = useState<string | null>(null)
+  const [overType, setOverType] = useState<string | null>(null)
   const [error, setError] = useState('')
   const { data, catalog, reload } = useCatalog()
   const admin = user.is_admin
@@ -76,6 +82,15 @@ export function SymbolSetsPage({ user }: { user: User }) {
     setTypeDraft(null); setSel({ kind: 'set', setId: t.symbol_set_id })
   }
 
+  /** Persists a new order for a set's device types (drag handles or the up / down buttons). */
+  async function reorderTypes(setId: string, ids: string[]) {
+    setError('')
+    try {
+      await api(`/symbol-sets/${setId}/device-types/order`, { method: 'PUT', body: JSON.stringify({ ids }) })
+      await reload()
+    } catch (e) { setError((e as Error).message) }
+  }
+
   const selSet = sel && sel.kind !== 'accessories' ? sets.find(s => s.id === sel.setId) : undefined
   const selType = sel?.kind === 'type' ? catalog.types.get(sel.typeId) : undefined
   const products = useMemo(() => {
@@ -83,6 +98,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
     if (sel?.kind === 'accessories') return data.products.filter(p => !p.device_type_id)
     return []
   }, [data.products, sel])
+  const typeIds = (setId: string) => (catalog.typesBySet.get(setId) ?? []).map(x => x.id)
   const typePrefixHint = (t: DeviceType, s: SymbolSet) => `${t.tag_prefix || s.tag_prefix}-01`
 
   return (
@@ -92,7 +108,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
         <span className="muted">/</span>
         <span className="crumb">Catalog</span>
       </header>
-      <main className="content">
+      <main className="content content-wide">
         {!admin && <p className="muted">Only admins can edit the catalog.</p>}
         <div className="row wrap">
           <h2>Catalog</h2>
@@ -132,7 +148,18 @@ export function SymbolSetsPage({ user }: { user: User }) {
                 </div>
                 <ul className="list">
                   {(catalog.typesBySet.get(selSet.id) ?? []).map(t => (
-                    <li key={t.id}>
+                    <li key={t.id} className={'type-row' + (dragType === t.id ? ' dragging' : '') + (overType === t.id && dragType !== t.id ? ' over' : '')}
+                      draggable={admin}
+                      onDragStart={e => { setDragType(t.id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', t.id) }}
+                      onDragOver={e => { if (dragType) { e.preventDefault(); setOverType(t.id) } }}
+                      onDragLeave={() => setOverType(o => (o === t.id ? null : o))}
+                      onDrop={e => {
+                        e.preventDefault()
+                        if (dragType && dragType !== t.id) void reorderTypes(selSet.id, moveBefore(typeIds(selSet.id), dragType, t.id))
+                        setDragType(null); setOverType(null)
+                      }}
+                      onDragEnd={() => { setDragType(null); setOverType(null) }}>
+                      {admin && <span className="type-handle" title="Drag to reorder" aria-hidden>{'\u2807'}</span>}
                       <button className="list-item set-item" onClick={() => setSel({ kind: 'type', setId: selSet.id, typeId: t.id })}>
                         <span className="set-icon" style={{ background: selSet.color }}>{(t.icon || selSet.icon) && <img src={t.icon || selSet.icon} alt="" />}</span>
                         <span className="grow">
@@ -184,9 +211,10 @@ export function SymbolSetsPage({ user }: { user: User }) {
               <label className="field">Category color
                 <input type="color" value={draft.color} onChange={e => setDraft({ ...draft, color: e.target.value })} />
               </label>
-              <label className="field">Icon (SVG or PNG)
-                <span className="row">
+              <label className="field">Icon (library, SVG or PNG)
+                <span className="icon-pick-row">
                   <span className="set-icon" style={{ background: draft.color }}>{draft.icon && <img src={draft.icon} alt="" />}</span>
+                  <button type="button" onClick={() => setPicking('set')}>Choose from library…</button>
                   <input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp"
                     onChange={async e => { const f = e.target.files?.[0]; if (f) setDraft({ ...draft, icon: await readIcon(f) }) }} />
                 </span>
@@ -220,10 +248,11 @@ export function SymbolSetsPage({ user }: { user: User }) {
                   onChange={e => setTypeDraft({ ...typeDraft, tag_prefix: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })} />
               </label>
               <label className="field">Icon (blank = set's icon)
-                <span className="row">
+                <span className="icon-pick-row">
                   <span className="set-icon" style={{ background: sets.find(s => s.id === typeDraft.setId)?.color }}>
                     {(typeDraft.icon || sets.find(s => s.id === typeDraft.setId)?.icon) && <img src={typeDraft.icon || sets.find(s => s.id === typeDraft.setId)?.icon} alt="" />}</span>
-                  <input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp"
+                  <button type="button" onClick={() => setPicking('type')}>Choose from library…</button>
+                  <input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp" aria-label="Upload an icon"
                     onChange={async e => { const f = e.target.files?.[0]; if (f) setTypeDraft({ ...typeDraft, icon: await readIcon(f) }) }} />
                   {typeDraft.icon && <button onClick={() => setTypeDraft({ ...typeDraft, icon: '' })}>Use set icon</button>}
                 </span>
@@ -240,6 +269,16 @@ export function SymbolSetsPage({ user }: { user: User }) {
             </div>
           </div>
         </div>
+      )}
+
+      {picking && (
+        <IconPicker color={(picking === 'set' ? draft?.color : sets.find(s => s.id === typeDraft?.setId)?.color) ?? '#1971c2'}
+          onClose={() => setPicking(null)}
+          onPick={url => {
+            if (picking === 'set' && draft) setDraft({ ...draft, icon: url })
+            else if (picking === 'type' && typeDraft) setTypeDraft({ ...typeDraft, icon: url })
+            setPicking(null)
+          }} />
       )}
 
       {dialog === 'excel' && <CatalogImport data={data} sets={sets} onClose={() => setDialog(null)} onDone={reload} />}

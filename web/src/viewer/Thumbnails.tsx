@@ -7,7 +7,7 @@ const THUMB_WIDTH = 132
 
 /** What the Pages panel asks the viewer to do. `pages` are 1-based and sorted. */
 export type PageAction =
-  | { type: 'rotate' | 'delete' | 'extract' | 'replace'; pages: number[] }
+  | { type: 'rotate' | 'delete' | 'extract' | 'replace' | 'print'; pages: number[] }
   | { type: 'insert'; at: number }
   | { type: 'move'; from: number; to: number }
 
@@ -33,8 +33,8 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
   const targets = (page: number) => (picked.includes(page) ? [...picked].sort((a, b) => a - b) : [page])
   const act = (a: PageAction) => onAction?.(a)
   const click = (e: React.MouseEvent, n: number) => {
-    if (canEdit && (e.ctrlKey || e.metaKey)) { setPicked(p => (p.includes(n) ? p.filter(x => x !== n) : [...p, n])); return }
-    if (canEdit && e.shiftKey && picked.length) {
+    if (e.ctrlKey || e.metaKey) { setPicked(p => (p.includes(n) ? p.filter(x => x !== n) : [...p, n])); return }
+    if (e.shiftKey && picked.length) {
       const from = picked[picked.length - 1]
       const [lo, hi] = from < n ? [from, n] : [n, from]
       setPicked(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i))
@@ -48,7 +48,8 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
     const t = targets(page)
     const which = t.length === 1 ? `page ${t[0]}` : `${t.length} pages`
     const extract: MenuItem = { label: `Extract ${which}…`, onClick: () => act({ type: 'extract', pages: t }) }
-    if (!canEdit) return [extract]
+    const print: MenuItem = { label: `Print ${which}…`, onClick: () => act({ type: 'print', pages: t }) }
+    if (!canEdit) return [print, extract]
     return [
       { label: `Rotate ${which} 90° clockwise`, onClick: () => act({ type: 'rotate', pages: t }) },
       { label: `Delete ${which}`, onClick: () => act({ type: 'delete', pages: t }) },
@@ -57,6 +58,7 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
       { label: 'Insert pages after…', onClick: () => act({ type: 'insert', at: t[t.length - 1] + 1 }) },
       { label: `Replace ${which}…`, onClick: () => act({ type: 'replace', pages: t }) },
       { label: '', separator: true },
+      print,
       extract,
       { label: 'Move to start', disabled: page === 1, onClick: () => act({ type: 'move', from: page, to: 1 }) },
       { label: 'Move to end', disabled: page === pages.length, onClick: () => act({ type: 'move', from: page, to: pages.length }) },
@@ -72,6 +74,7 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
         {canEdit && <button className="icon-btn small" title={`Delete ${barLabel}`} aria-label="Delete pages" onClick={() => act({ type: 'delete', pages: bar })}>🗑</button>}
         {canEdit && <button className="icon-btn small" title={`Insert pages after ${bar[bar.length - 1]}`} aria-label="Insert pages" onClick={() => act({ type: 'insert', at: bar[bar.length - 1] + 1 })}>＋</button>}
         {canEdit && <button className="icon-btn small" title={`Replace ${barLabel}`} aria-label="Replace pages" onClick={() => act({ type: 'replace', pages: bar })}>⇄</button>}
+        <button className="icon-btn small" title={`Print ${barLabel}`} aria-label="Print pages" onClick={() => act({ type: 'print', pages: bar })}>🖨</button>
         <button className="icon-btn small" title={`Extract ${barLabel} to a new PDF`} aria-label="Extract pages" onClick={() => act({ type: 'extract', pages: bar })}>⤓</button>
       </div>
       {pages.map(n => (
