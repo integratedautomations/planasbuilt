@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { DOCKS } from '../prefs/layout'
+import { Icon } from '../ui/Icon'
+import type { IconName } from '../ui/Icon'
 import type { Dock, PanelId } from '../prefs/layout'
 
 export interface DockPanel { id: PanelId; title: string; node: ReactNode }
@@ -16,7 +18,7 @@ interface Props {
   onHide: (id: PanelId) => void
 }
 
-const ICONS: Record<Dock, string> = { left: '◧', right: '◨', bottom: '⬓' }
+const ICONS: Record<Dock, IconName> = { left: 'sidebar-left', right: 'sidebar-right', bottom: 'sidebar-bottom' }
 
 /** One dock area beside the plan: tab strip (one tab per open panel), dock menu, resizable splitter. */
 export function DockZone({ side, panels, active, onActive, size, onSize, onMove, onHide }: Props) {
@@ -60,12 +62,12 @@ export function DockZone({ side, panels, active, onActive, size, onSize, onMove,
             ))}
           </div>
           <div className="dock-menu-wrap">
-            <button className="icon-btn small" aria-haspopup="menu" aria-expanded={menu} title={`Dock ${current.title}`} aria-label={`Dock ${current.title}`} onClick={() => setMenu(m => !m)}>{ICONS[side]}</button>
+            <button className="icon-btn small" aria-haspopup="menu" aria-expanded={menu} title={`Dock ${current.title}`} aria-label={`Dock ${current.title}`} onClick={() => setMenu(m => !m)}><Icon name={ICONS[side]} size={16} /></button>
             {menu && (
               <div className="dock-menu" role="menu" onMouseLeave={() => setMenu(false)}>
                 {DOCKS.map(d => (
                   <button key={d} role="menuitemradio" aria-checked={d === side} onClick={() => { setMenu(false); onMove(current.id, d) }}>
-                    {d === side ? '✓ ' : ''}Dock {d}
+                    {d === side ? <Icon name="check" size={14} /> : null} Dock {d}
                   </button>
                 ))}
                 <button role="menuitem" onClick={() => { setMenu(false); onHide(current.id) }}>Hide</button>

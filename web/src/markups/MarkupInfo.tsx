@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { Icon } from '../ui/Icon'
 import { describeEvent, formatWhen } from './history'
 import type { HistoryEvent } from './history'
 import type { Markup, SymbolSet } from './types'
@@ -89,8 +90,8 @@ export function MarkupPopup({ markup: m, set, sets, areaPath, fields, onFields }
     <div className="markup-popup" data-no-pan role="region" aria-label="Markup info" onPointerDown={e => e.stopPropagation()}>
       <div className="popup-head">
         <strong className="ellipsis">{m.tag || (m.type === 'device' ? set?.name : m.type) || 'Markup'}</strong>
-        <button className={`icon-btn small${picking ? ' active' : ''}`} title="Choose fields to show" aria-label="Choose popup fields" aria-expanded={picking} onClick={() => setPicking(p => !p)}>⚙</button>
-        <button className="icon-btn small" title="Close" aria-label="Close popup" onClick={() => setClosedFor(m.id)}>✕</button>
+        <button className={`icon-btn small${picking ? ' active' : ''}`} title="Choose fields to show" aria-label="Choose popup fields" aria-expanded={picking} onClick={() => setPicking(p => !p)}><Icon name="settings" size={14} /></button>
+        <button className="icon-btn small" title="Close" aria-label="Close popup" onClick={() => setClosedFor(m.id)}><Icon name="x" size={14} /></button>
       </div>
       {picking ? (
         <div className="popup-picker" role="group" aria-label="Fields to show">

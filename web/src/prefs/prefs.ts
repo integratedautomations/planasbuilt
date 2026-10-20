@@ -5,6 +5,10 @@ import { DEFAULT_CHEST, normalizeChest } from './chest'
 import type { ChestPrefs } from './chest'
 import { isReplaceChoice } from '../markups/placeReplace'
 import type { ReplaceChoice } from '../markups/placeReplace'
+import { isDensityPref } from './density'
+import type { DensityPref } from './density'
+import { isThemePref } from './theme'
+import type { ThemePref } from './theme'
 
 export interface Prefs {
   /** Only the combos the user changed ('' = unassigned); see hotkeys.resolveHotkeys. */
@@ -26,10 +30,16 @@ export interface Prefs {
   printOptions: Record<string, unknown>
   /** Placing a device on a device of another type: ask, replace it, or place both. */
   replaceOnOverlap: ReplaceChoice
+  /** Keep the Properties panel open even when nothing is selected. */
+  propsPinned: boolean
+  /** Button/row sizes: auto (by pointer), compact or comfortable. */
+  density: DensityPref
+  /** Color scheme: follow the device or force light / dark. */
+  theme: ThemePref
 }
 
 export type PrefKey = keyof Prefs
-export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap']
+export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap', 'propsPinned', 'density', 'theme']
 
 export const RECENT_MAX = 10
 export const DEFAULT_POPUP_FIELDS = ['tag', 'type', 'status', 'area']
@@ -45,6 +55,9 @@ export const DEFAULT_PREFS: Prefs = {
   reportOptions: {},
   printOptions: {},
   replaceOnOverlap: 'ask',
+  propsPinned: false,
+  density: 'auto',
+  theme: 'auto',
 }
 
 /** What is stored locally and on the server: the values the user set, each stamped with when (ms since epoch). */
@@ -79,6 +92,9 @@ export function sanitizeStored(raw: unknown): StoredPrefs {
   for (const k of ['reportOptions', 'printOptions'] as const)
     if (d[k] && typeof d[k] === 'object' && !Array.isArray(d[k])) keep(k, d[k] as Record<string, unknown>)
   if (isReplaceChoice(d.replaceOnOverlap)) keep('replaceOnOverlap', d.replaceOnOverlap)
+  if (typeof d.propsPinned === 'boolean') keep('propsPinned', d.propsPinned)
+  if (isDensityPref(d.density)) keep('density', d.density)
+  if (isThemePref(d.theme)) keep('theme', d.theme)
   return { data, stamps }
 }
 

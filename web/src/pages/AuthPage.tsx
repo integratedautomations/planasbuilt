@@ -11,6 +11,7 @@ export function AuthPage({ onSignedIn }: Props) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [forgot, setForgot] = useState(false)
 
   useEffect(() => {
     api<{ needsSetup: boolean }>('/auth/status')
@@ -52,6 +53,11 @@ export function AuthPage({ onSignedIn }: Props) {
         <button className="primary" disabled={busy || needsSetup === null}>
           {needsSetup ? 'Create admin' : 'Sign in'}
         </button>
+        {needsSetup === false && (
+          forgot
+            ? <p className="muted small" role="status">Ask your admin for a password reset link. They can create one for you under Users.</p>
+            : <button type="button" className="link-btn forgot" onClick={() => setForgot(true)}>Forgot password?</button>
+        )}
       </form>
     </div>
   )

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import '../viewer/viewer.css'
+import { Icon } from '../ui/Icon'
 import { post } from '../api'
 import type { DocumentRevision, Project } from '../api'
 import { clampRenderScale, loadPdf } from '../pdf'
@@ -37,9 +39,9 @@ import { NavBar } from '../viewer/NavBar'
 import { centerIfOffscreen, unionBox } from '../viewer/visibility'
 import { OverlapPrompt } from '../markups/OverlapPrompt'
 import { decideOverlap, replacePrompt, replaceTargets } from '../markups/placeReplace'
-import { movePanel, panelsIn, PANEL_TITLES, setPanelOpen, setZoneSize } from '../prefs/layout'
+import { movePanel, panelsIn, PANEL_TITLES, propsVisible, setPanelOpen, setZoneSize } from '../prefs/layout'
 import type { Dock, PanelId } from '../prefs/layout'
-import { Areas, SidePanel, sheetHeight } from '../markups/SidePanel'
+import { Areas, Layers, QuickStyle, SidePanel, sheetHeight } from '../markups/SidePanel'
 import type { PanelTab, SheetSnap } from '../markups/SidePanel'
 import { CalibrateDialog, ScaleControl } from '../markups/ScaleControl'
 import type { PageScale } from '../markups/ScaleControl'
@@ -52,10 +54,12 @@ import { areaBounds, areaPathIn, buildAreaIndex, deviceCounts, isArea, isSheetAr
 import { useMarkups } from '../markups/useMarkups'
 import { invalidatePdf, loadDocMeta, loadLayers, loadPdfBytes, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
 import { OfflineMissError } from '../offline/classify'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { SyncIndicator } from '../offline/SyncIndicator'
-import { flushWrites, queueScaleDelete, queueScalePut } from '../offline/sync'
+import { useSyncStatus } from '../offline/hooks'
+import { foreignNotice } from '../offline/owner'
+import { discardForeign, flushWrites, queueScaleDelete, queueScalePut, retryAllFailed } from '../offline/sync'
 import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
+import type { Status } from '../markups/types'
 import { defaultProductId, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
@@ -85,6 +89,12 @@ import type { CloudInput } from '../revisions/clouds'
 import { deletePages, fetchRevisionPdf, insertPages, listRevisions, loadRevision, makeRevisionCurrent, moveOrder, replacePages, reorderPages, revisionName, rotatePages } from '../revisions/api'
 import type { PageOpResult, RevisionDetail } from '../revisions/api'
 import { MarkupsList } from '../schedule/MarkupsList'
+import { MoreMenu, PlanSwitcher } from '../viewer/TopBar'
+import { MenuHeading, MenuItemBtn, MenuSep } from '../viewer/menuParts'
+import { StatusChip } from '../viewer/StatusChip'
+import { FloatingChip } from '../viewer/FloatingChip'
+import type { Banner } from '../viewer/banners'
+import type { ScreenBox } from '../markups/SelectionBar'
 import type { JumpTarget } from '../schedule/MarkupsList'
 
 type DocMeta = Awaited<ReturnType<typeof loadDocMeta>>['data']
@@ -218,6 +228,11 @@ export function ViewerPage() {
   const [shapeLock, setShapeLock] = useState<'square' | 'circle' | null>(null)
   const [ctx, setCtx] = useState<{ x: number; y: number; hitId: string | null; point: Pt } | null>(null)
   const [showHotkeys, setShowHotkeys] = useState(false)
+  /** Focus mode: every panel and the top bar hidden (F or Esc brings them back). */
+  const [focus, setFocus] = useState(false)
+  /** The user closed Properties while this selection was active; it stays shut until the selection empties. */
+  const [propsDismissed, setPropsDismissed] = useState(false)
+  const sync = useSyncStatus()
   const [zoneTab, setZoneTab] = useState<Partial<Record<Dock, PanelId>>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [defaultStyle, setDefaultStyle] = useState<MarkupStyle>(DEFAULT_STYLE)
@@ -550,6 +565,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     setShowPanel(hasSelection)
     if (hasSelection) setSnap('peek')
   }, [hasSelection, isPhone])
+  // Desktop: Properties opens by itself with a selection (on its own tab) and a dismissal lasts until the selection empties
+  useEffect(() => {
+    if (!hasSelection) { setPropsDismissed(false); return }
+    if (!isPhone) setZoneTab(z => ({ ...z, [getPrefs().layout.panels.props.dock]: 'props' }))
+  }, [hasSelection, isPhone])
+  const propsOn = propsVisible({ hasSelection, pinned: prefs.propsPinned, manualOpen: layout.panels.props.open, dismissed: propsDismissed })
+  /** The layout as shown: Properties' open state is derived (auto-open / pin), the rest is as saved. */
+  const shownLayout = useMemo(() => setPanelOpen(layout, 'props', propsOn), [layout, propsOn])
 
   // Keep the selected markup visible above the sheet.
   const selectedKey = selectedIds.join(',')
@@ -886,16 +909,47 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   const setPanel = useCallback((id: PanelId, open: boolean) => {
     if (isPhone) {
-      if (id === 'pages') setShowThumbs(open); else if (id === 'props') setShowPanel(open); else if (id === 'markups') setShowList(open); else if (id === 'compare') setShowCompare(open)
+      if (id === 'pages') setShowThumbs(open); else if (id === 'markups') setShowList(open); else if (id === 'compare') setShowCompare(open)
+      else if (id === 'props' || id === 'layers' || id === 'areas') {
+        setShowPanel(open)
+        if (open) setPanelTab(id === 'props' ? 'props' : id)
+      }
       return
     }
     const l = getPrefs().layout
+    if (id === 'props') {
+      // Open = keep it open by hand; close = unpin and keep it shut until the selection changes
+      if (!open) { setPropsDismissed(true); if (getPrefs().propsPinned) setPref('propsPinned', false) } else setPropsDismissed(false)
+    }
     setPref('layout', setPanelOpen(l, id, open))
     if (open) setZoneTab(z => ({ ...z, [l.panels[id].dock]: id }))
   }, [isPhone])
   const panelOpen = (id: PanelId) =>
-    isPhone ? (id === 'pages' ? showThumbs : id === 'props' ? showPanel : id === 'markups' ? showList : id === 'compare' ? showCompare : false) : (layout.panels[id]?.open ?? false)
-  const openPanel = (id: PanelId) => setPanel(id, true)
+    isPhone
+      ? (id === 'pages' ? showThumbs : id === 'markups' ? showList : id === 'compare' ? showCompare
+        : id === 'props' ? showPanel && panelTab !== 'layers' && panelTab !== 'areas' : id === 'layers' || id === 'areas' ? showPanel && panelTab === id : false)
+      : id === 'props' ? propsOn : (layout.panels[id]?.open ?? false)
+  /** Left dock / right dock as a whole (the top bar's sidebar buttons). */
+  const dockOpen = (d: Dock) => panelsIn(shownLayout, d).length > 0
+  const toggleDock = (d: Dock) => {
+    const l = getPrefs().layout
+    const ids = (Object.keys(l.panels) as PanelId[]).filter(id => l.panels[id].dock === d)
+    if (dockOpen(d)) {
+      let next = l
+      for (const id of ids) next = setPanelOpen(next, id, false)
+      if (d === l.panels.props.dock) { setPropsDismissed(true); if (getPrefs().propsPinned) setPref('propsPinned', false) }
+      setPref('layout', next)
+    } else {
+      const first: PanelId = d === 'left' ? 'tools' : l.panels.props.dock === d ? 'props' : ids[0]
+      if (!first) return
+      let next = setPanelOpen(l, first, true)
+      if (d === 'left') next = setPanelOpen(next, 'pages', next.panels.pages.dock === 'left')
+      setPropsDismissed(false)
+      setPref('layout', next)
+      setZoneTab(z => ({ ...z, [d]: first }))
+    }
+  }
+  const openPanel = (id: PanelId) => { if (id === 'props' && !isPhone) setPropsDismissed(false); else setPanel(id, true) }
   const togglePanel = (id: PanelId) => setPanel(id, !panelOpen(id))
   const closeCtx = useCallback(() => setCtx(null), [])
 
@@ -923,7 +977,9 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       case 'edit.duplicate': if (!readOnly && selected.length) duplicateSelected(); return true
       case 'edit.delete': case 'edit.deleteAlt': deleteSelected(); return true
       case 'edit.selectAll': setSelectedIds(pageMarkups.filter(m => m.type !== 'area' && !lockedIds.has(m.id)).map(m => m.id)); return true
-      case 'edit.escape': markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select'); setShapeLock(null); return true
+      case 'view.focus': setFocus(f => !f); return true
+      case 'panel.layers': togglePanel('layers'); return true
+      case 'edit.escape': if (focus) { setFocus(false); return true }; markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select'); setShapeLock(null); return true
       case 'edit.finish': markupRef.current?.finishDraft(); return true
       case 'select.boxMode': setBoxMode(b => !b); setTool('select'); return true
       case 'view.zoomIn': zoomBy(1.25); return true
@@ -970,6 +1026,31 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     setActiveLayerId(layer.id)
   }
 
+  const drawStyleTool = !['select', 'pan', 'device', 'calibrate', 'legend'].includes(activeTool)
+  const activeSet = activeSetId ? symbolSets.get(activeSetId) : undefined
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  /** Screen box (viewport-relative) of the selection, read every frame by the selection bar. */
+  const selAnchor = useCallback((): ScreenBox => {
+    const sel = selectedRef.current
+    const box = unionBox(sel.map(markupBounds))
+    if (!box) return null
+    const v = view.current
+    return { left: v.x + box.x * v.zoom, top: v.y + box.y * v.zoom, right: v.x + (box.x + box.width) * v.zoom, bottom: v.y + (box.y + box.height) * v.zoom }
+  }, [view])
+  const setStatusOnSelected = useCallback((st: Status) => { updateSelected(m => ({ ...m, status: st }), 'status') }, [updateSelected])
+
+  /** Every notice, collapsed into the status chip (see viewer/banners). */
+  const banners: Banner[] = []
+  if (sync.foreign) banners.push({ id: 'foreign', level: 'bad', text: foreignNotice(sync.foreign), action: { label: 'Discard', danger: true, run: () => { const f = sync.foreign!; if (confirm(`Discard ${f.count} unsent change${f.count === 1 ? '' : 's'} from ${f.name}? This cannot be undone.`)) void discardForeign() } } })
+  if (sync.authRequired) banners.push({ id: 'authRequired', level: 'bad', text: 'Your session expired. Sign in again; queued changes are kept on this device.' })
+  if (sync.failed > 0) banners.push({ id: 'failed', level: 'bad', text: `${sync.failed} change${sync.failed === 1 ? '' : 's'} could not be saved.`, action: { label: 'Retry all', run: () => { void retryAllFailed() } } })
+  if (notCached) banners.push({ id: 'notCached', level: 'warn', text: "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page." })
+  else if (!sync.online) banners.push({ id: 'offline', level: 'warn', text: 'You are offline. Showing data saved on this device.' })
+  if (viewingOld) banners.push({ id: 'viewingOld', level: 'info', text: `Viewing ${revDetail && revDetail.id === revParam ? revisionName(revDetail) : 'earlier revision'} — read only`, action: { label: 'Back to current', run: backToCurrent } })
+  if (pageBusy) banners.push({ id: 'busy', level: 'info', text: pageBusy })
+  if (orphaned.count > 0) banners.push({ id: 'orphaned', level: 'warn', text: `${orphaned.count} markup${orphaned.count === 1 ? ' is' : 's are'} on page${orphaned.pages.length === 1 ? '' : 's'} ${orphaned.pages.join(', ')}, which Rev ${meta?.revisions[0]?.revision ?? ''} of this plan no longer has. They are kept in the Markups list.` })
+
   const viewportEl = (
     <div className={'viewport tool-' + activeTool} ref={viewportRef} onContextMenu={e => e.preventDefault()}>
       {error && <div className="error floating">{error}</div>}
@@ -981,47 +1062,69 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       {(activeTool === 'area' || activeTool === 'area-rect') && (
         <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
       )}
-      {activeTool === 'device' && (
-        <div className="symbol-palette" data-no-pan onPointerDown={e => e.stopPropagation()}>
-          {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
-          {symbolSetList.map(set => (
-            <button key={set.id} className={'palette-item' + (set.id === activeSetId ? ' on' : '')}
-              title={set.name} onClick={() => {
-                const first = catalog.typesBySet.get(set.id)?.[0]
-                setActiveSetId(set.id)
-                setActiveTypeId(first?.id ?? null)
-                setActiveProductId(first ? defaultProductId(catalog, first.id) : null)
-              }}>
-              <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
-              <span className="hide-sm">{set.name}</span>
-            </button>
-          ))}
-          {(catalog.typesBySet.get(activeSetId ?? '') ?? []).length > 0 && (
-            <select className="palette-select" aria-label="Device type" value={activeTypeId ?? ''}
-              onChange={e => { const id = e.target.value || null; setActiveTypeId(id); setActiveProductId(id ? defaultProductId(catalog, id) : null) }}>
-              <option value="">Any type</option>
-              {(catalog.typesBySet.get(activeSetId ?? '') ?? []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
+      {focus ? <button className="focus-exit" title={`Exit focus mode (${hotkeys['view.focus'] || 'Esc'})`} aria-label="Exit focus mode" onClick={() => setFocus(false)}><Icon name="maximize" size={18} /></button> : <StatusChip banners={banners} />}
+      {(activeTool === 'device' || (!hasSelection && drawStyleTool)) && (
+        <div className="chip-stack">
+          {activeTool === 'device' && (
+            <FloatingChip label="Device to place" title="Device type and product to place"
+              summary={<>
+                <span className="set-icon" style={{ background: activeSet?.color }}>{activeSet?.icon && <img src={activeSet.icon} alt="" />}</span>
+                <span className="ellipsis">{activeTypeId ? catalog.types.get(activeTypeId)?.name : activeSet?.name ?? 'Device'}</span>
+              </>}>
+              <div className="device-sets">
+                {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
+                {symbolSetList.map(set => (
+                  <button key={set.id} className={'palette-item' + (set.id === activeSetId ? ' on' : '')}
+                    title={set.name} onClick={() => {
+                      const first = catalog.typesBySet.get(set.id)?.[0]
+                      setActiveSetId(set.id)
+                      setActiveTypeId(first?.id ?? null)
+                      setActiveProductId(first ? defaultProductId(catalog, first.id) : null)
+                    }}>
+                    <span className="set-icon" style={{ background: set.color }}>{set.icon && <img src={set.icon} alt="" />}</span>
+                    <span>{set.name}</span>
+                  </button>
+                ))}
+              </div>
+              {(catalog.typesBySet.get(activeSetId ?? '') ?? []).length > 0 && (
+                <select className="palette-select" aria-label="Device type" value={activeTypeId ?? ''}
+                  onChange={e => { const id = e.target.value || null; setActiveTypeId(id); setActiveProductId(id ? defaultProductId(catalog, id) : null) }}>
+                  <option value="">Any type</option>
+                  {(catalog.typesBySet.get(activeSetId ?? '') ?? []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              )}
+              {activeTypeId && productsFor(catalog, activeTypeId).length > 0 && (
+                <select className="palette-select" aria-label="Product" value={activeProductId ?? ''}
+                  onChange={e => setActiveProductId(e.target.value || null)}>
+                  <option value="">Unassigned</option>
+                  {productsFor(catalog, activeTypeId).map(p => <option key={p.id} value={p.id}>{productOptionLabel(p)}</option>)}
+                </select>
+              )}
+              <button className={'palette-item cone-toggle' + (showCones ? ' on' : '')} aria-pressed={showCones}
+                title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
+                <span className="cone-icon" aria-hidden>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fillOpacity={showCones ? 0.3 : 0} stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 20L4 6a12 12 0 0116 0z" /></svg>
+                </span>
+                <span>Coverage cones</span>
+              </button>
+            </FloatingChip>
           )}
-          {activeTypeId && productsFor(catalog, activeTypeId).length > 0 && (
-            <select className="palette-select" aria-label="Product" value={activeProductId ?? ''}
-              onChange={e => setActiveProductId(e.target.value || null)}>
-              <option value="">Unassigned</option>
-              {productsFor(catalog, activeTypeId).map(p => <option key={p.id} value={p.id}>{productOptionLabel(p)}</option>)}
-            </select>
+          {!hasSelection && drawStyleTool && (
+            <FloatingChip label="Markup style" title="Color, line width, fill and opacity for new markups"
+              summary={<><span className="style-swatch" style={{ background: defaultStyle.stroke }} /><span>{defaultStyle.strokeWidth}px</span></>}>
+              <QuickStyle style={defaultStyle} onChange={setDefaultStyle} />
+            </FloatingChip>
           )}
-          <button className={'palette-item cone-toggle' + (showCones ? ' on' : '')} aria-pressed={showCones}
-            title={showCones ? 'Hide coverage cones' : 'Show coverage cones'} onClick={() => setShowCones(!showCones)}>
-            <span className="cone-icon" aria-hidden>
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" fillOpacity={showCones ? 0.3 : 0} stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 20L4 6a12 12 0 0116 0z" /></svg>
-            </span>
-            <span className="hide-sm">Cones</span>
-          </button>
         </div>
       )}
       {!readOnly && activeTool === 'select' && (selectedIds.length > 0 || clipCount > 0) && (
-        <SelectionBar count={selected.length} canPaste={clipCount > 0} multi={multiSelect} onMulti={setMultiSelect}
-          onCopy={copySelected} onPaste={() => paste()} onDuplicate={duplicateSelected} onDelete={deleteSelected} />
+        <SelectionBar count={selected.length} canPaste={clipCount > 0} multi={multiSelect} onMulti={setMultiSelect} anchor={selAnchor}
+          onCopy={copySelected} onPaste={() => paste()} onDelete={deleteSelected}
+          copyHint={hotkeys['edit.copy'] || undefined} deleteHint={hotkeys['edit.delete'] || undefined}
+          onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
+          onStatus={selectedDevices.length && selectedDevices.length === selected.length ? setStatusOnSelected : undefined}
+          status={selectedDevices[0]?.status}
+          onMore={(x, y) => { const b = selAnchor(); const m = selected[0]; if (m) setCtx({ x, y, hitId: m.id, point: b ? { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 } : { x: 0, y: 0 } }) }} />
       )}
       {!isPhone && activeTool === 'select' && selected.length === 1 && (
         <MarkupPopup key={selected[0].id} markup={selected[0]} sets={symbolSetList}
@@ -1034,7 +1137,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <canvas ref={canvasRef} className="page-canvas" />
       </div>
       {!isPhone && (
-        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} fitHint={hotkeys['view.fit'] || undefined}
+        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
           scaleLabel={pageScale?.label ?? null}
           scalePanel={<ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
             onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}
@@ -1092,6 +1195,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
       stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
+      pinned={prefs.propsPinned} onPinned={v => setPref('propsPinned', v)}
       areas={areasProps}
       measure={{
         scale: pageScale, pageMarkups, scaleBusy, scaleError, onSelectIds: setSelectedIds,
@@ -1126,11 +1230,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     markups: markupsListEl(true),
     compare: compareEl,
     areas: <Areas areas={areasProps} readOnly={readOnly} selected={selected} />,
+    layers: <Layers layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId} hidden={hidden} locked={locked}
+      onToggleHidden={toggleHidden} onToggleLocked={toggleLocked} onAddLayer={addLayer} readOnly={readOnly} symbolSets={symbolSets}
+      display={{ showCones, onShowCones: setShowCones }} />,
   }
 
   const zone = (d: Dock) => {
-    const ids = panelsIn(layout, d)
-    if (!ids.length) return null
+    const ids = panelsIn(shownLayout, d)
+    if (!ids.length || focus) return null
     const wanted = zoneTab[d]
     return (
       <DockZone side={d} panels={ids.map(id => ({ id, title: PANEL_TITLES[id], node: panelNodes[id] }))}
@@ -1171,22 +1278,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   return (
     <CatalogContext.Provider value={catalog}>
-    <div className="viewer">
+    <div className={'viewer' + (focus ? ' focus' : '')}>
+      {!focus && (
       <header className="topbar toolbar">
-        <Link to={'/projects/' + projectId} className="icon-btn" title="Back to plans">←</Link>
-        <button className={'icon-btn' + (!isPhone && panelOpen('pages') ? ' active' : '')} title="Pages" aria-pressed={panelOpen('pages')} onClick={() => togglePanel('pages')}>☰</button>
-        {!isPhone && <button className={'icon-btn' + (panelOpen('tools') ? ' active' : '')} title={'Tool chest (' + (hotkeys['panel.tools'] || 'no key') + ')'} aria-label="Tool chest" aria-pressed={panelOpen('tools')} onClick={() => togglePanel('tools')}>🧰</button>}
-        <span className="crumb ellipsis">{meta?.name ?? '…'}</span>
+        <Link to={'/projects/' + projectId} className="icon-btn" title="Back to plans" aria-label="Back to plans"><Icon name="arrow-left" size={20} /></Link>
+        <PlanSwitcher projectId={projectId} documentId={documentId} name={meta?.name ?? '…'}
+          onPick={id => navigate(`/projects/${projectId}/documents/${id}`)} />
         <SyncIndicator />
         <span className="spacer" />
-        <Avatars peers={peers} max={isPhone ? 2 : 4} onJump={jumpToPeer} />
-        {!readOnly && (
-          <>
-            <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title={'Undo (' + hotkeys['edit.undo'] + ')'}>↶</button>
-            <button className="icon-btn" onClick={() => { store.redo(); setSelectedIds([]) }} disabled={!store.canRedo} title={'Redo (' + hotkeys['edit.redo'] + ')'}>↷</button>
-            <span className="divider hide-sm" />
-          </>
-        )}
         {isPhone && (
           <span className="page-indicator">
             <input className="page-input" inputMode="numeric" value={pageNum}
@@ -1194,47 +1293,56 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             <span className="muted">/ {pageCount || '…'}</span>
           </span>
         )}
-        <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
-          scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
-          projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
-        <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
-          onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
-        <button className="icon-btn hide-sm" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShowHotkeys(true)}>⌨</button>
-        <button className={'icon-btn' + (panelOpen('markups') ? ' active' : '')} title={'Markups list (' + (hotkeys['panel.markups'] || 'no key') + ')'} aria-label="List" aria-pressed={panelOpen('markups')}
-          onClick={() => togglePanel('markups')}>☷<span className="hide-sm list-btn-label">List</span></button>
-        {!isPhone && <button className={'icon-btn' + (panelOpen('areas') ? ' active' : '')} title={'Areas (' + (hotkeys['panel.areas'] || 'no key') + ')'} aria-label="Areas" aria-pressed={panelOpen('areas')} onClick={() => togglePanel('areas')}>▦</button>}
-        <button className={'icon-btn' + (panelOpen('props') ? ' active' : '')} title="Properties & layers" aria-pressed={panelOpen('props')} onClick={() => togglePanel('props')}>⚙</button>
+        <Avatars peers={peers} max={isPhone ? 1 : 4} onJump={jumpToPeer} />
+        {!readOnly && (
+          <>
+            <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title={'Undo (' + hotkeys['edit.undo'] + ')'} aria-label="Undo"><Icon name="undo" size={20} /></button>
+            <button className="icon-btn" onClick={() => { store.redo(); setSelectedIds([]) }} disabled={!store.canRedo} title={'Redo (' + hotkeys['edit.redo'] + ')'} aria-label="Redo"><Icon name="redo" size={20} /></button>
+          </>
+        )}
+        {!isPhone && (
+          <>
+            <span className="divider" />
+            <button className={'icon-btn' + (dockOpen('left') ? ' active' : '')} title={'Tool chest and pages (' + (hotkeys['panel.tools'] || 'no key') + ')'} aria-label="Left panel" aria-pressed={dockOpen('left')} onClick={() => toggleDock('left')}><Icon name="sidebar-left" size={20} /></button>
+            <button className={'icon-btn' + (dockOpen('right') ? ' active' : '')} title={'Properties (' + (hotkeys['panel.props'] || 'no key') + ')'} aria-label="Right panel" aria-pressed={dockOpen('right')} onClick={() => toggleDock('right')}><Icon name="sidebar-right" size={20} /></button>
+          </>
+        )}
+        <MoreMenu title="More: PDF, revisions, print, panels, settings">
+          <PdfMenu documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
+            scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
+            projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
+          <MenuSep />
+          <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
+            onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
+          <MenuSep />
+          <MenuHeading>Panels</MenuHeading>
+          {isPhone && <MenuItemBtn icon="pages" label="Pages" checked={panelOpen('pages')} onClick={() => togglePanel('pages')} />}
+          {isPhone && <MenuItemBtn icon="sidebar-right" label="Properties" checked={panelOpen('props')} onClick={() => togglePanel('props')} />}
+          <MenuItemBtn icon="list" label="Markups list" hint={hotkeys['panel.markups'] || undefined} checked={panelOpen('markups')} onClick={() => togglePanel('markups')} />
+          <MenuItemBtn icon="map" label="Areas" hint={hotkeys['panel.areas'] || undefined} checked={panelOpen('areas')} onClick={() => togglePanel('areas')} />
+          <MenuItemBtn icon="compare" label="Compare" hint={hotkeys['panel.compare'] || undefined} checked={panelOpen('compare')} onClick={() => togglePanel('compare')} />
+          <MenuItemBtn icon="layers" label="Layers" hint={hotkeys['panel.layers'] || undefined} checked={panelOpen('layers')} onClick={() => togglePanel('layers')} />
+          {!isPhone && <MenuItemBtn icon="maximize" label="Focus mode" hint={hotkeys['view.focus'] || undefined} onClick={() => setFocus(true)} />}
+          <MenuSep />
+          <MenuItemBtn icon="keyboard" label="Hotkeys…" onClick={() => setShowHotkeys(true)} />
+          <Link to="/settings" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Settings</span></Link>
+        </MoreMenu>
       </header>
-      <OfflineBanner always={notCached}>{notCached
-        ? "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page."
-        : undefined}</OfflineBanner>
-      {viewingOld && (
-        <div className="rev-banner viewing" role="status">
-          <span>Viewing {revDetail && revDetail.id === revParam ? revisionName(revDetail) : 'earlier revision'} — read only</span>
-          <button onClick={backToCurrent}>Back to current</button>
-        </div>
-      )}
-      {pageBusy && <div className="rev-banner" role="status">{pageBusy}</div>}
-      {orphaned.count > 0 && (
-        <div className="rev-banner" role="status">
-          {orphaned.count} markup{orphaned.count === 1 ? ' is' : 's are'} on page{orphaned.pages.length === 1 ? '' : 's'} {orphaned.pages.join(', ')},
-          which Rev {meta?.revisions[0]?.revision ?? ''} of this plan no longer has. They are kept in the Markups list.
-        </div>
       )}
       {isPhone ? (
         <>
           <div className="viewer-body">
-            {showThumbs && pdf && (
+            {showThumbs && pdf && !focus && (
               <>
                 <div className="scrim" onClick={() => setShowThumbs(false)} />
                 <Thumbnails pdf={pdf} current={pageNum} canEdit={pageToolsOn} onAction={a => { setShowThumbs(false); onPageAction(a) }}
                   onSelect={n => { goTo(n); if (window.innerWidth < 1025) setShowThumbs(false) }} />
               </>
             )}
-            <ToolRail hotkeys={hotkeys} tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />
+            {!focus && <ToolRail hotkeys={hotkeys} tool={activeTool} onTool={chooseTool} readOnly={readOnly} boxSelect={boxMode} onBoxSelect={() => { setBoxMode(b => !b); setTool('select') }} />}
             {viewportEl}
             {dialogs}
-            {showPanel && sidePanelEl}
+            {showPanel && !focus && sidePanelEl}
           </div>
           {toast && <div className="live-toast" role="status">{toast}</div>}
           {showList && markupsListEl(false)}

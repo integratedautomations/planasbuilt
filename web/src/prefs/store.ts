@@ -3,6 +3,8 @@ import { useSyncExternalStore } from 'react'
 import { api } from '../api'
 import { effectivePrefs, EMPTY_STORED, mergePrefs, sanitizeStored } from './prefs'
 import type { PrefKey, Prefs, StoredPrefs } from './prefs'
+import { applyDensity } from './density'
+import type { DensityPref } from './density'
 
 const KEY = 'planmark.prefs'
 const SAVE_DELAY = 800
@@ -30,6 +32,7 @@ function writeLocal() {
 
 function publish() {
   snapshot = effectivePrefs(stored)
+  applyDensity(snapshot.density)
   listeners.forEach(l => l())
 }
 
@@ -82,11 +85,16 @@ export function setPref<K extends PrefKey>(key: K, value: Prefs[K]) {
 
 export const getPrefs = () => snapshot
 
+/** Density setter for the Settings page: 'auto' | 'compact' | 'comfortable'. Applied to the app root (data-density) at once. */
+export function setDensity(d: DensityPref) { setPref('density', d) }
+
 export function usePrefs(): Prefs {
   return useSyncExternalStore(cb => { listeners.add(cb); return () => { listeners.delete(cb) } }, getPrefs)
 }
 
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => { void syncPrefs() })
+  window.matchMedia?.('(pointer: coarse)').addEventListener?.('change', () => applyDensity(snapshot.density))
+  applyDensity(snapshot.density)
   window.addEventListener('beforeunload', () => { if (dirty && userId) { clearTimeout(timer); void push() } })
 }

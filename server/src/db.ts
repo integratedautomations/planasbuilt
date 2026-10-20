@@ -208,7 +208,24 @@ ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS label text NOT NULL DEFA
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '';
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS markups_snapshot jsonb;
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS attachments_snapshot jsonb;
-ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS scales_snapshot jsonb
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS scales_snapshot jsonb;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_by uuid REFERENCES users(id) ON DELETE SET NULL;
+CREATE TABLE IF NOT EXISTS settings (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS user_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose text NOT NULL CHECK (purpose IN ('invite','reset')),
+  token_hash text UNIQUE NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+)
 `
 
 const svg = (body: string) =>

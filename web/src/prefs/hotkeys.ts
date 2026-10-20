@@ -49,6 +49,7 @@ export const COMMANDS: Command[] = [
   { id: 'view.zoomIn', label: 'Zoom in', group: 'View', combo: '=' },
   { id: 'view.zoomOut', label: 'Zoom out', group: 'View', combo: '-' },
   { id: 'view.fit', label: 'Fit page', group: 'View', combo: '0' },
+  { id: 'view.focus', label: 'Focus mode (hide panels)', group: 'View', combo: 'F' },
   { id: 'view.nextPage', label: 'Next page', group: 'View', combo: 'PageDown' },
   { id: 'view.prevPage', label: 'Previous page', group: 'View', combo: 'PageUp' },
   { id: 'panel.markups', label: 'Toggle Markups list', group: 'Panels', combo: 'Shift+L' },
@@ -57,6 +58,7 @@ export const COMMANDS: Command[] = [
   { id: 'panel.pages', label: 'Toggle Pages', group: 'Panels', combo: 'Shift+G' },
   { id: 'panel.compare', label: 'Toggle Compare revisions', group: 'Panels', combo: 'Shift+C' },
   { id: 'panel.areas', label: 'Toggle Areas', group: 'Panels', combo: 'Shift+A' },
+  { id: 'panel.layers', label: 'Toggle Layers', group: 'Panels', combo: 'Shift+Y' },
   { id: 'file.print', label: 'Print', group: 'File', combo: 'Ctrl+P' },
 ]
 

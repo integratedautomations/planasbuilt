@@ -3,16 +3,15 @@ import { Link } from 'react-router-dom'
 import { post, Project, User } from '../api'
 import { loadProjects } from '../offline/cache'
 import { OfflineBanner } from '../offline/OfflineBanner'
-import { UsersDialog } from './UsersDialog'
+import { UserMenu } from '../settings/UserMenu'
 import { Brand } from '../Brand'
 
 interface Props { user: User; onSignOut: () => void }
 
-export function ProjectsPage({ user, onSignOut }: Props) {
+export function ProjectsPage(_: Props) {
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
-  const [showUsers, setShowUsers] = useState(false)
 
   useEffect(() => { loadProjects().then(r => setProjects(r.data)).catch(e => setError(e.message)) }, [])
 
@@ -31,9 +30,7 @@ export function ProjectsPage({ user, onSignOut }: Props) {
         <span className="brand"><Brand onChrome /></span>
         <span className="spacer" />
         <Link to="/symbols" className="btn-link">Catalog</Link>
-        {user.is_admin && <button onClick={() => setShowUsers(true)}>Users</button>}
-        <span className="muted hide-sm">{user.name}</span>
-        <button onClick={onSignOut}>Sign out</button>
+        <UserMenu />
       </header>
       <OfflineBanner />
       <main className="content">
@@ -58,7 +55,6 @@ export function ProjectsPage({ user, onSignOut }: Props) {
           </ul>
         )}
       </main>
-      {showUsers && <UsersDialog onClose={() => setShowUsers(false)} />}
     </div>
   )
 }

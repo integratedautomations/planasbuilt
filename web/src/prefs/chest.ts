@@ -4,7 +4,7 @@ export type ChestView = 'list' | 'grid'
 export type ChestSize = 'small' | 'medium' | 'large'
 
 export interface GroupPrefs {
-  /** Whether the group starts open (default true). */
+  /** Whether the group starts open (default false: groups start collapsed, Favorites and Recent stay open). */
   expanded?: boolean
   view?: ChestView
   size?: ChestSize
@@ -62,7 +62,7 @@ export function moveBefore(current: string[], id: string, before: string | null)
 
 export function groupPrefs(c: ChestPrefs, name: string): Required<GroupPrefs> {
   const g = c.groups[name] ?? {}
-  return { expanded: g.expanded ?? true, view: g.view ?? 'list', size: g.size ?? 'medium', hidden: g.hidden ?? false }
+  return { expanded: g.expanded ?? false, view: g.view ?? 'list', size: g.size ?? 'medium', hidden: g.hidden ?? false }
 }
 
 export function setGroup(c: ChestPrefs, name: string, patch: GroupPrefs): ChestPrefs {

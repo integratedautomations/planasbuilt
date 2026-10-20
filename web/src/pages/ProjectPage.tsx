@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, documentFileUrl } from '../api'
-import type { DocumentRevision, DocumentSummary, Member, Project, Role, RevisionUpload, User } from '../api'
+import type { DocumentRevision, DocumentSummary, Project, RevisionUpload, User } from '../api'
 import { docCacheStates, invalidatePdf, loadDocuments, loadProject, makeProjectOffline, projectCacheSize } from '../offline/cache'
 import type { Progress } from '../offline/cache'
 import { OfflineBanner } from '../offline/OfflineBanner'
@@ -13,12 +13,14 @@ import { exportProjectSchedule } from '../schedule/exportProject'
 import { makeRevisionCurrent } from '../revisions/api'
 import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 import { Brand } from '../Brand'
+import { UserMenu } from '../settings/UserMenu'
+import { MembersPanel } from '../settings/MembersPanel'
 
 export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
   const [project, setProject] = useState<Project | null>(null)
   const [docs, setDocs] = useState<DocumentSummary[]>([])
-  const [members, setMembers] = useState<Member[]>([])
+  const [tab, setTab] = useState<'plans' | 'members'>('plans')
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -39,7 +41,6 @@ export function ProjectPage({ user }: { user: User }) {
   useEffect(() => {
     loadProject(projectId!).then(r => setProject(r.data)).catch(e => setError(e.message))
     loadDocuments(projectId!).then(r => setDocs(r.data)).catch(e => setError(e.message))
-    api<Member[]>(`/projects/${projectId}/members`).then(setMembers).catch(() => {})
   }, [projectId])
 
   const refreshOffline = async (list: DocumentSummary[]) => {
@@ -158,10 +159,16 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <span className="muted">/</span>
         <span className="crumb">{project?.name ?? '…'}</span>
         <span className="spacer" />
-        <span className="muted hide-sm">{user.name}</span>
+        <UserMenu />
       </header>
       <OfflineBanner />
       <main className="content">
+        <div className="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
+          <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
+        </div>
+        {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
+        {tab === 'plans' && <>
         <div className="row">
           <h2>Plans</h2>
           <span className="spacer" />
@@ -254,46 +261,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
               setRevNotice(`${doc.name}: issued ${rev.label || `Rev ${rev.revision}`}.`)
             }} />
         )}
-        <MembersSection projectId={projectId!} members={members} setMembers={setMembers} isAdmin={isAdmin} />
+        </>}
       </main>
     </div>
-  )
-}
-
-function MembersSection({ projectId, members, setMembers, isAdmin }: {
-  projectId: string; members: Member[]; setMembers: (m: Member[]) => void; isAdmin: boolean
-}) {
-  const [email, setEmail] = useState('')
-  const [role, setRole] = useState<Role>('editor')
-  const [error, setError] = useState('')
-
-  async function add(e: FormEvent) {
-    e.preventDefault(); setError('')
-    try {
-      await api(`/projects/${projectId}/members`, { method: 'PUT', body: JSON.stringify({ email, role }) })
-      setMembers(await api<Member[]>(`/projects/${projectId}/members`))
-      setEmail('')
-    } catch (err) { setError((err as Error).message) }
-  }
-
-  return (
-    <section className="members">
-      <h3>Team</h3>
-      <ul className="list compact">
-        {members.map(m => <li key={m.id} className="list-item">{m.name} <span className="muted">{m.email} · {m.role}</span></li>)}
-      </ul>
-      {isAdmin && (
-        <form className="row wrap" onSubmit={add}>
-          <input type="email" placeholder="Teammate email" value={email} onChange={e => setEmail(e.target.value)} required />
-          <select value={role} onChange={e => setRole(e.target.value as Role)}>
-            <option value="viewer">Viewer</option>
-            <option value="editor">Editor</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button>Add / update</button>
-        </form>
-      )}
-      {error && <div className="error">{error}</div>}
-    </section>
   )
 }

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import { entryCommand, groupEntries, matchesSearch } from './toolEntries'
 import type { ToolEntry } from './toolEntries'
 import { ContextMenu } from './ContextMenu'
@@ -30,11 +31,23 @@ function EntryIcon({ e, px }: { e: ToolEntry; px?: number }) {
   return <span className="chest-icon" style={px ? { ['--chest-icon' as string]: `${px}px` } : undefined}>{e.icon}</span>
 }
 
+/** Below this zone width the chest becomes an icon strip. */
+export const STRIP_WIDTH = 140
+
 type Drag = { kind: 'fav' | 'item' | 'group'; id: string; group?: string }
 
 /** Toolbox-style tool list: favorites bar, recent tools, then every tool grouped. Searchable; groups and items can be reordered by dragging. */
 export function ToolChest(p: Props) {
   const [q, setQ] = useState('')
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setNarrow(el.clientWidth > 0 && el.clientWidth < STRIP_WIDTH))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   /** Groups the user opened or closed this session (otherwise the saved "start expanded" setting applies). */
   const [openNow, setOpenNow] = useState<Record<string, boolean>>({})
   const [drag, setDrag] = useState<Drag | null>(null)
@@ -87,7 +100,7 @@ export function ToolChest(p: Props) {
           {keyOf(e) && <kbd className="chest-key">{keyOf(e)}</kbd>}
         </button>
         <button className={`chest-star${isFav ? ' on' : ''}`} aria-label={isFav ? `Unpin ${e.label}` : `Pin ${e.label} to favorites`} aria-pressed={isFav}
-          onClick={() => p.onToggleFavorite(e.id)}>{isFav ? '★' : '☆'}</button>
+          onClick={() => p.onToggleFavorite(e.id)}><Icon name="star" size={16} fill={isFav ? 'currentColor' : 'none'} /></button>
       </div>
     )
   }
@@ -125,8 +138,27 @@ export function ToolChest(p: Props) {
     ]
   }
 
+  if (narrow) {
+    // Icon strip: one flat grid, names and hotkeys on hover
+    const seen = new Set<string>()
+    const strip = [...favs, ...recent, ...all.flatMap(g => g.entries)].filter(e => allowed(e) && !seen.has(e.id) && !!seen.add(e.id))
+    return (
+      <div className="tool-chest strip" ref={rootRef}>
+        <div className="chest-scroll chest-strip">
+          {strip.map(e => (
+            <button key={e.id} className={`chest-cell${p.activeId === e.id ? ' active' : ''}`} aria-pressed={p.activeId === e.id} aria-label={e.label}
+              title={`${e.label}${keyOf(e) ? ` (${keyOf(e)})` : ''}`} onClick={() => p.onPick(e)} onContextMenu={openItemMenu(e)}>
+              <EntryIcon e={e} px={ICON_PX.medium} />
+            </button>
+          ))}
+        </div>
+        {itemMenu && <ContextMenu x={itemMenu.x} y={itemMenu.y} items={itemMenuItems(itemMenu.entry)} onClose={() => setItemMenu(null)} />}
+      </div>
+    )
+  }
+
   return (
-    <div className="tool-chest">
+    <div className="tool-chest" ref={rootRef}>
       <input type="search" className="chest-search" placeholder="Search tools" aria-label="Search tools" value={q} onChange={e => setQ(e.target.value)} />
       <div className="chest-scroll">
         {!searching && (
@@ -159,7 +191,7 @@ export function ToolChest(p: Props) {
                 onDragStart={startDrag({ kind: 'group', id: g.name })} onDragEnd={() => setDrag(null)}
                 onContextMenu={ev => { ev.preventDefault(); setMenu({ x: ev.clientX, y: ev.clientY, group: g.name }) }}
                 onClick={() => setOpenNow(prev => ({ ...prev, [g.name]: !open }))}>
-                <span aria-hidden>{open ? '▾' : '▸'}</span> {g.name}{g.isSet && <span className="muted small"> (symbols)</span>}
+                <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} /> {g.name}{g.isSet && <span className="muted small"> (symbols)</span>}
               </button>
               {open && (gp.view === 'grid'
                 ? <div className="chest-grid" onDragOver={ev => { if (drag?.kind === 'item' && drag.group === g.name) ev.preventDefault() }}

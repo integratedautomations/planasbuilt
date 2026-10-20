@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1153.0",
     "@electric-sql/pglite": "^0.5.10",
     "@fastify/cors": "^11.3.1",
     "@fastify/jwt": "^10.2.5",
@@ -17,11 +18,13 @@
     "@fastify/websocket": "^11.3.4",
     "bcryptjs": "^3.0.3",
     "fastify": "^5.12.7",
+    "nodemailer": "^10.1.7",
     "pdf-lib": "^1.17.1",
     "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "tsx": "^4.23.15",

@@ -15,11 +15,11 @@ describe('tool chest prefs', () => {
     expect(moveItem(DEFAULT_CHEST, 'A', ['x'], 'nope', null).itemOrder.A).toEqual(['x'])
   })
   it('keeps per-group options with defaults, hides and shows groups, resets only the order', () => {
-    expect(groupPrefs(DEFAULT_CHEST, 'A')).toEqual({ expanded: true, view: 'list', size: 'medium', hidden: false })
+    expect(groupPrefs(DEFAULT_CHEST, 'A')).toEqual({ expanded: false, view: 'list', size: 'medium', hidden: false })
     let c = setGroup(DEFAULT_CHEST, 'A', { view: 'grid', size: 'large' })
     c = setGroup(c, 'A', { hidden: true })
     c = setGroup(c, 'B', { expanded: false, hidden: true })
-    expect(groupPrefs(c, 'A')).toEqual({ expanded: true, view: 'grid', size: 'large', hidden: true })
+    expect(groupPrefs(c, 'A')).toEqual({ expanded: false, view: 'grid', size: 'large', hidden: true })
     expect(hiddenGroupCount(c)).toBe(2)
     expect(hiddenGroupCount(showAllGroups(c))).toBe(0)
     c = moveGroup(c, ['A', 'B'], 'B', 'A')

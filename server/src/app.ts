@@ -1,8 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises'
-import { createReadStream, createWriteStream, existsSync, mkdirSync, unlink } from 'node:fs'
-import { pipeline } from 'node:stream/promises'
+import { existsSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import path from 'node:path'
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
 import jwt from '@fastify/jwt'
@@ -12,6 +9,10 @@ import bcrypt from 'bcryptjs'
 import websocket from '@fastify/websocket'
 import { Db } from './db.js'
 import { Realtime } from './realtime.js'
+import { Storage, validateS3Config } from './storage.js'
+import type { S3Factory } from './storage.js'
+import { getSection, storageConfigOf } from './settings.js'
+import { registerAdmin } from './admin.js'
 import { countPages, editPdf, isIdentity, pageSizes, PageOpError, parsePageList, remapPages, rotateGeometry } from './pages.js'
 import type { PageMapping, PageOp } from './pages.js'
 
@@ -29,10 +30,16 @@ export interface AppOptions {
   jwtSecret: string
   filesDir: string
   webDir?: string
+  /** Tests inject a fake S3 client here. */
+  s3Factory?: S3Factory
 }
 
-export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) {
+export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: AppOptions) {
   mkdirSync(filesDir, { recursive: true })
+  const storage = new Storage(filesDir,
+    async () => storageConfigOf(await getSection(db, 'storage')),
+    s3Factory,
+    async () => { const s = (await getSection(db, 'storage')).s3; return validateS3Config(s) ? null : s })
   const app = Fastify({
     logger: false,
     trustProxy: true, // behind Cloudflare Tunnel / cloudflared
@@ -60,6 +67,20 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     } catch {
       return reply.code(401).send({ error: 'Not signed in' })
     }
+    if (!(await touchUser(req.user.id))) return reply.code(401).send({ error: 'Not signed in' })
+  }
+
+  // Deactivated users are locked out at once; last_seen_at is written at most once a minute per user.
+  const userCache = new Map<string, { at: number; ok: boolean }>()
+  const forgetUser = (id: string) => { userCache.delete(id) }
+  async function touchUser(id: string) {
+    const hit = userCache.get(id), now = Date.now()
+    if (hit && now - hit.at < 60_000) return hit.ok
+    const [u] = await db.query('SELECT status FROM users WHERE id = $1', [id])
+    const ok = u?.status === 'active'
+    userCache.set(id, { at: now, ok })
+    if (ok) await db.query('UPDATE users SET last_seen_at = now() WHERE id = $1', [id])
+    return ok
   }
 
   const realtime = new Realtime()
@@ -101,7 +122,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const q = (req.query ?? {}) as any
     let user: AuthUser
     try { user = app.jwt.verify<AuthUser>(String(q.token ?? '')) } catch { socket.close(4401, 'Invalid token'); return }
-    const [u] = await db.query('SELECT name FROM users WHERE id = $1', [user.id])
+    const [u] = await db.query("SELECT name FROM users WHERE id = $1 AND status = 'active'", [user.id])
     if (!u) { socket.close(4401, 'Invalid token'); return }
     const conn = realtime.add(socket, {
       clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
@@ -144,8 +165,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   app.post('/api/auth/login', async (req, reply) => {
     const { email, password } = (req.body ?? {}) as any
     const [user] = await db.query('SELECT * FROM users WHERE email = $1', [String(email ?? '').toLowerCase()])
-    if (!user || !(await bcrypt.compare(String(password ?? ''), user.password_hash)))
+    if (!user || user.status === 'invited' || !(await bcrypt.compare(String(password ?? ''), user.password_hash)))
       return reply.code(401).send({ error: 'Wrong email or password' })
+    if (user.status === 'deactivated')
+      return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
     return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin } }
   })
 
@@ -174,11 +197,6 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   })
 
   // ---- Users (app admins) ----
-  app.get('/api/users', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
-    return db.query('SELECT id, email, name, is_admin FROM users ORDER BY name')
-  })
-
   app.post('/api/users', { preHandler: auth }, async (req, reply) => {
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
     if (!validNewUser(req.body))
@@ -221,7 +239,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const { id } = req.params as any
     if (!(await requireRole(req, reply, id, 'viewer'))) return
     return db.query(
-      `SELECT u.id, u.email, u.name, m.role FROM project_members m JOIN users u ON u.id = m.user_id
+      `SELECT u.id, u.email, u.name, u.status, m.role FROM project_members m JOIN users u ON u.id = m.user_id
        WHERE m.project_id = $1 ORDER BY u.name`, [id])
   })
 
@@ -230,8 +248,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     if (!(await requireRole(req, reply, id, 'admin'))) return
     const { email, role } = (req.body ?? {}) as any
     if (!['admin', 'editor', 'viewer'].includes(role)) return reply.code(400).send({ error: 'Bad role' })
-    const [user] = await db.query('SELECT id FROM users WHERE email = $1', [String(email ?? '').toLowerCase()])
-    if (!user) return reply.code(404).send({ error: 'No user with that email' })
+    const [user] = await db.query("SELECT id FROM users WHERE email = $1 AND status <> 'deactivated'", [String(email ?? '').toLowerCase()])
+    if (!user) return reply.code(404).send({ error: 'No active user with that email' })
     await db.query(
       `INSERT INTO project_members VALUES ($1,$2,$3)
        ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`, [id, user.id, role])
@@ -256,9 +274,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     if (!file) return reply.code(400).send({ error: 'No file' })
     if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf'))
       return reply.code(400).send({ error: 'Only PDF files are supported' })
-    const fileKey = `${randomUUID()}.pdf`
-    await pipeline(file.file, createWriteStream(path.join(filesDir, fileKey)))
-    if (file.file.truncated) return reply.code(413).send({ error: 'File too large' })
+    const fileKey = await storage.save('pdf', file.file)
+    if (file.file.truncated) { void storage.remove(fileKey); return reply.code(413).send({ error: 'File too large' }) }
     const fields = file.fields as any
     const pageCount = Number(fields.pageCount?.value) || 1
     const name = String(fields.name?.value || file.filename.replace(/\.pdf$/i, ''))
@@ -310,12 +327,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
         'SELECT id, file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : [])
       : await db.query('SELECT id, file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
-    const filePath = path.join(filesDir, rev.file_key)
-    if (!existsSync(filePath)) return reply.code(404).send({ error: 'File missing' })
+    const stream = await storage.open(rev.file_key)
+    if (!stream) return reply.code(404).send({ error: 'File missing' })
     reply.header('Content-Type', 'application/pdf')
     // Current-revision URL changes meaning on upload, so only explicit revisions are immutable.
     reply.header('Cache-Control', rid ? 'private, max-age=31536000, immutable' : 'private, no-cache')
-    return reply.send(createReadStream(filePath))
+    return reply.send(stream)
   })
 
   const REVISION_SQL = `SELECT r.id, r.revision, r.page_count, r.created_at, r.uploaded_by, u.name AS uploaded_by_name,
@@ -377,9 +394,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     if (!file) return reply.code(400).send({ error: 'No file' })
     if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf'))
       return reply.code(400).send({ error: 'Only PDF files are supported' })
-    const fileKey = `${randomUUID()}.pdf`
-    await pipeline(file.file, createWriteStream(path.join(filesDir, fileKey)))
-    if (file.file.truncated) return reply.code(413).send({ error: 'File too large' })
+    const fileKey = await storage.save('pdf', file.file)
+    if (file.file.truncated) { void storage.remove(fileKey); return reply.code(413).send({ error: 'File too large' }) }
     const pageCount = Math.max(1, Math.floor(Number((file.fields as any).pageCount?.value)) || 1)
     const label = String((file.fields as any).label?.value ?? '').slice(0, 200)
     const note = String((file.fields as any).note?.value ?? '').slice(0, 2000)
@@ -501,11 +517,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const { rid } = req.params as any
     const [rev] = UUID_RE.test(String(rid)) ? await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : []
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
-    const filePath = path.join(filesDir, rev.file_key)
-    if (!existsSync(filePath)) return reply.code(404).send({ error: 'File missing' })
+    const stream = await storage.open(rev.file_key)
+    if (!stream) return reply.code(404).send({ error: 'File missing' })
     reply.header('Content-Type', 'application/pdf')
     reply.header('Cache-Control', 'private, max-age=31536000, immutable')
-    return reply.send(createReadStream(filePath))
+    return reply.send(stream)
   })
 
   // ---- Page tools: every operation writes a new PDF and a new revision; markups, scales and areas follow their pages ----
@@ -513,9 +529,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
 
   async function runPageOp(req: FastifyRequest, reply: FastifyReply, doc: any, op: PageOp, label: string, other?: Uint8Array) {
     const [latest] = await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
-    const srcPath = latest && path.join(filesDir, latest.file_key)
-    if (!srcPath || !existsSync(srcPath)) return reply.code(404).send({ error: 'File missing' })
-    const src = new Uint8Array(await readFile(srcPath))
+    const srcBytes = latest ? await storage.read(latest.file_key) : null
+    if (!srcBytes) return reply.code(404).send({ error: 'File missing' })
+    const src = new Uint8Array(srcBytes)
     let sizes: { width: number; height: number }[], mapping: PageMapping, edited: { bytes: Uint8Array; pageCount: number }
     try {
       sizes = await pageSizes(src)
@@ -525,8 +541,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       if (e instanceof PageOpError) return reply.code(400).send({ error: e.message })
       return reply.code(400).send({ error: `Could not edit that PDF: ${(e as Error).message}` })
     }
-    const fileKey = `${randomUUID()}.pdf`
-    await writeFile(path.join(filesDir, fileKey), edited.bytes)
+    const fileKey = await storage.save('pdf', edited.bytes)
     let deletedMarkups = 0
     const rev = await db.transaction(async q => {
       await freezeLatest(q, doc.id)
@@ -974,6 +989,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
 
   /** Next free tag for a prefix across the whole project, e.g. CAM-07. */
   async function nextTag(projectId: string, prefix: string) {
+    const { padding } = await getSection(db, 'tags')
     const rows = await db.query<{ tag: string }>(
       `SELECT m.tag FROM markups m JOIN documents d ON d.id = m.document_id
        WHERE d.project_id = $1 AND NOT m.deleted AND m.tag LIKE $2`, [projectId, `${prefix}-%`])
@@ -981,7 +997,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
       const k = Number(r.tag.slice(prefix.length + 1))
       return Number.isInteger(k) && k > n ? k : n
     }, 0)
-    return `${prefix}-${String(max + 1).padStart(2, '0')}`
+    return `${prefix}-${String(max + 1).padStart(padding, '0')}`
   }
 
   // ---- Markups ----
@@ -1173,9 +1189,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   const PHOTO_MAX = 15 * 1024 * 1024
   const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
 
-  const removeFile = (key: string | null | undefined) => {
-    if (key) unlink(path.join(filesDir, path.basename(key)), () => {})
-  }
+  const removeFile = (key: string | null | undefined) => { void storage.remove(key) }
   const optInt = (v: unknown) => {
     const n = Number(v)
     return v !== undefined && v !== '' && Number.isInteger(n) && n > 0 && n < 100000 ? n : null
@@ -1206,8 +1220,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
   async function savePhoto(file: any, reply: FastifyReply) {
     const ext = PHOTO_TYPES[file.mimetype]
     if (!ext) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
-    const key = `${randomUUID()}.${ext}`
-    await pipeline(file.file, createWriteStream(path.join(filesDir, key)))
+    const key = await storage.save(ext, file.file)
     if (file.file.truncated) {
       removeFile(key)
       reply.code(413).send({ error: 'Photo too large (15 MB max)' })
@@ -1304,12 +1317,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir }: AppOptions) 
     const variant = (req.query as any)?.variant
     const key = variant === 'original' ? a.file_key : variant === 'annotated' ? a.annotated_key : (a.annotated_key ?? a.file_key)
     if (!key) return reply.code(404).send({ error: 'No such variant' })
-    const filePath = path.join(filesDir, path.basename(key))
-    if (!existsSync(filePath)) return reply.code(404).send({ error: 'File missing' })
-    reply.header('Content-Type', EXT_TYPES[path.extname(key).slice(1)] ?? 'application/octet-stream')
+    const stream = await storage.open(key)
+    if (!stream) return reply.code(404).send({ error: 'File missing' })
+    reply.header('Content-Type', EXT_TYPES[key.slice(key.lastIndexOf('.') + 1)] ?? 'application/octet-stream')
     reply.header('Cache-Control', 'private, max-age=31536000, immutable')
-    return reply.send(createReadStream(filePath))
+    return reply.send(stream)
   })
+
+  await registerAdmin({ app, db, auth, storage, forgetUser, requireRole, sign, realtime })
 
   // ---- Built web app (production) ----
   if (webDir && existsSync(webDir)) {

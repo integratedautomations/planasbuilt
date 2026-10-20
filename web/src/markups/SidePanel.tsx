@@ -1,4 +1,6 @@
 import { useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { Icon } from '../ui/Icon'
 import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import { STATUSES } from './types'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
@@ -46,6 +48,9 @@ export interface MeasureProps {
 
 const SWATCHES = ['#e03131', '#e8590c', '#f59f00', '#2f9e44', '#1971c2', '#7048e8', '#000000', '#868e96']
 const STAMPS = ['APPROVED', 'REVISED', 'VOID', 'FIELD VERIFY', 'AS-BUILT', 'NOT IN SCOPE']
+
+/** What the Layers panel needs. */
+export type LayersProps = Pick<Props, 'layers' | 'activeLayerId' | 'onActiveLayer' | 'hidden' | 'locked' | 'onToggleHidden' | 'onToggleLocked' | 'onAddLayer' | 'readOnly' | 'symbolSets' | 'display'>
 
 export type SheetSnap = 'peek' | 'half' | 'full'
 const SNAPS: SheetSnap[] = ['peek', 'half', 'full']
@@ -96,21 +101,60 @@ interface Props {
   onDeleteStack: (stack: Stack) => void
   /** Opens the "Replace with..." dialog for the selected devices. */
   onReplace?: () => void
+  /** Desktop: keep the panel open with nothing selected. */
+  pinned?: boolean
+  onPinned?: (v: boolean) => void
+}
+
+const MEASURE_TYPES: Markup['type'][] = ['measure-length', 'measure-polylength', 'measure-area', 'count', 'cable']
+
+/** Collapsible block inside the one-scroll Properties panel; open/closed is remembered in this browser. */
+export function Section({ title, children, defaultOpen = true }: { title: string; children: ReactNode; defaultOpen?: boolean }) {
+  const key = `planmark.psec.${title}`
+  const [open, setOpen] = useState(() => { try { const v = localStorage.getItem(key); return v === null ? defaultOpen : v === '1' } catch { return defaultOpen } })
+  const toggle = () => setOpen(o => { try { localStorage.setItem(key, o ? '0' : '1') } catch { /* ignore */ } return !o })
+  return (
+    <section className="psec">
+      <button type="button" className="psec-head" aria-expanded={open} onClick={toggle}>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />{title}
+      </button>
+      {open && <div className="psec-body">{children}</div>}
+    </section>
+  )
 }
 
 export function SidePanel(p: Props) {
   const { tab, onTab: setTab } = p
   const ref = useRef<HTMLElement>(null)
+  if (!p.sheet) {
+    // Desktop: one scroll; Measure appears only when it is relevant, Layers has its own panel
+    const relevant = p.selected.length ? p.selected.some(m => MEASURE_TYPES.includes(m.type)) : p.measure.pageMarkups.some(m => MEASURE_TYPES.includes(m.type))
+    return (
+      <aside ref={ref} className="side-panel props-panel">
+        {p.onPinned && (
+          <div className="props-pinrow">
+            <button className={'icon-btn small' + (p.pinned ? ' active' : '')} aria-pressed={!!p.pinned} onClick={() => p.onPinned!(!p.pinned)}
+              title={p.pinned ? 'Unpin: Properties closes when nothing is selected' : 'Pin: keep Properties open when nothing is selected'}
+              aria-label="Pin Properties"><Icon name="pin" size={16} /></button>
+          </div>
+        )}
+        <div className="props-scroll">
+          <Properties {...p} />
+          {relevant && <Section title="Measure"><Measure {...p} /></Section>}
+        </div>
+      </aside>
+    )
+  }
   return (
-    <aside ref={ref} className={`side-panel${p.sheet ? ` sheet snap-${p.sheet.snap}` : ''}`}>
-      {p.sheet && <SheetHandle sheet={p.sheet} asideRef={ref} />}
+    <aside ref={ref} className={`side-panel sheet snap-${p.sheet.snap}`}>
+      <SheetHandle sheet={p.sheet} asideRef={ref} />
       <div className="tabs">
         <button className={tab === 'props' ? 'active' : ''} onClick={() => setTab('props')}>Properties</button>
         <button className={tab === 'measure' ? 'active' : ''} onClick={() => setTab('measure')}>Measure</button>
         <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>Layers</button>
-        {p.sheet && <button className={tab === 'areas' ? 'active' : ''} onClick={() => setTab('areas')}>Areas</button>}
+        <button className={tab === 'areas' ? 'active' : ''} onClick={() => setTab('areas')}>Areas</button>
       </div>
-      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : tab === 'areas' && p.sheet ? <Areas {...p} /> : <Layers {...p} />}
+      {tab === 'props' ? <Properties {...p} /> : tab === 'measure' ? <Measure {...p} /> : tab === 'areas' ? <Areas {...p} /> : <Layers {...p} />}
     </aside>
   )
 }
@@ -168,11 +212,15 @@ function Properties(p: Props) {
       <div className="panel-body">
         {one && <button className="stack-back" onClick={() => p.onSelectIds(stack.members.map(m => m.id))}>{'‹'} Back to stack ({stack.members.length})</button>}
         {whole && <StackMembers stack={stack} set={set} onPick={id => p.onSelectIds([id])} />}
-        <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate} set={set}
-          heading={whole ? `Stack ×${selected.length} · ${tagRange(selected.map(m => m.tag ?? ''))}` : undefined}
-          areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
-        <LayerSelect {...p} />
-        {!readOnly && p.onReplace && <button onClick={p.onReplace} title="Swap for another symbol set, device type or product; keeps position, photos and matching fields">Replace with…</button>}
+        <Section title="Device">
+          <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate} set={set}
+            heading={whole ? `Stack ×${selected.length} · ${tagRange(selected.map(m => m.tag ?? ''))}` : undefined}
+            areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
+        </Section>
+        <Section title="Placement">
+          <LayerSelect {...p} />
+          {!readOnly && p.onReplace && <button onClick={p.onReplace} title="Swap for another symbol set, device type or product; keeps position, photos and matching fields">Replace with…</button>}
+        </Section>
         {!readOnly && stack && (one || whole) && (
           <div className="stack-actions">
             <button onClick={() => p.onAddToStack(stack)}>+1 to stack</button>
@@ -384,6 +432,7 @@ function StyleProperties(p: Props) {
       </div>
       {selected.length === 1 && <Attribution markup={first} />}
       <fieldset disabled={disabled} className="stack">
+        <Section title="Style">
         <label className="field">Color
           <div className="swatches">
             {SWATCHES.map(c => (
@@ -417,6 +466,7 @@ function StyleProperties(p: Props) {
         </label>
         <label className="check"><input type="checkbox" checked={!!style.dash}
           onChange={e => setStyle({ dash: e.target.checked }, 'dash')} /> Dashed line</label>
+        </Section>
 
         {hasText && selected.length === 1 && (
           <label className="field">{first.type === 'stamp' ? 'Stamp text' : 'Text'}
@@ -477,7 +527,7 @@ function Measure({ measure: m, readOnly }: Props) {
   )
 }
 
-function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly, symbolSets, display }: Props) {
+export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggleHidden, onToggleLocked, onAddLayer, readOnly, symbolSets, display }: LayersProps) {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const all = [{ id: '', name: 'Default', color: '#868e96' }, ...layers]
@@ -500,10 +550,10 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
               <span className="dot" style={{ background: l.color }} />{l.name}
             </button>
             <button className="icon-btn small" title={hidden.has(l.id) ? 'Show' : 'Hide'} onClick={() => onToggleHidden(l.id)}>
-              {hidden.has(l.id) ? '◌' : '●'}
+              <Icon name={hidden.has(l.id) ? 'eye-off' : 'eye'} size={16} />
             </button>
             <button className="icon-btn small" title={locked.has(l.id) ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(l.id)}>
-              {locked.has(l.id) ? '\u{1F512}' : '\u{1F513}'}
+              <Icon name="lock" size={16} className={locked.has(l.id) ? '' : 'dim'} />
             </button>
           </li>
         ))}
@@ -516,10 +566,10 @@ function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, onToggle
             <li key={key}>
               <span className="layer-name"><span className="dot" style={{ background: set.color }} />{set.name}</span>
               <button className="icon-btn small" title={hidden.has(key) ? 'Show' : 'Hide'} onClick={() => onToggleHidden(key)}>
-                {hidden.has(key) ? '◌' : '●'}
+                <Icon name={hidden.has(key) ? 'eye-off' : 'eye'} size={16} />
               </button>
               <button className="icon-btn small" title={locked.has(key) ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(key)}>
-                {locked.has(key) ? '\u{1F512}' : '\u{1F513}'}
+                <Icon name="lock" size={16} className={locked.has(key) ? '' : 'dim'} />
               </button>
             </li>
           )
@@ -540,4 +590,32 @@ function labelFor(t: Markup['type']) {
   return ({ rect: 'Rectangle', ellipse: 'Ellipse', cloud: 'Cloud', highlight: 'Highlight', text: 'Text box', stamp: 'Stamp', legend: 'Legend',
     line: 'Line', arrow: 'Arrow', polyline: 'Polyline', polygon: 'Polygon', freehand: 'Pen', device: 'Device', area: 'Area', cable: 'Cable run',
     'measure-length': 'Length', 'measure-polylength': 'Polylength', 'measure-area': 'Area', count: 'Count marker' } as const)[t]
+}
+
+/** Compact style editor for the style chip: color, fill, width and opacity of the style new markups get. */
+export function QuickStyle({ style, onChange }: { style: MarkupStyle; onChange: (s: MarkupStyle) => void }) {
+  const set = (patch: Partial<MarkupStyle>) => onChange({ ...style, ...patch })
+  return (
+    <div className="stack quick-style">
+      <div className="field">Color
+        <div className="swatches">
+          {SWATCHES.map(c => <button key={c} className={`swatch${style.stroke === c ? ' on' : ''}`} style={{ background: c }} aria-label={c} onClick={() => set({ stroke: c })} />)}
+          <input type="color" aria-label="Custom color" value={style.stroke || '#000000'} onChange={e => set({ stroke: e.target.value })} />
+        </div>
+      </div>
+      <div className="field">Fill
+        <div className="swatches">
+          <button className={`swatch none${!style.fill ? ' on' : ''}`} aria-label="No fill" onClick={() => set({ fill: '' })} />
+          {SWATCHES.slice(0, 6).map(c => <button key={c} className={`swatch${style.fill === c ? ' on' : ''}`} style={{ background: c }} aria-label={`fill ${c}`} onClick={() => set({ fill: c })} />)}
+          <input type="color" aria-label="Custom fill" value={style.fill || '#ffffff'} onChange={e => set({ fill: e.target.value })} />
+        </div>
+      </div>
+      <label className="field">Line width <span className="muted">{style.strokeWidth}</span>
+        <input type="range" min={0.5} max={20} step={0.5} value={style.strokeWidth} onChange={e => set({ strokeWidth: +e.target.value })} />
+      </label>
+      <label className="field">Opacity <span className="muted">{Math.round(style.opacity * 100)}%</span>
+        <input type="range" min={0.1} max={1} step={0.05} value={style.opacity} onChange={e => set({ opacity: +e.target.value })} />
+      </label>
+    </div>
+  )
 }

@@ -4,6 +4,7 @@ import type { DocumentSummary } from '../api'
 import { STATUSES } from '../markups/types'
 import type { SymbolSet } from '../markups/types'
 import { getPrefs, setPref } from '../prefs/store'
+import { loadCompany } from '../settings/company'
 import { normalizeReportOptions, pageRangeError, rememberableOptions } from './reportOptions'
 import type { ReportGroupBy, ReportOptions, ReportPhotos, PhotosPerPage } from './reportOptions'
 
@@ -24,6 +25,20 @@ export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: P
   const [docOn, setDocOn] = useState<Set<string>>(() => new Set(docs.map(d => d.id)))
   const [statusOn, setStatusOn] = useState<Set<string>>(() => new Set(o.statuses.length ? o.statuses : STATUS_CHOICES.map(s => s.value)))
   const [setOn, setSetOn] = useState<Set<string> | null>(null)
+  // Company settings fill the title page fields the user has not filled in before.
+  useEffect(() => {
+    let live = true
+    void loadCompany().then(c => {
+      if (!c || !live) return
+      setO(prev => ({
+        ...prev,
+        companyName: prev.companyName || c.name,
+        address: prev.address || c.address,
+        preparedBy: prev.preparedBy || c.prepared_by,
+      }))
+    })
+    return () => { live = false }
+  }, [])
   useEffect(() => { api<SymbolSet[]>('/symbol-sets').then(s => { setSets(s); setSetOn(new Set(s.map(x => x.id))) }).catch(() => {}) }, [])
   const patch = (p: Partial<ReportOptions>) => setO(prev => ({ ...prev, ...p }))
   const toggle = <T,>(s: Set<T>, v: T) => { const n = new Set(s); if (n.has(v)) n.delete(v); else n.add(v); return n }

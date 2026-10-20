@@ -1,0 +1,147 @@
+/* Viewer chrome: one panel background, thin dividers, small-caps headings, 8px rhythm, density-driven control heights.
+   --h-btn comes from [data-density] on the document root (see index.css / prefs/density.ts). */
+.viewer {
+  --panel-bg: var(--surface);
+  --divider: color-mix(in srgb, var(--pab-grid) 40%, transparent);
+  --btn-h: var(--h-btn, 36px);
+}
+
+/* Buttons: zero-specificity base so every component class still wins */
+:where(.viewer) button, :where(.viewer) select, :where(.viewer) input:not([type="range"]):not([type="color"]):not([type="checkbox"]):not([type="radio"]) {
+  min-height: var(--btn-h);
+  padding-top: 0; padding-bottom: 0;
+}
+:where(.viewer) button { padding-left: 12px; padding-right: 12px; }
+.viewer button.primary { background: var(--pab-blue); border-color: var(--pab-blue); color: #fff; }
+.viewer button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); background: transparent; }
+.viewer button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* ---- Top bar ---- */
+.viewer .topbar { min-height: calc(var(--btn-h) + 12px); padding: 4px 8px; gap: 4px; border-bottom: 1px solid var(--divider); }
+.viewer .topbar .icon-btn { min-width: var(--btn-h); height: var(--btn-h); min-height: var(--btn-h); padding: 0 6px; font-size: 14px; color: var(--chrome-text); }
+.viewer .topbar .icon-btn:disabled { opacity: 0.4; }
+.viewer .topbar .divider { margin: 4px 6px; }
+.plan-switch { position: relative; min-width: 0; flex: 0 1 auto; }
+.plan-btn { display: inline-flex; align-items: center; gap: 6px; max-width: min(46vw, 360px); border-color: transparent; background: transparent; color: var(--chrome-text); font-weight: 600; font-size: 15px; padding: 0 8px; }
+.viewer .topbar .plan-btn { color: var(--chrome-text); }
+.plan-btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.12); }
+.more-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+
+/* Sync: a dot that opens up to text on hover (failures stay spelled out) */
+.viewer .topbar .sync-ind { font-size: 0; gap: 0; min-height: var(--btn-h); padding: 0 8px; color: var(--chrome-muted); overflow: hidden; }
+.viewer .topbar .sync-ind .dot { width: 9px; height: 9px; }
+.viewer .topbar .sync-ind:hover, .viewer .topbar .sync-ind:focus-visible, .viewer .topbar .sync-ind.bad { font-size: 12px; gap: 6px; }
+.viewer .topbar .sync-ind .live-text { display: none; }
+.viewer .topbar .sync-ind:hover .live-text { display: inline; }
+.viewer .topbar .live-dot { margin-left: 0; }
+
+/* ---- ⋯ menu / dropdown popups ---- */
+.vmenu-popup { position: absolute; top: calc(100% + 4px); z-index: 40; min-width: 240px; max-width: min(340px, 92vw); max-height: calc(100vh - 72px); overflow-y: auto;
+  display: flex; flex-direction: column; padding: 4px; background: var(--panel-bg); color: var(--text); border: 1px solid var(--divider); border-radius: 10px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.28); }
+.vmenu-popup[hidden] { display: none; }
+.vmenu-popup.right { right: 0; }
+.vmenu-popup.left { left: 0; }
+.vmenu-popup .muted { color: var(--muted); }
+.vmenu-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: var(--btn-h); padding: 0 8px; border: none; background: transparent; text-align: left; border-radius: 6px; color: var(--text); text-decoration: none; font-size: 14px; }
+.vmenu-item:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.vmenu-ico { width: 18px; flex-shrink: 0; display: inline-grid; place-items: center; color: var(--muted); }
+.vmenu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vmenu-hint { font: inherit; font-size: 11px; color: var(--muted); }
+.vmenu-heading { padding: 8px 8px 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.vmenu-sep { height: 1px; margin: 4px 2px; background: var(--divider); }
+.vmenu-note { padding: 8px; }
+
+/* ---- Panels: one background, thin dividers, small-caps headings, 8px rhythm ---- */
+.viewer .dock-zone, .viewer .side-panel, .viewer .thumbs, .viewer .tool-rail { background: var(--panel-bg); }
+.viewer .dock-left { border-right-color: var(--divider); }
+.viewer .dock-right { border-left-color: var(--divider); }
+.viewer .dock-bottom { border-top-color: var(--divider); }
+.viewer .dock-head, .viewer .tabs { border-bottom-color: var(--divider); }
+.viewer .dock-tabs button { padding: 0 12px; min-height: var(--btn-h); }
+.viewer .dock-body .panel-heading, .viewer .side-panel .panel-heading, .chest-heading, .psec-head {
+  font-family: var(--font-body); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.viewer .panel-body { padding: 8px; gap: 8px; }
+.viewer .chest-scroll { padding: 0 8px 8px; }
+.viewer .chest-search { margin: 8px; }
+.viewer .chest-pick { min-height: var(--btn-h); }
+.viewer .chest-star { min-height: var(--btn-h); width: var(--btn-h); display: grid; place-items: center; }
+.viewer .chest-cell { min-width: var(--btn-h); min-height: var(--btn-h); }
+.viewer .dim { opacity: 0.35; }
+
+/* Tool chest as an icon strip (zone narrower than 140px) */
+.tool-chest.strip { overflow: hidden; }
+.chest-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--btn-h), 1fr)); gap: 4px; align-content: start; padding: 8px 4px; }
+.chest-strip .chest-cell { width: 100%; }
+
+/* Properties: one scroll with collapsible sections */
+.props-panel { width: 100%; }
+.props-pinrow { display: flex; justify-content: flex-end; padding: 2px 4px 0; flex-shrink: 0; }
+.props-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.props-scroll .panel-body { overflow: visible; }
+.psec { border-top: 1px solid var(--divider); }
+.psec:first-child { border-top: none; }
+.psec-head { display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; border: none; background: transparent; border-radius: 0; padding: 0 8px; min-height: var(--btn-h); }
+.psec-body { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; }
+.props-scroll .psec-body .panel-heading { color: var(--text); text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 700; }
+.history-toggle { text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; color: var(--muted); }
+
+/* ---- Canvas overlays ---- */
+.status-chip-wrap { position: absolute; top: 8px; right: 8px; z-index: 5; }
+.status-chip { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; min-height: 28px; border-radius: 14px; font-size: 12px; font-weight: 600; background: var(--panel-bg); border: 1px solid var(--divider); box-shadow: 0 2px 8px rgb(0 0 0 / 0.25); }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--info); }
+.status-chip.warn .chip-dot, .status-item.warn .chip-dot { background: var(--warn); }
+.status-chip.bad .chip-dot, .status-item.bad .chip-dot { background: var(--danger); }
+.status-chip.bad { color: var(--danger); }
+.chip-count { color: var(--muted); font-weight: 500; }
+.status-pop { position: absolute; top: calc(100% + 6px); right: 0; width: min(340px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 8px; padding: 8px; background: var(--panel-bg); border: 1px solid var(--divider); border-radius: 10px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.28); }
+.status-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.status-item .chip-dot { margin-top: 5px; }
+.status-text { flex: 1; min-width: 0; }
+.status-item button { min-height: 28px; padding: 0 10px; flex-shrink: 0; }
+
+.chip-stack { position: absolute; top: 8px; left: 8px; z-index: 3; display: flex; gap: 8px; flex-wrap: wrap; max-width: calc(100% - 140px); align-items: flex-start; }
+.float-chip { position: relative; }
+.float-chip-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; min-height: 28px; border-radius: 14px; font-size: 12px; font-weight: 600; background: var(--panel-bg); border: 1px solid var(--divider); box-shadow: 0 2px 8px rgb(0 0 0 / 0.25); max-width: 260px; }
+.float-chip-btn .set-icon { width: 18px; height: 18px; }
+.float-chip-btn .ellipsis { max-width: 160px; }
+.style-swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--border); flex-shrink: 0; }
+.float-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 6; width: 260px; max-width: calc(100vw - 24px); padding: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--panel-bg); border: 1px solid var(--divider); border-radius: 10px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.28); }
+.float-pop .palette-select { width: 100%; }
+.device-sets { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* Selection bar: floats beside the selection */
+.selection-bar { top: 0; left: 0; transform: none; padding: 4px; gap: 2px; border-radius: 10px; background: var(--panel-bg); border-color: var(--divider); overflow: visible; max-width: calc(100% - 12px); }
+.selection-bar .sel-btn { width: var(--btn-h); min-width: var(--btn-h); height: var(--btn-h); min-height: var(--btn-h); padding: 0; display: inline-grid; place-items: center; border-color: transparent; background: transparent; }
+.selection-bar .sel-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.selection-bar .sel-btn.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.selection-bar .sel-btn.danger { color: var(--danger); border-color: transparent; }
+.selection-bar .selection-count { padding: 0 6px; }
+.sel-pop-wrap { position: relative; display: inline-flex; }
+.sel-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 6; min-width: 160px; padding: 4px; display: flex; flex-direction: column; background: var(--panel-bg); border: 1px solid var(--divider); border-radius: 10px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.28); }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+/* Bottom nav bar: calm until the pointer is near (the ::before widens its hover area) */
+@media (hover: hover) {
+  .viewer .nav-bar { opacity: 0.5; transition: opacity 0.18s ease; }
+  .viewer .nav-bar::before { content: ''; position: absolute; inset: -32px -24px -12px; }
+  .viewer .nav-bar:hover, .viewer .nav-bar:focus-within { opacity: 1; }
+}
+.viewer .nav-bar { background: var(--panel-bg); border-color: var(--divider); padding: 2px 6px; }
+.viewer .nav-bar .icon-btn { min-width: var(--btn-h); height: var(--btn-h); }
+
+/* Focus mode */
+.focus-exit { position: absolute; top: 8px; right: 8px; z-index: 6; opacity: 0.55; transition: opacity 0.18s; width: var(--btn-h); padding: 0; display: grid; place-items: center; background: var(--panel-bg); border-color: var(--divider); }
+.focus-exit:hover { opacity: 1; }
+.viewer.focus .viewer-body { border: none; }
+
+/* Phone keeps its layout */
+@media (max-width: 640px) {
+  .viewer .topbar { gap: 0; padding: 4px; }
+  .plan-btn { max-width: 40vw; font-size: 14px; }
+  .viewer .topbar .sync-ind .live-text { display: none; }
+  .chip-stack { max-width: calc(100% - 110px); }
+  .selection-bar { max-width: calc(100% - 12px); overflow-x: auto; }
+}
+
+.viewer .markup-popup { top: 44px; background: var(--panel-bg); border-color: var(--divider); }

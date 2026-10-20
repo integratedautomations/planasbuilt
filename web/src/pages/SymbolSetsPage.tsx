@@ -14,6 +14,7 @@ import { useCatalog } from '../catalog/useCatalog'
 import type { FieldDef, SymbolSet } from '../markups/types'
 import { HARDWARE_FIELDS } from '../markups/types'
 import { Brand } from '../Brand'
+import { UserMenu } from '../settings/UserMenu'
 
 type Draft = Omit<SymbolSet, 'id' | 'sort'> & { id?: string }
 const EMPTY: Draft = { name: '', color: '#1971c2', tag_prefix: '', icon: '', fields: [], has_fov: false }
@@ -108,6 +109,8 @@ export function SymbolSetsPage({ user }: { user: User }) {
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
         <span className="muted">/</span>
         <span className="crumb">Catalog</span>
+        <span className="spacer" />
+        <UserMenu />
       </header>
       <main className="content content-wide">
         {!admin && <p className="muted">Only admins can edit the catalog.</p>}

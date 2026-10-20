@@ -73,3 +73,21 @@ export interface Attachment {
 export const attachmentFileUrl = (id: string, variant?: 'original' | 'annotated', v?: string | number) =>
   `/api/attachments/${id}/file?token=${encodeURIComponent(getToken() ?? '')}` +
   (variant ? `&variant=${variant}` : '') + (v !== undefined ? `&v=${encodeURIComponent(String(v))}` : '')
+
+// ---- Settings, users and invites ----
+export interface CompanyInfo {
+  name: string; address: string; phone: string; prepared_by: string
+  has_logo: boolean; logo_type: string
+  tag_padding: 2 | 3 | 4; photo_max_dimension: number; email_enabled: boolean
+}
+export const companyLogoUrl = (v?: string | number) =>
+  `/api/company/logo?token=${encodeURIComponent(getToken() ?? '')}` + (v !== undefined ? `&v=${encodeURIComponent(String(v))}` : '')
+
+export type UserStatus = 'active' | 'invited' | 'deactivated'
+export interface ManagedUser {
+  id: string; email: string; name: string; is_admin: boolean; status: UserStatus
+  last_seen_at: string | null; created_at: string; project_count: number; invite_expires_at: string | null
+  projects?: { id: string; name: string; role: Role }[]
+}
+/** A freshly made invite or reset link. `emailed` says the server also sent it by email. */
+export interface LinkResult { user_id: string; email: string; link: string; expires_at: string; emailed: boolean; email_error?: string }

@@ -12,6 +12,7 @@ import { db } from '../offline/db'
 import { loadDocuments, loadProject, loadSymbolSets } from '../offline/cache'
 import { areaOptions, buildRows } from '../schedule/rows'
 import { Brand } from '../Brand'
+import { UserMenu } from '../settings/UserMenu'
 
 const SECTION_TITLE: Record<BomSection, string> = { devices: 'Devices', accessories: 'Accessories', unassigned: 'Unassigned devices (no product chosen)' }
 
@@ -72,6 +73,8 @@ export function BomPage({ user }: { user: User }) {
         <Link to={`/projects/${projectId}`} className="crumb">{project?.name ?? '…'}</Link>
         <span className="muted">/</span>
         <span className="crumb">BOM</span>
+        <span className="spacer" />
+        <UserMenu />
       </header>
       <OfflineBanner />
       <main className="content">

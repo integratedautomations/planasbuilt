@@ -6,17 +6,25 @@ import { cacheUser, cachedUser } from './offline/user'
 import { resumeSync, setSyncUser } from './offline/sync'
 import { ForeignNotice } from './offline/ForeignNotice'
 import { connect as connectRealtime } from './realtime/socket'
-import { setPrefsUser } from './prefs/store'
+import { setPrefsUser, usePrefs } from './prefs/store'
+import { applyTheme } from './prefs/theme'
 import { AuthPage } from './pages/AuthPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { ViewerPage } from './pages/ViewerPage'
 import { BomPage } from './pages/BomPage'
 import { SymbolSetsPage } from './pages/SymbolSetsPage'
+import { SettingsPage } from './settings/SettingsPage'
+import { UsersPage } from './settings/UsersPage'
+import { InvitePage } from './settings/InvitePage'
+import { SessionContext } from './settings/session'
+import './settings/settings.css'
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(!!getToken())
+  const { theme } = usePrefs()
+  useEffect(() => { applyTheme(theme) }, [theme])
 
   useEffect(() => {
     if (getToken()) {
@@ -38,7 +46,14 @@ export default function App() {
   }, [user])
 
   if (loading) return <div className="center muted">Loading…</div>
-  if (!user) return <AuthPage onSignedIn={(token, u) => { setToken(token); cacheUser(u); setUser(u); resumeSync() }} />
+  const signedIn = (token: string, u: User) => { setToken(token); cacheUser(u); setUser(u); resumeSync() }
+  if (!user) return (
+    <Routes>
+      <Route path="/invite/:token" element={<InvitePage purpose="invite" onSignedIn={signedIn} />} />
+      <Route path="/reset/:token" element={<InvitePage purpose="reset" onSignedIn={signedIn} />} />
+      <Route path="*" element={<AuthPage onSignedIn={signedIn} />} />
+    </Routes>
+  )
 
   const signOut = async () => {
     setToken(null); cacheUser(null); setUser(null)
@@ -46,7 +61,7 @@ export default function App() {
     if ((await db.outbox.count()) === 0) await clearLocalData()
   }
   return (
-    <>
+    <SessionContext.Provider value={{ user, signOut }}>
     <ForeignNotice />
     <Routes>
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
@@ -55,8 +70,12 @@ export default function App() {
       <Route path="/projects/:projectId/bom" element={<BomPage user={user} />} />
       <Route path="/symbols" element={<SymbolSetsPage user={user} />} />
       <Route path="/catalog" element={<SymbolSetsPage user={user} />} />
+      <Route path="/settings" element={<SettingsPage user={user} onUser={u => { cacheUser(u); setUser(u) }} />} />
+      <Route path="/users" element={user.is_admin ? <UsersPage me={user} /> : <Navigate to="/" replace />} />
+      <Route path="/invite/:token" element={<Navigate to="/" replace />} />
+      <Route path="/reset/:token" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-    </>
+    </SessionContext.Provider>
   )
 }

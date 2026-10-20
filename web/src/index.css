@@ -32,6 +32,8 @@
   --info: #1971c2;
   --canvas-bg: #4A5E77;
   --radius: 8px;
+  /* control height: [data-density] on the app root sets it (prefs/density.ts); the viewer uses it */
+  --h-btn: 36px;
   color-scheme: light;
   font-family: var(--font-body);
   color: var(--text);
@@ -54,6 +56,9 @@
     color-scheme: dark;
   }
 }
+
+[data-density='compact'] { --h-btn: 28px; }
+[data-density='comfortable'] { --h-btn: 44px; }
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; }
