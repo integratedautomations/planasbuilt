@@ -256,6 +256,7 @@ export function ViewerPage() {
   const { data: catalogData, catalog, reload: reloadCatalog } = useCatalog()
   const isAdmin = !!useSession()?.user.is_admin
   const [editTypeId, setEditTypeId] = useState<string | null>(null)
+  const [newTypeSetId, setNewTypeSetId] = useState<string | null>(null)
   /** Device type / product the Device tool places; the product defaults to the type's default. */
   const [activeTypeId, setActiveTypeId] = useState<string | null>(null)
   const [activeProductId, setActiveProductId] = useState<string | null>(null)
@@ -1040,7 +1041,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   // One key listener for every command in the hotkey registry; ignored while typing or while a menu/dialog is open
   const runRef = useRef(runCommand)
   runRef.current = runCommand
-  const modalOpen = showHotkeys || !!hkEntry || !!editTypeId || !!overlap || !!ctx || replacing || printOpen || issueOpen || !!compareReq
+  const modalOpen = showHotkeys || !!hkEntry || !!editTypeId || !!newTypeSetId || !!overlap || !!ctx || replacing || printOpen || issueOpen || !!compareReq
   useEffect(() => {
     if (modalOpen) return
     const panKey = parseCombo(hotkeys['view.panHold'])?.key
@@ -1265,6 +1266,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       hotkeys={hotkeys} readOnly={readOnly} chest={prefs.chest} onChest={c => setPref('chest', c)} onPick={pickEntry} onFavorites={ids => setPref('favorites', ids)}
       onToggleFavorite={id => setPref('favorites', toggleFavorite(getPrefs().favorites, id))}
       onEditType={isAdmin && !readOnly ? e => { if (e.typeId) setEditTypeId(e.typeId) } : undefined}
+      onAddType={isAdmin && !readOnly ? setNewTypeSetId : undefined}
       onAssignHotkey={setHkEntry} onRemoveHotkey={e => setPref('hotkeys', assignCombo(getPrefs().hotkeys, entryCommand(e), ''))} />,
     pages: pdf ? <Thumbnails pdf={pdf} current={pageNum} onSelect={goTo} canEdit={pageToolsOn} onAction={onPageAction} /> : <div className="muted small dock-empty">Loading…</div>,
     props: sidePanelEl,
@@ -1441,6 +1443,12 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             onRemoved={async () => { await reloadCatalog(); setEditTypeId(null) }} />
         )
       })()}
+      {newTypeSetId && (
+        <DeviceTypeEditor key={`new:${newTypeSetId}`} initial={{ setId: newTypeSetId, name: '', tag_prefix: '', icon: '', fields: [], default_product_id: null }}
+          set={symbolSets.get(newTypeSetId)} onClose={() => setNewTypeSetId(null)}
+          onSaved={async () => { await reloadCatalog(); setNewTypeSetId(null) }}
+          onRemoved={async () => { setNewTypeSetId(null) }} />
+      )}
       {overlap && <OverlapPrompt message={overlap.message} onChoose={answerOverlap} />}
     </div>
     </CatalogContext.Provider>

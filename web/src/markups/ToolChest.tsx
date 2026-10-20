@@ -25,6 +25,8 @@ interface Props {
   onRemoveHotkey: (e: ToolEntry) => void
   /** Admins only: opens the device-type editor for a device-type entry. Omit to hide the menu item. */
   onEditType?: (e: ToolEntry) => void
+  /** Admins only: opens the device-type editor in create mode for a symbol set. Omit to hide the menu items and "+" button. */
+  onAddType?: (setId: string) => void
 }
 
 function EntryIcon({ e, px }: { e: ToolEntry; px?: number }) {
@@ -81,6 +83,7 @@ export function ToolChest(p: Props) {
     { label: 'Assign hotkey…', hint: keyOf(e) || undefined, disabled: p.readOnly && e.tool !== 'select' && e.tool !== 'pan', onClick: () => p.onAssignHotkey(e) },
     { label: 'Remove hotkey', disabled: !keyOf(e), onClick: () => p.onRemoveHotkey(e) },
     ...(p.onEditType && e.typeId ? [{ label: '', separator: true }, { label: 'Edit device type…', onClick: () => p.onEditType!(e) }] : []),
+    ...(p.onAddType && e.setId ? [{ label: 'Add device type…', onClick: () => p.onAddType!(e.setId!) }] : []),
   ]
 
   const row = (e: ToolEntry, opts: { favDrag?: boolean; group?: { name: string; entries: ToolEntry[] } } = {}) => {
@@ -128,7 +131,9 @@ export function ToolChest(p: Props) {
     const mark = (on: boolean, label: string) => (on ? `✓ ${label}` : label)
     const sizes: ChestSize[] = ['small', 'medium', 'large']
     const hidden = hiddenGroupCount(p.chest)
+    const setId = all.find(g => g.name === name)?.entries.find(e => e.setId)?.setId
     return [
+      ...(p.onAddType && setId ? [{ label: 'Add device type…', onClick: () => p.onAddType!(setId) }, { label: '', separator: true }] : []),
       { label: gp.expanded ? 'Start collapsed' : 'Start expanded', onClick: set({ expanded: !gp.expanded }) },
       { label: '', separator: true },
       { label: mark(gp.view === 'list', 'List view'), onClick: set({ view: 'list' }) },
@@ -185,10 +190,12 @@ export function ToolChest(p: Props) {
           const gp = groupPrefs(p.chest, g.name)
           const open = searching || (openNow[g.name] ?? gp.expanded)
           const px = ICON_PX[gp.size]
+          const addSetId = p.onAddType ? all.find(a => a.name === g.name)?.entries.find(e => e.setId)?.setId : undefined
           return (
             <section key={g.name} aria-label={g.name} className={`chest-section${drag?.kind === 'group' && drag.id === g.name ? ' dragging' : ''}`}
               onDragOver={ev => { if (drag?.kind === 'group') ev.preventDefault() }}
               onDrop={ev => { if (drag?.kind === 'group') { ev.preventDefault(); p.onChest(moveGroup(p.chest, shownNames, drag.id, g.name)); setDrag(null) } }}>
+              <div className="chest-group-row" style={{ display: 'flex', alignItems: 'center' }}>
               <button className="chest-heading chest-group" aria-expanded={open} draggable={!searching}
                 title="Drag to reorder. Right-click for group options."
                 onDragStart={startDrag({ kind: 'group', id: g.name })} onDragEnd={() => setDrag(null)}
@@ -196,6 +203,9 @@ export function ToolChest(p: Props) {
                 onClick={() => setOpenNow(prev => ({ ...prev, [g.name]: !open }))}>
                 <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} /> {g.name}{g.isSet && <span className="muted small"> (symbols)</span>}
               </button>
+              {addSetId && <button className="icon-btn" title="Add device type" aria-label={`Add device type to ${g.name}`}
+                onClick={() => p.onAddType!(addSetId)}><Icon name="plus" size={14} /></button>}
+              </div>
               {open && (gp.view === 'grid'
                 ? <div className="chest-grid" onDragOver={ev => { if (drag?.kind === 'item' && drag.group === g.name) ev.preventDefault() }}
                     onDrop={ev => { if (ev.target === ev.currentTarget) dropOnItem(g, null)(ev) }}>{g.entries.map(e => cell(e, g, px))}</div>
