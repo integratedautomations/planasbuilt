@@ -1,6 +1,7 @@
 import { FormEvent, useRef, useState } from 'react'
 import { api, companyLogoUrl } from '../api'
 import type { CompanyInfo } from '../api'
+import { useAuthedUrl } from '../useAuthedUrl'
 import { setCompanyCache } from './company'
 import type { AdminSettings } from './types'
 import { useAdminSettings } from './useAdminSettings'
@@ -11,6 +12,7 @@ export function CompanyTab() {
   const [err, setErr] = useState('')
   const [logoVersion, setLogoVersion] = useState(0)
   const file = useRef<HTMLInputElement>(null)
+  const logoUrl = useAuthedUrl(settings?.company.has_logo ? companyLogoUrl(logoVersion) : undefined)
   if (!settings) return <p className="muted">{error || 'Loading…'}</p>
   const s = settings
 
@@ -61,7 +63,7 @@ export function CompanyTab() {
         <div className="field">Logo (PNG or SVG, 1 MB max)
           <div className="row">
             {s.company.has_logo
-              ? <img className="logo-preview" alt="Company logo" src={companyLogoUrl(logoVersion)} />
+              ? <img className="logo-preview" alt="Company logo" src={logoUrl || undefined} />
               : <span className="muted small">No logo yet</span>}
             <input ref={file} type="file" accept="image/png,image/svg+xml,.png,.svg" hidden onChange={e => uploadLogo(e.target.files?.[0])} />
             <button type="button" onClick={() => file.current?.click()}>{s.company.has_logo ? 'Replace' : 'Upload'}</button>

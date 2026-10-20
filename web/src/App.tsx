@@ -4,6 +4,7 @@ import { api, ApiError, getToken, setToken, User } from './api'
 import { clearLocalData, db } from './offline/db'
 import { cacheUser, cachedUser } from './offline/user'
 import { resumeSync, setSyncUser } from './offline/sync'
+import { claimCache, purgeCache, releaseCache } from './offline/cacheOwner'
 import { ForeignNotice } from './offline/ForeignNotice'
 import { connect as connectRealtime } from './realtime/socket'
 import { setPrefsUser, usePrefs } from './prefs/store'
@@ -23,6 +24,8 @@ import './settings/settings.css'
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(!!getToken())
+  /** The user whose local cache is ready to read (the previous user's data is purged first). */
+  const [cacheFor, setCacheFor] = useState<string | null>(null)
   const { theme } = usePrefs()
   useEffect(() => { applyTheme(theme) }, [theme])
 
@@ -34,7 +37,7 @@ export default function App() {
         else setUser(cachedUser())
       }).finally(() => setLoading(false))
     }
-    const onSignedOut = () => setUser(null)
+    const onSignedOut = () => { setSyncUser(null); releaseCache(); setUser(null) }
     window.addEventListener('planmark:signed-out', onSignedOut)
     return () => window.removeEventListener('planmark:signed-out', onSignedOut)
   }, [])
@@ -42,11 +45,19 @@ export default function App() {
   useEffect(() => {
     setSyncUser(user ? { id: user.id, name: user.name } : null)
     setPrefsUser(user?.id ?? null)
-    if (user) connectRealtime()
+    if (!user) { releaseCache(); setCacheFor(null); return }
+    let live = true
+    claimCache(user.id).then(() => { if (live) setCacheFor(user.id) }).catch(e => { console.error(e); if (live) setCacheFor(user.id) })
+    connectRealtime()
+    return () => { live = false }
   }, [user])
 
-  if (loading) return <div className="center muted">Loading…</div>
-  const signedIn = (token: string, u: User) => { setToken(token); cacheUser(u); setUser(u); resumeSync() }
+  if (loading || (user && cacheFor !== user.id)) return <div className="center muted">Loading…</div>
+  // The sync user is set synchronously, before anything can drain the outbox under a stale identity.
+  const signedIn = (token: string, u: User) => {
+    setSyncUser({ id: u.id, name: u.name })
+    setToken(token); cacheUser(u); setUser(u); resumeSync()
+  }
   if (!user) return (
     <Routes>
       <Route path="/invite/:token" element={<InvitePage purpose="invite" onSignedIn={signedIn} />} />
@@ -56,9 +67,13 @@ export default function App() {
   )
 
   const signOut = async () => {
+    setSyncUser(null) // first: nothing may be sent or read as this user from here on
+    releaseCache()
     setToken(null); cacheUser(null); setUser(null)
-    // Don't leave one user's plans on a shared device, but never throw away unsent field work.
+    // Don't leave one user's plans on a shared device, but never throw away unsent field work:
+    // with unsent changes everything else is purged and only what the queued work needs stays.
     if ((await db.outbox.count()) === 0) await clearLocalData()
+    else await purgeCache()
   }
   return (
     <SessionContext.Provider value={{ user, signOut }}>

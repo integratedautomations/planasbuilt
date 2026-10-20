@@ -84,3 +84,13 @@ export function cloudArcs(w: number, h: number, size: number) {
   side(0, h, 0, 0, Math.PI)
   return arcs
 }
+
+/** True when a markup's geometry is safe to draw (finite numbers, points array well formed). Guards the canvas against bad data. */
+export function hasDrawableGeometry(m: { geometry?: unknown }): boolean {
+  const g = m.geometry as Record<string, unknown> | null | undefined
+  if (!g || typeof g !== 'object') return false
+  const fin = (v: unknown) => typeof v === 'number' && Number.isFinite(v)
+  if (!fin(g.x) || !fin(g.y) || (g.rotation !== undefined && !fin(g.rotation))) return false
+  if ('points' in g) return Array.isArray(g.points) && g.points.length % 2 === 0 && g.points.every(fin)
+  return fin(g.width) && fin(g.height)
+}

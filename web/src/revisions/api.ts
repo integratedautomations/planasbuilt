@@ -1,4 +1,4 @@
-import { api, documentFileUrl, post } from '../api'
+import { api, authFetch, documentFileUrl, post } from '../api'
 import type { DocumentRevision } from '../api'
 import type { Markup } from '../markups/types'
 
@@ -25,7 +25,7 @@ export const makeRevisionCurrent = (documentId: string, revisionId: string) =>
 
 /** The bytes of one revision's PDF (not cached: the offline cache holds only the current one). */
 export async function fetchRevisionPdf(documentId: string, revisionId: string): Promise<ArrayBuffer> {
-  const res = await fetch(documentFileUrl(documentId, revisionId))
+  const res = await authFetch(documentFileUrl(documentId, revisionId))
   if (!res.ok) throw new Error(`Could not download that revision (${res.status})`)
   return res.arrayBuffer()
 }

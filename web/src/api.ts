@@ -51,8 +51,28 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const post = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
+/**
+ * File URLs carry no credentials. Fetch them with `authFetch` / `fetchBlob` (Authorization header);
+ * never put the login token in a URL (it ends up in logs, history and Referer headers).
+ */
 export const documentFileUrl = (id: string, revisionId?: string) =>
-  `/api/documents/${id}/file?token=${encodeURIComponent(getToken() ?? '')}` + (revisionId ? `&revision=${encodeURIComponent(revisionId)}` : '')
+  `/api/documents/${id}/file` + (revisionId ? `?revision=${encodeURIComponent(revisionId)}` : '')
+
+/** fetch() with the session's Authorization header (for file downloads). Does not turn 401 into a sign-out. */
+export function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const token = getToken()
+  headers.set('X-Client-Id', getClientId())
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  return fetch(url, { ...init, headers })
+}
+
+/** Downloads a file URL to a Blob; throws ApiError on a non-2xx answer. */
+export async function fetchBlob(url: string, init: RequestInit = {}): Promise<Blob> {
+  const res = await authFetch(url, init)
+  if (!res.ok) throw new ApiError(res.status, `Could not download the file (${res.status})`)
+  return res.blob()
+}
 
 export interface DocumentRevision {
   id: string; revision: number; page_count: number; created_at: string
@@ -71,8 +91,7 @@ export interface Attachment {
   created_at: string; created_by: string; has_annotation: boolean
 }
 export const attachmentFileUrl = (id: string, variant?: 'original' | 'annotated', v?: string | number) =>
-  `/api/attachments/${id}/file?token=${encodeURIComponent(getToken() ?? '')}` +
-  (variant ? `&variant=${variant}` : '') + (v !== undefined ? `&v=${encodeURIComponent(String(v))}` : '')
+  `/api/attachments/${id}/file?` + [variant ? `variant=${variant}` : '', v !== undefined ? `v=${encodeURIComponent(String(v))}` : ''].filter(Boolean).join('&')
 
 // ---- Settings, users and invites ----
 export interface CompanyInfo {
@@ -81,7 +100,7 @@ export interface CompanyInfo {
   tag_padding: 2 | 3 | 4; photo_max_dimension: number; email_enabled: boolean
 }
 export const companyLogoUrl = (v?: string | number) =>
-  `/api/company/logo?token=${encodeURIComponent(getToken() ?? '')}` + (v !== undefined ? `&v=${encodeURIComponent(String(v))}` : '')
+  `/api/company/logo` + (v !== undefined ? `?v=${encodeURIComponent(String(v))}` : '')
 
 export type UserStatus = 'active' | 'invited' | 'deactivated'
 export interface ManagedUser {

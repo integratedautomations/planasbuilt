@@ -91,6 +91,9 @@ export function setSyncUser(u: CurrentUser | null) {
   if (u) void drain()
 }
 
+/** Who the outbox currently works for (null = nobody signed in, so nothing is sent). */
+export function getSyncUser() { return currentUser }
+
 export function getSnapshot() { return snapshot }
 
 /** Recompute the snapshot from Dexie and notify subscribers when something changed. */
@@ -123,15 +126,18 @@ let executor: Executor = defaultExecutor
 let autoRetry = true
 
 /** Test hook: swap the network executor and disable timers/event listeners driven retries. */
-export function configure(opts: { executor?: Executor; autoRetry?: boolean }) {
+export type MarkupListFetcher = (docId: string) => Promise<Markup[]>
+let fetchMarkupList: MarkupListFetcher = docId => api<Markup[]>(`/documents/${docId}/markups`)
+export function configure(opts: { executor?: Executor; autoRetry?: boolean; fetchMarkups?: MarkupListFetcher }) {
   if (opts.executor) executor = opts.executor
+  if (opts.fetchMarkups) fetchMarkupList = opts.fetchMarkups
   if (opts.autoRetry !== undefined) autoRetry = opts.autoRetry
 }
 /** Test hook: forget in-memory state. */
 export function resetSyncState() {
   reachable = true; syncing = false; authRequired = false; inflightSeq = null; currentUser = null
   if (retryTimer) clearTimeout(retryTimer)
-  retryTimer = null; draining = null; rerun = false
+  retryTimer = null; draining = null; rerun = false; skippedRemote.clear()
   snapshot = { online: true, pending: 0, failed: 0, syncing: false, authRequired: false, failedItems: [], foreign: null }
 }
 
@@ -196,10 +202,30 @@ export function queueMarkupPut(docId: string, m: Markup) {
   })
 }
 
+/**
+ * A markup is being deleted: photos of it that were never uploaded (or only wait to upload an
+ * annotation) have no parent to attach to any more, so drop their queued work and local rows.
+ * A photo whose upload is in flight right now is left alone (the server answer / 404 path handles it).
+ * Must run inside a transaction that includes outbox, attachments and photoBlobs.
+ */
+async function cancelPhotosOf(markupId: string) {
+  const ids = new Set((await db.attachments.where('markup_id').equals(markupId).toArray()).filter(a => a.pending).map(a => a.id))
+  for (const i of await db.outbox.toArray())
+    if (i.kind === 'photo_post' && i.payload?.markupId === markupId) ids.add(i.targetId)
+  for (const attId of ids) {
+    const items = await db.outbox.where('targetId').equals(attId).toArray()
+    if (items.some(i => i.seq === inflightSeq)) continue
+    await db.outbox.bulkDelete(items.map(i => i.seq!))
+    await db.attachments.delete(attId)
+    await db.photoBlobs.where('attachment_id').equals(attId).delete()
+  }
+}
+
 export function queueMarkupDelete(docId: string, id: string) {
   return serial(async () => {
-    await db.transaction('rw', db.markups, db.outbox, async () => {
+    await db.transaction('rw', db.markups, db.attachments, db.photoBlobs, db.outbox, async () => {
       await db.markups.delete(id)
+      await cancelPhotosOf(id)
       await addToOutbox({ kind: 'markup_delete', docId, targetId: id, payload: null })
     })
     afterWrite()
@@ -314,10 +340,13 @@ export async function mergeServerMarkups(docId: string, rows: Markup[]): Promise
   })
 }
 
-/** Live sync: a markup was created/changed elsewhere. Ignored while we hold unsent edits for it. */
+/** Ids whose remote change was ignored because of unsent local edits; reconciled with the server once those are sent. */
+const skippedRemote = new Map<string, string>()
+
+/** Live sync: a markup was created/changed elsewhere. Ignored while we hold unsent edits for it (and re-checked later). */
 export async function applyRemoteMarkup(row: Markup): Promise<boolean> {
   const applied = await db.transaction('rw', db.markups, db.outbox, async () => {
-    if (await hasPending(row.id)) return false
+    if (await hasPending(row.id)) { skippedRemote.set(row.id, row.document_id); return false }
     await db.markups.put(row)
     return true
   })
@@ -327,12 +356,34 @@ export async function applyRemoteMarkup(row: Markup): Promise<boolean> {
 
 export async function applyRemoteMarkupDelete(docId: string, id: string): Promise<boolean> {
   const applied = await db.transaction('rw', db.markups, db.outbox, async () => {
-    if (await hasPending(id)) return false
+    if (await hasPending(id)) { skippedRemote.set(id, docId); return false }
     await db.markups.delete(id)
     return true
   })
   if (applied) emit({ type: 'remote-markups', docId, ids: [id] })
   return applied
+}
+
+/**
+ * After our own queued edit of a markup is done, catch up on remote changes we ignored meanwhile:
+ * refetch the document's markups; if the server no longer has it remove it locally, otherwise take
+ * the server row when its version is newer than ours.
+ */
+async function reconcileSkipped(id: string) {
+  const docId = skippedRemote.get(id)
+  if (!docId || (await hasPending(id))) return
+  skippedRemote.delete(id)
+  let rows: Markup[]
+  try { rows = await fetchMarkupList(docId) } catch { skippedRemote.set(id, docId); return } // retried after the next item
+  const server = rows.find(r => r.id === id)
+  const changed = await db.transaction('rw', db.markups, db.outbox, async () => {
+    if (await hasPending(id)) { skippedRemote.set(id, docId); return false }
+    const local = await db.markups.get(id)
+    if (!server) { if (!local) return false; await db.markups.delete(id); return true }
+    if (!local || (server.version ?? 0) > (local.version ?? 0)) { await db.markups.put(server); return true }
+    return false
+  })
+  if (changed) emit({ type: 'remote-markups', docId, ids: [id] })
 }
 
 // ---------------------------------------------------------------- executors (network)
@@ -432,14 +483,22 @@ export function drain(): Promise<void> {
 
 async function drainOnce() {
   if (authRequired) return
+  // Nobody known yet (app start, sign-in in progress): sending now could run under the wrong account.
+  if (!currentUser) { await refreshSnapshot(); return }
   if (!browserOnline()) { await refreshSnapshot(); return }
   for (;;) {
-    // Shared device: never send another user's queued work under this account. Pause everything.
-    const queue = await db.outbox.where('status').equals('pending').toArray()
-    if (queue.some(i => isForeign(i, currentUser))) break
-    const item = queue[0]
-    if (!item) break
-    inflightSeq = item.seq!
+    // Pick the next item and mark it in flight in ONE transaction: queue writes (which coalesce into the
+    // newest not-in-flight item) either land before we read, or see inflightSeq and append instead.
+    let item = undefined as OutboxItem | undefined
+    let paused = false as boolean
+    await db.transaction('rw', db.outbox, async () => {
+      const queue = await db.outbox.where('status').equals('pending').toArray()
+      // Shared device: never send another user's queued work under this account. Pause everything.
+      if (queue.some(i => isForeign(i, currentUser))) { paused = true; return }
+      item = queue[0]
+      if (item) inflightSeq = item.seq!
+    })
+    if (paused || !item) break
     syncing = true
     await refreshSnapshot()
     let result: unknown
@@ -451,6 +510,8 @@ async function drainOnce() {
       const cls = classifyError(e)
       const treatAsDone = cls === 'permanent' && (e as ApiError).status === 404 && item.kind.endsWith('_delete')
       if (treatAsDone) { await finish(item, undefined); continue }
+      // The markup the photo belonged to is gone on the server: nothing to attach to, drop the photo quietly.
+      if (cls === 'permanent' && (e as ApiError).status === 404 && item.kind === 'photo_post') { await dropPhoto(item); continue }
       const attempts = item.attempts + 1
       if (cls === 'permanent') {
         await db.outbox.update(item.seq!, { status: 'failed', attempts, lastError: msg })
@@ -477,7 +538,25 @@ async function drainOnce() {
 
 async function finish(item: OutboxItem, result: unknown) {
   try { await adopt(item, result) } catch (e) { console.error('adopt failed', e) }
-  await db.outbox.delete(item.seq!)
+  // Only drop what we actually sent: if the stored item changed meanwhile, keep it to be sent again.
+  const cur = await db.outbox.get(item.seq!)
+  if (cur && JSON.stringify(cur.payload) !== JSON.stringify(item.payload)) await db.outbox.update(item.seq!, { attempts: 0, lastError: '' })
+  else await db.outbox.delete(item.seq!)
+  emit({ type: 'item-done', item })
+  if (item.kind === 'markup_put' || item.kind === 'markup_delete') {
+    try { await reconcileSkipped(item.targetId) } catch (e) { console.error('reconcile failed', e) }
+  }
+  await refreshSnapshot()
+}
+
+/** Remove a photo (and everything queued for it) whose parent markup no longer exists. */
+async function dropPhoto(item: OutboxItem) {
+  await db.transaction('rw', db.attachments, db.photoBlobs, db.outbox, async () => {
+    const items = await db.outbox.where('targetId').equals(item.targetId).toArray()
+    await db.outbox.bulkDelete(items.map(i => i.seq!))
+    await db.attachments.delete(item.targetId)
+    await db.photoBlobs.where('attachment_id').equals(item.targetId).delete()
+  })
   emit({ type: 'item-done', item })
   await refreshSnapshot()
 }

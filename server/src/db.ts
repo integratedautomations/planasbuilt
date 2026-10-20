@@ -211,6 +211,7 @@ ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS attachments_snapshot jso
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS scales_snapshot jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version int NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_by uuid REFERENCES users(id) ON DELETE SET NULL;
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,

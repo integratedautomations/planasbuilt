@@ -3,6 +3,7 @@ import { loadMarkups } from '../offline/cache'
 import { db } from '../offline/db'
 import { on as onSocket } from '../realtime/socket'
 import { flushWrites, queueMarkupDelete, queueMarkupPut, subscribe } from '../offline/sync'
+import { applyRemoteRows, EditClock, MergeTracker } from './editClock'
 import type { Markup } from './types'
 
 /** One undoable step: each entry swaps a markup from `before` to `after` (null = absent). */
@@ -26,10 +27,14 @@ export function useMarkups(documentId: string) {
   /** Markups someone else changed since this user last touched them (undoing over them is last-write-wins). */
   const remoteTouched = useRef(new Set<string>())
   const [, bump] = useState(0) // re-render so canUndo/canRedo update
+  const clock = useRef(new EditClock())
+  const lastMerge = useRef(new MergeTracker())
 
   useEffect(() => {
     let cancelled = false
-    setLoaded(false); setLoadError('')
+    setLoaded(false); setLoadError(''); setMarkups(new Map()); setFromCache(false)
+    undoStack.current = []; redoStack.current = []; lastMerge.current.clear()
+    remoteTouched.current.clear(); clock.current.reset()
     loadMarkups(documentId).then(({ data, fromCache }) => {
       if (cancelled) return
       setMarkups(new Map(data.map(m => [m.id, m])))
@@ -55,6 +60,7 @@ export function useMarkups(documentId: string) {
 
   /** Local-first write: Dexie + outbox. The sync worker does the network part. */
   const persist = useCallback((change: Change) => {
+    clock.current.edit(change.map(c => (c.after ?? c.before)!.id))
     for (const { before, after } of change) {
       if (after) void queueMarkupPut(documentId, after)
       else void queueMarkupDelete(documentId, before!.id)
@@ -75,11 +81,8 @@ export function useMarkups(documentId: string) {
       })
     } else if (e.type === 'remote-markups' && e.docId === documentId) {
       e.ids.forEach(id => remoteTouched.current.add(id))
-      void db.markups.bulkGet(e.ids).then(rows => setMarkups(prev => {
-        const next = new Map(prev)
-        e.ids.forEach((id, i) => { const r = rows[i]; if (r) next.set(id, r); else next.delete(id) })
-        return next
-      }))
+      const stamp = clock.current.stamp()
+      void db.markups.bulkGet(e.ids).then(rows => setMarkups(prev => applyRemoteRows(prev, e.ids, rows, clock.current, stamp)))
     }
   }), [documentId, adoptTag])
 
@@ -117,8 +120,6 @@ export function useMarkups(documentId: string) {
     })
   }, [])
 
-  const lastMerge = useRef<{ key: string; at: number } | null>(null)
-
   /**
    * Apply and save a change. Changes sharing a `mergeKey` within 1.5s fold into one undo
    * step, so dragging a color or width slider undoes in one go.
@@ -130,17 +131,17 @@ export function useMarkups(documentId: string) {
     for (const c of change) remoteTouched.current.delete((c.after ?? c.before)!.id)
     const now = Date.now()
     const top = undoStack.current[undoStack.current.length - 1]
-    if (mergeKey && top && lastMerge.current?.key === mergeKey && now - lastMerge.current.at < 1500) {
+    if (top && lastMerge.current.canMerge(mergeKey, now)) {
       undoStack.current[undoStack.current.length - 1] = top.map(c => {
         const id = (c.after ?? c.before)!.id
         const latest = change.find(n => (n.after ?? n.before)!.id === id)
         return latest ? { before: c.before, after: latest.after } : c
       })
-      lastMerge.current = { key: mergeKey, at: now }
+      lastMerge.current.note(mergeKey, now)
       redoStack.current = []
       return
     }
-    lastMerge.current = mergeKey ? { key: mergeKey, at: now } : null
+    lastMerge.current.note(mergeKey, now)
     undoStack.current.push(change)
     if (undoStack.current.length > HISTORY_LIMIT) undoStack.current.shift()
     redoStack.current = []
@@ -150,6 +151,7 @@ export function useMarkups(documentId: string) {
   const undo = useCallback(() => {
     const change = undoStack.current.pop()
     if (!change) return null
+    lastMerge.current.clear()
     warnIfOverwritingRemote(change)
     applyLocal(change, 'back')
     persist(change.map(c => ({ before: c.after, after: c.before })))
@@ -161,6 +163,7 @@ export function useMarkups(documentId: string) {
   const redo = useCallback(() => {
     const change = redoStack.current.pop()
     if (!change) return null
+    lastMerge.current.clear()
     warnIfOverwritingRemote(change)
     applyLocal(change, 'forward')
     persist(change)
@@ -176,6 +179,7 @@ export function useMarkups(documentId: string) {
     setFromCache(fromCache)
     undoStack.current = []
     redoStack.current = []
+    lastMerge.current.clear()
     bump(n => n + 1)
   }, [documentId])
 

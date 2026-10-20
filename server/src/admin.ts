@@ -17,11 +17,18 @@ export interface AdminContext {
   app: FastifyInstance
   db: Db
   auth: Auth
+  /** Like auth, but also accepts a ?ft= file token (and the legacy ?token=): for GET file routes only. */
+  fileAuth: Auth
   storage: Storage
   forgetUser: (id: string) => void
   requireRole: (req: FastifyRequest, reply: FastifyReply, projectId: string, min: Role) => Promise<Role | null>
-  sign: (u: { id: string; email: string; is_admin: boolean }) => string
+  sign: (u: { id: string; email: string; is_admin: boolean; token_version?: number }) => string
   realtime: Realtime
+  /** Route options carrying the per-IP rate limit for unauthenticated endpoints. */
+  rl: { config: { rateLimit: { max: number; timeWindow: string } } }
+  keepsAnAdmin: (projectId: string, userId: string) => Promise<boolean>
+  dropFromProject: (userId: string, projectId: string) => Promise<void>
+  publicUser: (u: any) => any
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -37,7 +44,7 @@ const NO_PASSWORD = '!'
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 export async function registerAdmin(ctx: AdminContext) {
-  const { app, db, auth, storage, forgetUser, requireRole, sign } = ctx
+  const { app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser } = ctx
 
   const adminOnly = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.user.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return false }
@@ -63,11 +70,12 @@ export async function registerAdmin(ctx: AdminContext) {
 
   app.get('/api/company', { preHandler: auth }, async () => companyInfo())
 
-  app.get('/api/company/logo', { preHandler: auth }, async (_req, reply) => {
+  app.get('/api/company/logo', { preHandler: fileAuth }, async (_req, reply) => {
     const c = await getSection(db, 'company')
     const stream = c.logo_key ? await storage.open(c.logo_key) : null
     if (!stream) return reply.code(404).send({ error: 'No logo' })
     reply.header('Content-Type', c.logo_type || 'image/png')
+    reply.header('Content-Disposition', `inline; filename="logo.${c.logo_type === 'image/svg+xml' ? 'svg' : 'png'}"`)
     // An SVG opened directly must not be able to run script on our origin.
     reply.header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'")
     reply.header('X-Content-Type-Options', 'nosniff')
@@ -80,8 +88,13 @@ export async function registerAdmin(ctx: AdminContext) {
     const file = await req.file({ limits: { fileSize: LOGO_MAX } })
     const ext = file && LOGO_TYPES[file.mimetype]
     if (!file || !ext) { file?.file.resume(); return reply.code(400).send({ error: 'The logo must be a PNG or SVG file' }) }
-    const key = await storage.save(ext, file.file)
-    if (file.file.truncated) { void storage.remove(key); return reply.code(413).send({ error: 'Logo too large (1 MB max)' }) }
+    const bytes = await file.toBuffer()
+    if (file.file.truncated) return reply.code(413).send({ error: 'Logo too large (1 MB max)' })
+    const looksRight = ext === 'png'
+      ? bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      : /^\s*(<\?xml|<!--|<!DOCTYPE svg|<svg)/i.test(bytes.subarray(0, 2000).toString('utf8').replace(/^\uFEFF/, ''))
+    if (!looksRight) return reply.code(400).send({ error: 'That file is not a valid PNG or SVG' })
+    const key = await storage.save(ext, bytes)
     const c = await getSection(db, 'company')
     await putSection(db, 'company', { ...c, logo_key: key, logo_type: file.mimetype })
     void storage.remove(c.logo_key)
@@ -275,8 +288,13 @@ export async function registerAdmin(ctx: AdminContext) {
     if (typeof password !== 'string' || password.length < 8) return reply.code(400).send({ error: 'The new password must be at least 8 characters' })
     const [u] = await db.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id])
     if (!u || !(await bcrypt.compare(String(current ?? ''), u.password_hash))) return reply.code(400).send({ error: 'Your current password is wrong' })
-    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [await bcrypt.hash(password, 10), req.user.id])
-    return { ok: true }
+    // Changing the password signs out every other session (token_version) and hands this one a fresh token.
+    const [row] = await db.query(
+      'UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2 RETURNING id, email, is_admin, token_version',
+      [await bcrypt.hash(password, 10), req.user.id])
+    forgetUser(req.user.id)
+    realtime.kickUser(req.user.id)
+    return { ok: true, token: sign(row) }
   })
 
   // ---- Users ----
@@ -345,8 +363,11 @@ export async function registerAdmin(ctx: AdminContext) {
     const losingAdmin = u.is_admin && u.status === 'active' && (!isAdmin || status !== 'active')
     if (losingAdmin && (await otherActiveAdmins(id)) === 0)
       return reply.code(400).send({ error: 'There must be at least one active admin' })
-    await db.query('UPDATE users SET name = $1, is_admin = $2, status = $3 WHERE id = $4', [name, isAdmin, status, id])
+    // A role or status change signs the person out everywhere (their old tokens carry the old token_version).
+    const bump = isAdmin !== u.is_admin || status !== u.status ? 1 : 0
+    await db.query('UPDATE users SET name = $1, is_admin = $2, status = $3, token_version = token_version + $5 WHERE id = $4', [name, isAdmin, status, id, bump])
     forgetUser(id)
+    if (bump) realtime.kickUser(id)
     return userDetail(id)
   })
 
@@ -361,6 +382,7 @@ export async function registerAdmin(ctx: AdminContext) {
     if (role === null) {
       if (!(await keepsAnAdmin(project_id, id))) return reply.code(400).send({ error: 'A project needs at least one admin' })
       await db.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [project_id, id])
+      await dropFromProject(id, project_id)
     } else {
       if (!ROLES.includes(role)) return reply.code(400).send({ error: 'Bad role' })
       if (role !== 'admin' && !(await keepsAnAdmin(project_id, id))) return reply.code(400).send({ error: 'A project needs at least one admin' })
@@ -370,18 +392,13 @@ export async function registerAdmin(ctx: AdminContext) {
     return userDetail(id)
   })
 
-  /** True when the project would still have an admin if `userId` stopped being one. */
-  async function keepsAnAdmin(projectId: string, userId: string) {
-    return (await db.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM project_members WHERE project_id = $1 AND role = 'admin' AND user_id <> $2", [projectId, userId]))[0].n > 0
-  }
-
   app.delete('/api/projects/:id/members/:userId', { preHandler: auth }, async (req, reply) => {
     const { id, userId } = req.params as any
     if (!(await requireRole(req, reply, id, 'admin'))) return
     if (!UUID_RE.test(String(userId))) return reply.code(404).send({ error: 'Not found' })
     if (!(await keepsAnAdmin(id, userId))) return reply.code(400).send({ error: 'A project needs at least one admin' })
     await db.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [id, userId])
+    await dropFromProject(userId, id)
     return { ok: true }
   })
 
@@ -422,19 +439,29 @@ export async function registerAdmin(ctx: AdminContext) {
       if (!UUID_RE.test(String(p.id)) || !ROLES.includes(p.role)) return reply.code(400).send({ error: 'Bad project or role' })
       if (!(await db.query('SELECT 1 FROM projects WHERE id = $1', [p.id])).length) return reply.code(400).send({ error: 'Unknown project' })
     }
-    const [existing] = await db.query('SELECT id, status, name FROM users WHERE email = $1', [email])
+    const isAppAdmin = !!req.user.isAdmin
+    const asAdmin = isAppAdmin && input.isAdmin // a project admin can never mint an app admin
+    const [existing] = await db.query('SELECT id, status, name, is_admin, invited_by FROM users WHERE email = $1', [email])
     if (existing && existing.status !== 'invited')
       return reply.code(409).send({ error: existing.status === 'deactivated' ? 'That person has a deactivated account. Reactivate them in Users.' : 'That person already has an account' })
     const name = (input.name ?? '').trim().slice(0, 200)
     let userId: string
     if (existing) {
       userId = existing.id
+      if (!isAppAdmin && existing.invited_by !== req.user.id) {
+        // Someone else's pending invite: a project admin may add them to their own project, but cannot touch the
+        // account (name, role) or regenerate the link; an app admin has to resend it.
+        for (const p of input.projects)
+          await db.query(`INSERT INTO project_members VALUES ($1,$2,$3) ON CONFLICT (project_id, user_id) DO NOTHING`, [p.id, userId, p.role])
+        return reply.code(409).send({ error: 'That person is already invited. They were added to this project; ask an admin to resend the invite.' })
+      }
+      // Only an app admin can change the admin flag, and a project route never changes it at all.
       await db.query('UPDATE users SET name = $1, is_admin = $2, invited_by = $3 WHERE id = $4',
-        [name || existing.name, input.isAdmin, req.user.id, userId])
+        [name || existing.name, isAppAdmin ? input.isAdmin : existing.is_admin, req.user.id, userId])
     } else {
       const [u] = await db.query(
         `INSERT INTO users (email, name, password_hash, is_admin, status, invited_by) VALUES ($1,$2,$3,$4,'invited',$5) RETURNING id`,
-        [email, name || email.split('@')[0], NO_PASSWORD, input.isAdmin, req.user.id])
+        [email, name || email.split('@')[0], NO_PASSWORD, asAdmin, req.user.id])
       userId = u.id
     }
     for (const p of input.projects)
@@ -518,14 +545,14 @@ export async function registerAdmin(ctx: AdminContext) {
       return null
     }
 
-    app.get(`${base}/:token`, async (req, reply) => {
+    app.get(`${base}/:token`, rl, async (req, reply) => {
       const t = await lookupToken((req.params as any).token, purpose)
       const err = bad(reply, t)
       if (err) return err
       return { purpose, email: t.email, name: t.name, inviter: t.inviter ?? null, company: (await getSection(db, 'company')).name, expires_at: t.expires_at }
     })
 
-    app.post(`${base}/:token/accept`, async (req, reply) => {
+    app.post(`${base}/:token/accept`, rl, async (req, reply) => {
       const t = await lookupToken((req.params as any).token, purpose)
       const err = bad(reply, t)
       if (err) return err
@@ -533,12 +560,20 @@ export async function registerAdmin(ctx: AdminContext) {
       if (typeof b.password !== 'string' || b.password.length < 8) return reply.code(400).send({ error: 'Choose a password of at least 8 characters' })
       if (t.status === 'deactivated') return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
       const name = purpose === 'invite' ? (String(b.name ?? '').trim().slice(0, 200) || t.name) : t.name
-      const [user] = await db.query(
-        `UPDATE users SET password_hash = $1, name = $2, status = 'active' WHERE id = $3 RETURNING id, email, name, is_admin`,
-        [await bcrypt.hash(b.password, 10), name, t.user_id])
-      await db.query('UPDATE user_tokens SET used_at = now() WHERE id = $1', [t.id])
+      const hash = await bcrypt.hash(b.password, 10)
+      // Claim the token and set the password in one transaction: a link works exactly once even under concurrent requests.
+      const user = await db.transaction(async q => {
+        const [claimed] = await q('UPDATE user_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL AND expires_at > now() RETURNING id', [t.id])
+        if (!claimed) return null
+        const [u] = await q(
+          `UPDATE users SET password_hash = $1, name = $2, status = 'active', token_version = token_version + 1 WHERE id = $3
+           RETURNING id, email, name, is_admin, token_version`, [hash, name, t.user_id])
+        return u
+      })
+      if (!user) return reply.code(410).send({ error: 'This link has already been used' })
       forgetUser(user.id)
-      return { token: sign(user), user }
+      realtime.kickUser(user.id)
+      return { token: sign(user), user: publicUser(user) }
     })
   }
 

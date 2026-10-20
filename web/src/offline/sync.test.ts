@@ -7,7 +7,7 @@ import { db } from './db'
 import type { OutboxItem } from './db'
 import {
   applyRemoteMarkup, backoffMs, configure, drain, mergeServerMarkups, queueMarkupDelete, queueMarkupPut,
-  queuePhotoCreate, queuePhotoDelete, resetSyncState, retryItem, subscribe,
+  queuePhotoCreate, queuePhotoDelete, resetSyncState, retryItem, setSyncUser, subscribe,
 } from './sync'
 import type { SyncEvent } from './sync'
 
@@ -24,6 +24,7 @@ let behavior: (item: OutboxItem) => unknown
 beforeEach(async () => {
   await Promise.all(db.tables.map(t => t.clear()))
   resetSyncState()
+  setSyncUser({ id: 'u1', name: 'U' })
   sent = []
   behavior = () => ({})
   configure({ autoRetry: false, executor: async item => { sent.push(item); return behavior(item) } })

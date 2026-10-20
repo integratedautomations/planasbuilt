@@ -20,6 +20,7 @@ const mk = (type: Markup['type'], geometry: Markup['geometry'], extra: Partial<M
 const box = (x: number, y: number, width: number, height: number, rotation = 0): BoxGeometry => ({ x, y, width, height, rotation })
 const path = (x: number, y: number, points: number[]): PathGeometry => ({ x, y, rotation: 0, points })
 
+const known = { layers: new Set<string>(), symbolSets: new Set(['s1']), deviceTypes: new Set<string>(), products: new Set<string>() }
 const camSet: SymbolSet = { id: 's1', name: 'Cameras', color: '#1971c2', tag_prefix: 'CAM', icon: '', fields: [
   { key: 'ip', label: 'IP address', type: 'ip' }], has_fov: true, sort: 0 }
 
@@ -108,7 +109,7 @@ describe('annotated export and import', () => {
     })
     const out = await exportAnnotated(input(await blankPdf(0), [dev]))
     let k = 0
-    const plan = await planImport(out, { documentId: 'doc-2', existing: new Map(), newId: () => `new-${++k}` })
+    const plan = await planImport(out, { documentId: 'doc-2', existing: new Map(), newId: () => `new-${++k}`, known })
     const m = plan.changes[0].after!
     expect(m).toMatchObject({ id: 'new-1', document_id: 'doc-2', tag: '', type: 'device', status: 'installed', fields: { ip: '10.0.0.5', model: 'X-100' } })
     expect(m.version).toBeUndefined()

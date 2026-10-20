@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, documentFileUrl } from '../api'
+import { api, documentFileUrl, fetchBlob } from '../api'
 import type { DocumentRevision, DocumentSummary, Project, RevisionUpload, User } from '../api'
 import { docCacheStates, invalidatePdf, loadDocuments, loadProject, makeProjectOffline, projectCacheSize } from '../offline/cache'
 import type { Progress } from '../offline/cache'
@@ -15,6 +15,26 @@ import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 import { Brand } from '../Brand'
 import { UserMenu } from '../settings/UserMenu'
 import { MembersPanel } from '../settings/MembersPanel'
+
+/** Page count of a PDF; the pdf.js task is destroyed whether it parses or is rejected. */
+async function countPages(bytes: ArrayBuffer): Promise<number> {
+  const task = loadPdf(bytes)
+  try { return (await task.promise).numPages } finally { void task.destroy() }
+}
+
+/** Opens a (login-protected) PDF in a new tab: fetched with the Authorization header, shown from a blob URL. */
+async function openPdf(docId: string, revisionId: string, onError: (m: string) => void) {
+  const tab = window.open('', '_blank') // opened synchronously so pop-up blockers allow it
+  try {
+    const blob = await fetchBlob(documentFileUrl(docId, revisionId))
+    const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+    if (tab) tab.location.href = url; else window.location.href = url
+    setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000)
+  } catch (err) {
+    tab?.close()
+    onError(`Could not open the PDF: ${(err as Error).message}`)
+  }
+}
 
 export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
@@ -71,9 +91,7 @@ export function ProjectPage({ user }: { user: User }) {
       setUploading(file.name)
       try {
         // Count pages in the browser so the server stays lightweight
-        const task = loadPdf(await file.arrayBuffer())
-        const { numPages } = await task.promise
-        task.destroy()
+        const numPages = await countPages(await file.arrayBuffer())
         const form = new FormData()
         form.append('pageCount', String(numPages))
         form.append('file', file)
@@ -116,9 +134,7 @@ export function ProjectPage({ user }: { user: User }) {
     if (!file || !doc) return
     setError(''); setRevNotice(''); setRevising(doc.id)
     try {
-      const task = loadPdf(await file.arrayBuffer())
-      const { numPages } = await task.promise
-      task.destroy()
+      const numPages = await countPages(await file.arrayBuffer())
       const form = new FormData()
       form.append('pageCount', String(numPages))
       form.append('file', file)
@@ -237,7 +253,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                         {r.note && <div className="muted">{r.note}</div>}
                         {' · '}<Link to={`/projects/${projectId}/documents/${d.id}${r.revision === d.revision ? '' : `?rev=${r.id}`}`}>View</Link>
                         {r.revision !== d.revision && <>{' · '}<Link to={`/projects/${projectId}/documents/${d.id}?compare=${r.id}`}>Compare with current</Link></>}
-                        {' · '}<a href={documentFileUrl(d.id, r.id)} target="_blank" rel="noreferrer">Open PDF</a>
+                        {' · '}<button className="link-btn" onClick={() => openPdf(d.id, r.id, setError)}>Open PDF</button>
                         {canEdit && r.revision !== d.revision && r.has_snapshot && <>{' · '}<button className="link-btn" title="Restore this revision as a new current one; newer revisions are kept" onClick={() => setAsCurrent(d, r)}>Set as current</button></>}
                       </li>
                     ))}

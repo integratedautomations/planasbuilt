@@ -1,4 +1,5 @@
-import { useRef } from 'react'
+import { Component, useRef } from 'react'
+import type { ReactNode } from 'react'
 import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text, Wedge } from 'react-konva'
 import type Konva from 'konva'
 import { FONT_MONO, FONT_UI } from './canvasFonts'
@@ -52,7 +53,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * A device's coverage cone is a sibling (outside the Group) so resizing the
  * icon doesn't stretch the cone.
  */
-export function MarkupShape(props: Props) {
+function MarkupShapeInner(props: Props) {
   const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
@@ -86,6 +87,28 @@ export function MarkupShape(props: Props) {
       </Group>
     </>
   )
+}
+
+/**
+ * One malformed markup (bad data from a PDF import or the server) must not blank the whole viewer:
+ * a render error draws nothing for that markup. A changed markup object gets another try.
+ */
+interface BoundaryState { hasError: boolean; failedFor?: Markup }
+class ShapeBoundary extends Component<{ markup?: Markup; children: ReactNode }, BoundaryState> {
+  state: BoundaryState = { hasError: false }
+  static getDerivedStateFromError(): Partial<BoundaryState> { return { hasError: true } }
+  static getDerivedStateFromProps(props: { markup?: Markup }, state: BoundaryState): Partial<BoundaryState> | null {
+    return state.hasError && state.failedFor && props.markup !== state.failedFor ? { hasError: false, failedFor: undefined } : null
+  }
+  componentDidCatch(err: unknown) {
+    console.error('markup render failed', this.props.markup?.id, err)
+    this.setState({ failedFor: this.props.markup })
+  }
+  render() { return this.state.hasError ? null : this.props.children }
+}
+
+export function MarkupShape(props: Props) {
+  return <ShapeBoundary markup={props.markup}><MarkupShapeInner {...props} /></ShapeBoundary>
 }
 
 function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeometry; set?: SymbolSet; iconSrc?: string; zoom: number; stack?: StackView }) {

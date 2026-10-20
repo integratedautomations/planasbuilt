@@ -134,7 +134,8 @@ export function connect() {
     ws = null
     stopPing()
     setPeers(peers.length ? [] : peers)
-    if (ev.code === 4401) { setStatus('idle'); signalAuthExpired(); return }
+    // 4401 after our own password change: the stored token was already replaced, so just reconnect with it
+    if (ev.code === 4401 && getToken() === token) { setStatus('idle'); signalAuthExpired(); return }
     if (!getToken()) { setStatus('idle'); return }
     setStatus('reconnecting')
     scheduleReconnect()

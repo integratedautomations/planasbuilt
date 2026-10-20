@@ -39,7 +39,7 @@ describe('legend export', () => {
     const stamp = annots.find(a => a.stampName === 'Legend')!
     expect(stamp.subtype).toBe('Stamp')
     expect(stamp.contents).toContain('Smoke detector: 3')
-    const plan = await planImport(out, { documentId: 'doc', existing: new Map(markups.map(m => [m.id, m])) })
+    const plan = await planImport(out, { documentId: 'doc', existing: new Map(markups.map(m => [m.id, m])), known: { layers: new Set(), symbolSets: new Set(['s1']), deviceTypes: new Set(['t1']), products: new Set() } })
     expect(plan.changes).toHaveLength(0)
     expect(plan.unchanged).toBe(4)
   })

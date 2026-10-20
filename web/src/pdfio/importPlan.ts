@@ -3,6 +3,7 @@ import type { Change } from '../markups/useMarkups'
 import type { Markup } from '../markups/types'
 import { uuid } from '../uuid'
 import { mapAnnotation, parsePayload } from './importMap'
+import type { KnownIds } from './importMap'
 import { readAnnotations } from './reader'
 
 export interface ImportContext {
@@ -10,6 +11,8 @@ export interface ImportContext {
   /** Markups already in this document (by id). */
   existing: Map<string, Markup>
   newId?: () => string
+  /** Ids that exist locally (layers, symbol sets, catalog). Payload references to anything else are dropped. */
+  known?: KnownIds
 }
 
 export interface ImportPlan {
@@ -43,7 +46,7 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
 
   for (const { box, annots } of readAnnotations(doc)) {
     for (const a of annots) {
-      const payload = parsePayload(a.payload)
+      const payload = parsePayload(a.payload, ctx.known)
       if (payload) {
         const sameDoc = payload.document_id === ctx.documentId
         const id = sameDoc ? payload.id : newId()
@@ -54,7 +57,7 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
         for (const k of SERVER_FIELDS) delete clean[k]
         if (!sameDoc) { clean.layer_id = null; if (clean.type === 'device') clean.tag = '' } // the server numbers new devices
         if (existing) {
-          const after: Markup = { ...existing, ...clean, layer_id: existing.layer_id }
+          const after: Markup = { ...existing, ...clean, layer_id: clean.layer_id ?? existing.layer_id }
           if (same(existing, after)) { plan.unchanged++; continue }
           plan.changes.push({ before: existing, after })
         } else plan.changes.push({ before: null, after: clean })

@@ -58,7 +58,10 @@ export function PdfMenu({ documentId, documentName, markups, symbolSets, scales,
     if (!f) return
     close(); setNote(''); setBusy('Reading PDF…')
     try {
-      const plan = await planImportFile(f, documentId, markups)
+      const plan = await planImportFile(f, documentId, markups, {
+        layers: new Set(layers.map(l => l.id)), symbolSets: new Set(symbolSets.keys()),
+        deviceTypes: new Set(catalog.types.keys()), products: new Set(catalog.products.keys()),
+      })
       if (!plan.changes.length) setNote(plan.skipped ? `Nothing to import (${plural(plan.skipped, 'unsupported annotation')} skipped).` : 'No new markups found in that PDF.')
       else setPreview(plan)
     } catch (e) { setNote(`Could not read that PDF: ${(e as Error).message}`) } finally { setBusy('') }

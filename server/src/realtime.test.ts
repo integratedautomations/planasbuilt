@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import WebSocket from 'ws'
 import { openDb, migrate } from './db.js'
 import { buildApp } from './app.js'
+import { makePdf } from './testutil.js'
 
 let app: Awaited<ReturnType<typeof buildApp>>
 let port = 0
@@ -56,7 +57,8 @@ beforeAll(async () => {
   await post(`/api/projects/${pid}/members`, tokA, { email: 'b@x.com', role: 'editor' }, 'PUT')
   const boundary = 'XX'
   const body = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\r\n--${boundary}--\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    await makePdf(1), Buffer.from(`\r\n--${boundary}--\r\n`),
   ])
   docId = (await app.inject({ method: 'POST', url: `/api/projects/${pid}/documents`,
     headers: { authorization: `Bearer ${tokA}`, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: body })).json().id

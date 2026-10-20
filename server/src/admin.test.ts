@@ -4,6 +4,7 @@ import path from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { migrate, openDb } from './db.js'
 import { buildApp } from './app.js'
+import { makePdf } from './testutil.js'
 import { setTransportFactory } from './mail.js'
 import { Storage, validateS3Config } from './storage.js'
 import type { S3Config } from './storage.js'
@@ -85,7 +86,7 @@ describe('settings', () => {
   it('pads new tags with the configured number of digits', async () => {
     const [set] = (await app.inject({ url: '/api/symbol-sets', headers: H() })).json()
     const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: H(), payload: { name: 'Tags' } })).json().id
-    const pdf = Buffer.from('%PDF-1.4\n%%EOF\n')
+    const pdf = await makePdf(1)
     const mp = Buffer.concat([
       Buffer.from('--XX\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\nContent-Type: application/pdf\r\n\r\n'), pdf, Buffer.from('\r\n--XX--\r\n')])
     const doc = (await app.inject({ method: 'POST', url: `/api/projects/${project}/documents`,
@@ -284,9 +285,10 @@ describe('storage', () => {
 
   it('writes new files to S3 after switching and still reads older local files', async () => {
     const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: H(), payload: { name: 'S3' } })).json().id
+    const bytes: Record<string, Buffer> = { local: await makePdf(1, 'local'), remote: await makePdf(1, 'remote') }
     const pdf = (n: string) => Buffer.concat([
       Buffer.from(`--B\r\nContent-Disposition: form-data; name="file"; filename="${n}.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
-      Buffer.from(`%PDF-1.4 ${n}`), Buffer.from('\r\n--B--\r\n')])
+      bytes[n], Buffer.from('\r\n--B--\r\n')])
     const h = { ...H(), 'content-type': 'multipart/form-data; boundary=B' }
     const local = (await app.inject({ method: 'POST', url: `/api/projects/${project}/documents`, headers: h, payload: pdf('local') })).json()
     const before = objects.size
@@ -294,21 +296,22 @@ describe('storage', () => {
     expect(sw.statusCode).toBe(200)
     const remote = (await app.inject({ method: 'POST', url: `/api/projects/${project}/documents`, headers: h, payload: pdf('remote') })).json()
     expect(objects.size).toBe(before + 1)
-    expect((await app.inject(`/api/documents/${local.id}/file?token=${admin}`)).body).toBe('%PDF-1.4 local')
-    expect((await app.inject(`/api/documents/${remote.id}/file?token=${admin}`)).body).toBe('%PDF-1.4 remote')
+    expect((await app.inject(`/api/documents/${local.id}/file?token=${admin}`)).rawPayload.equals(bytes.local)).toBe(true)
+    expect((await app.inject(`/api/documents/${remote.id}/file?token=${admin}`)).rawPayload.equals(bytes.remote)).toBe(true)
     const usage = (await app.inject({ url: '/api/storage/usage', headers: H() })).json()
     expect(usage.files.s3_bytes).toBeGreaterThan(0)
     expect(usage.projects.find((p: any) => p.name === 'S3').file_count).toBe(2)
     // back to local: the bucket file is still readable
     await app.inject({ method: 'PUT', url: '/api/settings', headers: H(), payload: { storage: { backend: 'local' } } })
-    expect((await app.inject(`/api/documents/${remote.id}/file?token=${admin}`)).body).toBe('%PDF-1.4 remote')
+    expect((await app.inject(`/api/documents/${remote.id}/file?token=${admin}`)).rawPayload.equals(bytes.remote)).toBe(true)
   })
 
   it('previews and runs revision cleanup', async () => {
     const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: H(), payload: { name: 'Ret' } })).json().id
+    const revPdfs = await Promise.all([1, 2, 3, 4, 5].map(n => makePdf(1, `rev${n}`)))
     const body = (n: number) => Buffer.concat([
       Buffer.from(`--B\r\nContent-Disposition: form-data; name="file"; filename="r.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
-      Buffer.from(`%PDF-1.4 rev${n}`), Buffer.from('\r\n--B--\r\n')])
+      revPdfs[n - 1], Buffer.from('\r\n--B--\r\n')])
     const h = { ...H(), 'content-type': 'multipart/form-data; boundary=B' }
     const doc = (await app.inject({ method: 'POST', url: `/api/projects/${project}/documents`, headers: h, payload: body(1) })).json().id
     for (let i = 2; i <= 5; i++) await app.inject({ method: 'POST', url: `/api/documents/${doc}/revisions`, headers: h, payload: body(i) })

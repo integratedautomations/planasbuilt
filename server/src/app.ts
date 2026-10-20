@@ -7,6 +7,8 @@ import multipart from '@fastify/multipart'
 import fastifyStatic from '@fastify/static'
 import bcrypt from 'bcryptjs'
 import websocket from '@fastify/websocket'
+import helmet from '@fastify/helmet'
+import rateLimit from '@fastify/rate-limit'
 import { Db } from './db.js'
 import { Realtime } from './realtime.js'
 import { Storage, validateS3Config } from './storage.js'
@@ -19,7 +21,22 @@ import type { PageMapping, PageOp } from './pages.js'
 export type Role = 'admin' | 'editor' | 'viewer'
 const ROLE_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 }
 
-interface AuthUser { id: string; email: string; isAdmin: boolean }
+interface AuthUser { id: string; email: string; isAdmin: boolean; tv?: number }
+
+/** Thrown inside handlers/transactions to answer with a specific status. */
+export class HttpError extends Error {
+  constructor(readonly statusCode: number, message: string) { super(message) }
+}
+
+const PDF_MAGIC = Buffer.from('%PDF-')
+const isPdf = (b: Uint8Array) => b.length >= 5 && Buffer.from(b.subarray(0, 5)).equals(PDF_MAGIC)
+/** Cheap content sniffing so a renamed file cannot pass as a photo. */
+function photoExt(b: Uint8Array): string | null {
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg'
+  if (b.length > 8 && Buffer.from(b.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png'
+  if (b.length > 12 && Buffer.from(b.subarray(0, 4)).toString('latin1') === 'RIFF' && Buffer.from(b.subarray(8, 12)).toString('latin1') === 'WEBP') return 'webp'
+  return null
+}
 
 declare module '@fastify/jwt' {
   interface FastifyJWT { payload: AuthUser; user: AuthUser }
@@ -32,9 +49,12 @@ export interface AppOptions {
   webDir?: string
   /** Tests inject a fake S3 client here. */
   s3Factory?: S3Factory
+  /** Requests per minute per IP on auth/invite/reset endpoints (and failed logins per email). Tests default to a high value. */
+  rateLimitMax?: number
 }
 
-export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: AppOptions) {
+export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rateLimitMax }: AppOptions) {
+  const RL_MAX = rateLimitMax ?? (process.env.NODE_ENV === 'test' || process.env.VITEST ? 100_000 : 10)
   mkdirSync(filesDir, { recursive: true })
   const storage = new Storage(filesDir,
     async () => storageConfigOf(await getSection(db, 'storage')),
@@ -44,6 +64,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     logger: false,
     trustProxy: true, // behind Cloudflare Tunnel / cloudflared
     bodyLimit: 10 * 1024 * 1024, // JSON bodies; file uploads stream via multipart (200MB cap below)
+  })
+  app.setErrorHandler((err: any, req, reply) => {
+    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.message })
+    const code = Number(err?.statusCode)
+    if (code >= 400 && code < 500) return reply.code(code).send({ error: err.message })
+    console.error(`[error] ${req.method} ${req.url.split('?')[0]}:`, err)
+    return reply.code(500).send({ error: 'Something went wrong' })
   })
   app.get('/api/health', async (_req, reply) => {
     try {
@@ -55,33 +82,92 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   })
   await app.register(cors)
   await app.register(jwt, { secret: jwtSecret })
-  await app.register(websocket)
+  await app.register(rateLimit, { global: false })
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        'default-src': ["'self'"],
+        'script-src': ["'self'", "'wasm-unsafe-eval'"], // pdf.js decodes JBIG2/JPEG2000 scans with WebAssembly
+        'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+        'img-src': ["'self'", 'data:', 'blob:'],
+        'connect-src': ["'self'", 'ws:', 'wss:', 'blob:'],
+        'worker-src': ["'self'", 'blob:'],
+        'frame-src': ["'self'", 'blob:'], // print preview iframe
+        'manifest-src': ["'self'"],
+        'object-src': ["'none'"],
+        'base-uri': ["'self'"],
+        'frame-ancestors': ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-origin' },
+  })
+  const rl = { config: { rateLimit: { max: RL_MAX, timeWindow: '1 minute' } } }
+  await app.register(websocket, { options: { maxPayload: 64 * 1024 } })
   await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } })
 
-  const auth = async (req: FastifyRequest, reply: FastifyReply) => {
-    try {
-      // Allow ?token= so plain file URLs (pdf.js, downloads) can authenticate
-      const q = (req.query as any)?.token
-      if (q && !req.headers.authorization) req.headers.authorization = `Bearer ${q}`
-      await req.jwtVerify()
-    } catch {
-      return reply.code(401).send({ error: 'Not signed in' })
-    }
-    if (!(await touchUser(req.user.id))) return reply.code(401).send({ error: 'Not signed in' })
+  // Identity comes from the database on every request (cached up to 60s per process, dropped at once on any change here):
+  // is_admin, status and token_version are never trusted from the token.
+  interface UserState { at: number; ok: boolean; isAdmin: boolean; tv: number; email: string }
+  const userCache = new Map<string, UserState>()
+  const forgetUser = (id: string) => { userCache.delete(id) }
+  async function userState(id: string): Promise<UserState | null> {
+    if (!UUID_RE.test(String(id))) return null
+    const hit = userCache.get(id), now = Date.now()
+    if (hit && now - hit.at < 60_000) return hit.ok ? hit : null
+    const [u] = await db.query('SELECT status, is_admin, token_version, email FROM users WHERE id = $1', [id])
+    const st: UserState = { at: now, ok: u?.status === 'active', isAdmin: !!u?.is_admin, tv: u?.token_version ?? 0, email: u?.email ?? '' }
+    userCache.set(id, st)
+    if (st.ok) await db.query('UPDATE users SET last_seen_at = now() WHERE id = $1', [id])
+    return st.ok ? st : null
   }
 
-  // Deactivated users are locked out at once; last_seen_at is written at most once a minute per user.
-  const userCache = new Map<string, { at: number; ok: boolean }>()
-  const forgetUser = (id: string) => { userCache.delete(id) }
-  async function touchUser(id: string) {
-    const hit = userCache.get(id), now = Date.now()
-    if (hit && now - hit.at < 60_000) return hit.ok
-    const [u] = await db.query('SELECT status FROM users WHERE id = $1', [id])
-    const ok = u?.status === 'active'
-    userCache.set(id, { at: now, ok })
-    if (ok) await db.query('UPDATE users SET last_seen_at = now() WHERE id = $1', [id])
-    return ok
+  /** Verifies a JWT string. `want`: 'access' (login token), 'file' (short-lived file-URL token) or 'any'. */
+  async function authenticate(raw: string, want: 'access' | 'file' | 'any'): Promise<AuthUser | null> {
+    let p: any
+    try { p = app.jwt.verify(raw) } catch { return null }
+    const isFile = p?.scope === 'file'
+    if ((want === 'access' && isFile) || (want === 'file' && !isFile)) return null
+    const id = isFile ? p.sub : p?.id
+    const st = typeof id === 'string' ? await userState(id) : null
+    if (!st || (p.tv ?? 0) !== st.tv) return null
+    return { id, email: st.email, isAdmin: st.isAdmin, tv: st.tv }
   }
+
+  const bearer = (req: FastifyRequest) => {
+    const h = req.headers.authorization
+    return typeof h === 'string' && /^Bearer /i.test(h) ? h.slice(7).trim() : null
+  }
+
+  const auth = async (req: FastifyRequest, reply: FastifyReply) => {
+    const raw = bearer(req)
+    const u = raw ? await authenticate(raw, 'access') : null
+    if (!u) return reply.code(401).send({ error: 'Not signed in' })
+    req.user = u
+  }
+
+  // GET file routes only: plain URLs (pdf.js, <img>, downloads) cannot send headers, so they may carry a short-lived
+  // ?ft= file token (see POST /api/file-token) or, for backward compatibility, the old ?token= login token.
+  const fileAuth = async (req: FastifyRequest, reply: FastifyReply) => {
+    const q = (req.query ?? {}) as any
+    const raw = bearer(req)
+    let u: AuthUser | null = null
+    if (raw) u = await authenticate(raw, 'access')
+    else if (typeof q.ft === 'string' && q.ft) u = await authenticate(q.ft, 'file')
+    else if (typeof q.token === 'string' && q.token) u = await authenticate(q.token, 'access')
+    if (!u) return reply.code(401).send({ error: 'Not signed in' })
+    req.user = u
+  }
+
+  // Malformed ids in the URL are a plain 404 before any handler or SQL sees them.
+  app.addHook('preValidation', async (req, reply) => {
+    const p = req.params as Record<string, string> | undefined
+    if (!p) return
+    for (const k of ['id', 'rid', 'markupId', 'userId'])
+      if (k in p && !UUID_RE.test(String(p[k]))) return reply.code(404).send({ error: 'Not found' })
+  })
 
   const realtime = new Realtime()
   app.addHook('onClose', async () => realtime.close())
@@ -91,8 +177,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   }
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-  const sign = (u: { id: string; email: string; is_admin: boolean }) =>
-    app.jwt.sign({ id: u.id, email: u.email, isAdmin: u.is_admin }, { expiresIn: '30d' })
+  const sign = (u: { id: string; email: string; is_admin: boolean; token_version?: number }) =>
+    app.jwt.sign({ id: u.id, email: u.email, isAdmin: u.is_admin, tv: u.token_version ?? 0 }, { expiresIn: '30d' })
+  const publicUser = ({ token_version: _tv, password_hash: _ph, ...u }: any) => u
+
+  // Short-lived token for plain file URLs: use as ?ft= on GET file routes instead of putting the login token in a URL.
+  app.post('/api/file-token', { preHandler: auth }, async (req) => ({
+    ft: app.jwt.sign({ sub: req.user.id, scope: 'file', tv: req.user.tv ?? 0 } as any, { expiresIn: '10m' }), expires_in: 600,
+  }))
 
   const userCount = async () =>
     (await db.query<{ count: number }>('SELECT count(*)::int AS count FROM users'))[0].count
@@ -120,8 +212,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   // ---- Realtime ----
   app.get('/api/ws', { websocket: true }, async (socket, req) => {
     const q = (req.query ?? {}) as any
-    let user: AuthUser
-    try { user = app.jwt.verify<AuthUser>(String(q.token ?? '')) } catch { socket.close(4401, 'Invalid token'); return }
+    // Browsers cannot set headers on a WebSocket, so the token (login or file token) rides in the query string.
+    const user = await authenticate(String(q.token ?? q.ft ?? ''), 'any').catch(() => null)
+    if (!user) { socket.close(4401, 'Invalid token'); return }
     const [u] = await db.query("SELECT name FROM users WHERE id = $1 AND status = 'active'", [user.id])
     if (!u) { socket.close(4401, 'Invalid token'); return }
     const conn = realtime.add(socket, {
@@ -151,22 +244,45 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   app.get('/api/auth/status', async () => ({ needsSetup: (await userCount()) === 0 }))
 
   // First user only: creates the initial admin. Later users are added by an admin.
-  app.post('/api/auth/setup', async (req, reply) => {
+  app.post('/api/auth/setup', rl, async (req, reply) => {
     if ((await userCount()) > 0) return reply.code(409).send({ error: 'Already set up' })
     if (!validNewUser(req.body))
       return reply.code(400).send({ error: 'Email, name and an 8+ character password are required' })
     const { email, name, password } = req.body as any
-    const [user] = await db.query(
-      'INSERT INTO users (email, name, password_hash, is_admin) VALUES ($1,$2,$3,true) RETURNING id, email, name, is_admin',
-      [String(email).toLowerCase(), name, await bcrypt.hash(password, 10)])
-    return { token: sign(user), user }
+    const hash = await bcrypt.hash(password, 10)
+    // One transaction under an advisory lock: two simultaneous setups cannot both create an admin.
+    const user = await db.transaction(async q => {
+      await q('SELECT pg_advisory_xact_lock(727001)')
+      const [u] = await q(
+        `INSERT INTO users (email, name, password_hash, is_admin)
+         SELECT $1::text, $2::text, $3::text, true WHERE NOT EXISTS (SELECT 1 FROM users)
+         RETURNING id, email, name, is_admin, token_version`, [String(email).toLowerCase(), String(name), hash])
+      return u
+    })
+    if (!user) return reply.code(409).send({ error: 'Already set up' })
+    return { token: sign(user), user: publicUser(user) }
   })
 
-  app.post('/api/auth/login', async (req, reply) => {
+  // Failed-login counter per email (the route-level limiter above covers per-IP).
+  const failures = new Map<string, { n: number; until: number }>()
+  const DUMMY_HASH = bcrypt.hashSync('planmark-no-such-user', 10)
+
+  app.post('/api/auth/login', rl, async (req, reply) => {
     const { email, password } = (req.body ?? {}) as any
-    const [user] = await db.query('SELECT * FROM users WHERE email = $1', [String(email ?? '').toLowerCase()])
-    if (!user || user.status === 'invited' || !(await bcrypt.compare(String(password ?? ''), user.password_hash)))
+    const key = String(email ?? '').toLowerCase()
+    const now = Date.now()
+    const f = failures.get(key)
+    if (f && f.until > now && f.n >= RL_MAX) return reply.code(429).send({ error: 'Too many attempts. Try again in a minute.' })
+    const [user] = await db.query('SELECT * FROM users WHERE email = $1', [key])
+    const real = !!user && user.status !== 'invited'
+    // Always spend one bcrypt compare so response time does not reveal whether the email exists.
+    const ok = await bcrypt.compare(String(password ?? ''), real ? user.password_hash : DUMMY_HASH)
+    if (!real || !ok) {
+      if (failures.size > 10_000) failures.clear()
+      failures.set(key, { n: f && f.until > now ? f.n + 1 : 1, until: f && f.until > now ? f.until : now + 60_000 })
       return reply.code(401).send({ error: 'Wrong email or password' })
+    }
+    failures.delete(key)
     if (user.status === 'deactivated')
       return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
     return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin } }
@@ -250,13 +366,51 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!['admin', 'editor', 'viewer'].includes(role)) return reply.code(400).send({ error: 'Bad role' })
     const [user] = await db.query("SELECT id FROM users WHERE email = $1 AND status <> 'deactivated'", [String(email ?? '').toLowerCase()])
     if (!user) return reply.code(404).send({ error: 'No active user with that email' })
+    if (role !== 'admin' && !(await keepsAnAdmin(id, user.id))) return reply.code(400).send({ error: 'A project needs at least one admin' })
     await db.query(
       `INSERT INTO project_members VALUES ($1,$2,$3)
        ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`, [id, user.id, role])
     return { ok: true }
   })
 
+  /** True when the project would still have an admin if `userId` stopped being one. */
+  async function keepsAnAdmin(projectId: string, userId: string) {
+    return (await db.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM project_members WHERE project_id = $1 AND role = 'admin' AND user_id <> $2", [projectId, userId]))[0].n > 0
+  }
+
+  /** Removes a person's live sockets from a project's document rooms (membership was taken away). */
+  async function dropFromProject(userId: string, projectId: string) {
+    const docs = await db.query<{ id: string }>('SELECT id FROM documents WHERE project_id = $1', [projectId])
+    realtime.dropUserFromDocs(userId, docs.map(d => d.id))
+  }
+
   // ---- Documents ----
+  const safeName = (n: string) => n.replace(/[^A-Za-z0-9._ -]+/g, '_').slice(0, 120) || 'file'
+  /** Content headers for served files: never sniffed, shown inline with a filename. */
+  function fileHeaders(reply: FastifyReply, type: string, filename: string) {
+    reply.header('Content-Type', type)
+    reply.header('X-Content-Type-Options', 'nosniff')
+    reply.header('Content-Disposition', `inline; filename="${safeName(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`)
+  }
+  const lockDocument = async (q: Q, docId: string) => {
+    const [d] = await q('SELECT id FROM documents WHERE id = $1 FOR UPDATE', [docId])
+    if (!d) throw new HttpError(404, 'Not found')
+  }
+
+  /** Reads an uploaded PDF fully, checks it is one, and counts its pages on the server (the client's count is not trusted). */
+  async function readPdfUpload(file: any, reply: FastifyReply) {
+    if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf')) {
+      file.file.resume(); reply.code(400).send({ error: 'Only PDF files are supported' }); return null
+    }
+    const bytes = new Uint8Array(await file.toBuffer())
+    if (file.file.truncated) { reply.code(413).send({ error: 'File too large' }); return null }
+    if (!isPdf(bytes)) { reply.code(400).send({ error: 'That is not a PDF file' }); return null }
+    let pageCount: number
+    try { pageCount = await countPages(bytes) } catch { reply.code(400).send({ error: 'That is not a readable PDF' }); return null }
+    if (pageCount < 1) { reply.code(400).send({ error: 'That PDF has no pages' }); return null }
+    return { bytes, pageCount }
+  }
   app.get('/api/projects/:id/documents', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
     if (!(await requireRole(req, reply, id, 'viewer'))) return
@@ -272,18 +426,22 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!(await requireRole(req, reply, id, 'editor'))) return
     const file = await req.file()
     if (!file) return reply.code(400).send({ error: 'No file' })
-    if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf'))
-      return reply.code(400).send({ error: 'Only PDF files are supported' })
-    const fileKey = await storage.save('pdf', file.file)
-    if (file.file.truncated) { void storage.remove(fileKey); return reply.code(413).send({ error: 'File too large' }) }
+    const up = await readPdfUpload(file, reply)
+    if (!up) return
+    const pageCount = up.pageCount
     const fields = file.fields as any
-    const pageCount = Number(fields.pageCount?.value) || 1
     const name = String(fields.name?.value || file.filename.replace(/\.pdf$/i, ''))
-    const [doc] = await db.query('INSERT INTO documents (project_id, name) VALUES ($1,$2) RETURNING *', [id, name])
-    const [rev] = await db.query(
-      `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by)
-       VALUES ($1, 1, $2, $3, $4) RETURNING *`, [doc.id, fileKey, pageCount, req.user.id])
-    return { id: doc.id, name: doc.name, created_at: doc.created_at, revision_id: rev.id, revision: 1, page_count: pageCount }
+    const fileKey = await storage.save('pdf', up.bytes)
+    try {
+      const { doc, rev } = await db.transaction(async q => {
+        const [doc] = await q('INSERT INTO documents (project_id, name) VALUES ($1,$2) RETURNING *', [id, name])
+        const [rev] = await q(
+          `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by)
+           VALUES ($1, 1, $2, $3, $4) RETURNING *`, [doc.id, fileKey, pageCount, req.user.id])
+        return { doc, rev }
+      })
+      return { id: doc.id, name: doc.name, created_at: doc.created_at, revision_id: rev.id, revision: 1, page_count: pageCount }
+    } catch (e) { void storage.remove(fileKey); throw e }
   })
 
   async function documentWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
@@ -314,11 +472,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   app.delete('/api/documents/:id', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'admin')
     if (!doc) return
+    const keys = await db.query<{ k: string }>(
+      `SELECT file_key AS k FROM document_revisions WHERE document_id = $1
+       UNION SELECT a.file_key FROM attachments a JOIN markups m ON m.id = a.markup_id WHERE m.document_id = $1
+       UNION SELECT a.annotated_key FROM attachments a JOIN markups m ON m.id = a.markup_id WHERE m.document_id = $1 AND a.annotated_key IS NOT NULL`, [doc.id])
     await db.query('DELETE FROM documents WHERE id = $1', [doc.id])
+    await releaseFiles(keys.map(r => r.k))
     return { ok: true }
   })
 
-  app.get('/api/documents/:id/file', { preHandler: auth }, async (req, reply) => {
+  app.get('/api/documents/:id/file', { preHandler: fileAuth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'viewer')
     if (!doc) return
     const rid = (req.query as any)?.revision
@@ -329,7 +492,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
     const stream = await storage.open(rev.file_key)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
-    reply.header('Content-Type', 'application/pdf')
+    fileHeaders(reply, 'application/pdf', `${doc.name}.pdf`)
     // Current-revision URL changes meaning on upload, so only explicit revisions are immutable.
     reply.header('Cache-Control', rid ? 'private, max-age=31536000, immutable' : 'private, no-cache')
     return reply.send(stream)
@@ -392,17 +555,20 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!doc) return
     const file = await req.file()
     if (!file) return reply.code(400).send({ error: 'No file' })
-    if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf'))
-      return reply.code(400).send({ error: 'Only PDF files are supported' })
-    const fileKey = await storage.save('pdf', file.file)
-    if (file.file.truncated) { void storage.remove(fileKey); return reply.code(413).send({ error: 'File too large' }) }
-    const pageCount = Math.max(1, Math.floor(Number((file.fields as any).pageCount?.value)) || 1)
+    const up = await readPdfUpload(file, reply)
+    if (!up) return
+    const pageCount = up.pageCount
+    const fileKey = await storage.save('pdf', up.bytes)
     const label = String((file.fields as any).label?.value ?? '').slice(0, 200)
     const note = String((file.fields as any).note?.value ?? '').slice(0, 2000)
-    const rev = await db.transaction(async q => {
-      await freezeLatest(q, doc.id)
-      return insertRevision(q, doc.id, { kind: 'upload', label, note, fileKey, pageCount, userId: req.user.id })
-    })
+    let rev: any
+    try {
+      rev = await db.transaction(async q => {
+        await lockDocument(q, doc.id)
+        await freezeLatest(q, doc.id)
+        return insertRevision(q, doc.id, { kind: 'upload', label, note, fileKey, pageCount, userId: req.user.id })
+      })
+    } catch (e) { void storage.remove(fileKey); throw e }
     const orphans = await db.query<{ id: string; page: number }>(
       'SELECT id, page FROM markups WHERE document_id = $1 AND NOT deleted AND page > $2 ORDER BY page', [doc.id, pageCount])
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
@@ -418,6 +584,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!label) return reply.code(400).send({ error: 'A revision name is required' })
     const note = String(b.note ?? '').trim().slice(0, 2000)
     const rev = await db.transaction(async q => {
+      await lockDocument(q, doc.id)
       const [latest] = await q('SELECT file_key, page_count FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
       const snapshot = await liveSnapshot(q, doc.id)
       await freezeLatest(q, doc.id) // the revision being issued from is frozen at the same instant
@@ -444,6 +611,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     const snapScales = (src.scales_snapshot ?? []) as any[]
     const userId = req.user.id
     const result = await db.transaction(async q => {
+      await lockDocument(q, doc.id)
+      // The decision above was made on a read outside the lock: confirm nothing superseded it meanwhile.
+      const [now] = await q('SELECT id FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+      if (now.id !== latest.id) throw new HttpError(409, 'Plan changed, try again')
       const before = await liveSnapshot(q, doc.id)
       await freezeLatest(q, doc.id)
       await insertRevision(q, doc.id, {
@@ -511,7 +682,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     return { ...meta, live: true, ...s }
   })
 
-  app.get('/api/documents/:id/revisions/:rid/file', { preHandler: auth }, async (req, reply) => {
+  app.get('/api/documents/:id/revisions/:rid/file', { preHandler: fileAuth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'viewer')
     if (!doc) return
     const { rid } = req.params as any
@@ -519,7 +690,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
     const stream = await storage.open(rev.file_key)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
-    reply.header('Content-Type', 'application/pdf')
+    fileHeaders(reply, 'application/pdf', `${doc.name}.pdf`)
     reply.header('Cache-Control', 'private, max-age=31536000, immutable')
     return reply.send(stream)
   })
@@ -528,7 +699,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   const describePages = (pages: number[]) => (pages.length === 1 ? `page ${pages[0]}` : `pages ${pages.join(', ')}`)
 
   async function runPageOp(req: FastifyRequest, reply: FastifyReply, doc: any, op: PageOp, label: string, other?: Uint8Array) {
-    const [latest] = await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+    const [latest] = await db.query('SELECT id, file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
     const srcBytes = latest ? await storage.read(latest.file_key) : null
     if (!srcBytes) return reply.code(404).send({ error: 'File missing' })
     const src = new Uint8Array(srcBytes)
@@ -543,7 +714,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     }
     const fileKey = await storage.save('pdf', edited.bytes)
     let deletedMarkups = 0
-    const rev = await db.transaction(async q => {
+    let rev: any
+    try { rev = await db.transaction(async q => {
+      await lockDocument(q, doc.id)
+      // The edit was computed from `latest`; if another change landed meanwhile, applying it would silently discard that work.
+      const [now] = await q('SELECT id FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+      if (now.id !== latest.id) throw new HttpError(409, 'Plan changed, try again')
       await freezeLatest(q, doc.id)
       if (!isIdentity(mapping)) {
         const from = mapping.map.map((_, i) => i + 1), to = mapping.map.map(n => n ?? 0)
@@ -580,7 +756,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
         }
       }
       return insertRevision(q, doc.id, { kind: 'upload', label, note: '', fileKey, pageCount: edited.pageCount, userId: req.user.id })
-    })
+    }) } catch (e) { void storage.remove(fileKey); throw e }
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
     realtime.scalesChanged(doc.id, req.user.id, cid(req))
     return { ...rev, mapping: mapping.map, deleted_markups: deletedMarkups }
@@ -592,6 +768,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!file) { reply.code(400).send({ error: 'No file' }); return null }
     const bytes = new Uint8Array(await file.toBuffer())
     if (file.file.truncated) { reply.code(413).send({ error: 'File too large' }); return null }
+    if (!isPdf(bytes)) { reply.code(400).send({ error: 'That is not a PDF file' }); return null }
     return { bytes, fields: file.fields as any }
   }
 
@@ -987,18 +1164,20 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     return { ok: true, deactivated: used.n > 0 }
   })
 
-  /** Next free tag for a prefix across the whole project, e.g. CAM-07. */
-  async function nextTag(projectId: string, prefix: string) {
-    const { padding } = await getSection(db, 'tags')
-    const rows = await db.query<{ tag: string }>(
+  /** Next free tag for a prefix across the whole project, e.g. CAM-07. Call under the project+prefix advisory lock. */
+  async function nextTag(q: Q, padding: number, projectId: string, prefix: string) {
+    const rows = await q<{ tag: string }>(
       `SELECT m.tag FROM markups m JOIN documents d ON d.id = m.document_id
-       WHERE d.project_id = $1 AND NOT m.deleted AND m.tag LIKE $2`, [projectId, `${prefix}-%`])
+       WHERE d.project_id = $1 AND NOT m.deleted AND left(m.tag, $3) = $2`, [projectId, `${prefix}-`, prefix.length + 1])
     const max = rows.reduce((n, r) => {
-      const k = Number(r.tag.slice(prefix.length + 1))
-      return Number.isInteger(k) && k > n ? k : n
+      const suffix = r.tag.slice(prefix.length + 1)
+      if (!/^\d{1,9}$/.test(suffix)) return n
+      const k = Number(suffix)
+      return k > n ? k : n
     }, 0)
     return `${prefix}-${String(max + 1).padStart(padding, '0')}`
   }
+  const tagPrefixOf = (tag: string) => tag.replace(/-\d+$/, '')
 
   // ---- Markups ----
   const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, device_type_id, product_id, tag, status, fields, version, created_by, updated_by, created_at, updated_at'
@@ -1115,7 +1294,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     const { markupId } = req.params as any
     const b = (req.body ?? {}) as any
     if (!/^[0-9a-f-]{36}$/i.test(markupId)) return reply.code(400).send({ error: 'Bad markup id' })
-    if (!b.type || !b.geometry || !Number.isInteger(b.page) || b.page < 1)
+    if (!b.type || !b.geometry || !Number.isInteger(b.page) || b.page < 1 || b.page > 1_000_000)
       return reply.code(400).send({ error: 'type, page and geometry are required' })
     const [existing] = await db.query('SELECT * FROM markups WHERE id = $1', [markupId])
     if (existing && existing.document_id !== doc.id) return reply.code(409).send({ error: 'Markup belongs to another document' })
@@ -1125,7 +1304,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     }
     const status = String(b.status ?? '')
     if (!STATUSES.includes(status)) return reply.code(400).send({ error: 'Bad status' })
-    let tag = String(b.tag ?? '').trim()
+    let tag = String(b.tag ?? '').trim().slice(0, 100)
+    let autoPrefix: string | null = null
     let deviceTypeId: string | null = null, productId: string | null = null
     if (b.symbol_set_id) {
       const [set] = await db.query('SELECT tag_prefix FROM symbol_sets WHERE id = $1', [b.symbol_set_id])
@@ -1143,10 +1323,28 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
         if (!pr) return reply.code(400).send({ error: 'Unknown product' })
         productId = pr.id
       }
-      if (!tag) tag = await nextTag(doc.project_id, prefix)
+      if (!tag) {
+        // An update that leaves the tag blank keeps the one it has; only a new device draws the next number.
+        if (existing && !existing.deleted && existing.tag && existing.symbol_set_id === b.symbol_set_id) tag = existing.tag
+        else autoPrefix = prefix
+      }
     }
     const fields = b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields) ? b.fields : {}
-    const [row] = await db.query(
+    const padding = autoPrefix !== null ? (await getSection(db, 'tags')).padding : 2
+    // A client-chosen tag that is new to this markup must not collide with another one in the project.
+    const checkTag = autoPrefix === null && tag !== '' && (!existing || existing.deleted || existing.tag !== tag)
+    const row = await db.transaction(async q => {
+      // One lock per project+prefix, held until commit, so two simultaneous creates cannot draw the same number.
+      if (autoPrefix !== null || checkTag)
+        await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`${doc.project_id}|${autoPrefix ?? tagPrefixOf(tag)}`])
+      if (autoPrefix !== null) tag = await nextTag(q, padding, doc.project_id, autoPrefix)
+      else if (checkTag) {
+        const dup = await q(
+          `SELECT 1 FROM markups m JOIN documents d ON d.id = m.document_id
+           WHERE d.project_id = $1 AND NOT m.deleted AND m.tag = $2 AND m.id <> $3 LIMIT 1`, [doc.project_id, tag, markupId])
+        if (dup.length) throw new HttpError(409, 'Tag already used')
+      }
+      const [r] = await q(
       `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by, device_type_id, product_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15)
        ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
@@ -1156,6 +1354,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
        RETURNING ${MARKUP_COLUMNS}`,
       [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
         String(b.text ?? ''), b.layer_id || null, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id, deviceTypeId, productId])
+      return r
+    })
     if (!existing) await recordEvent(markupId, req.user.id, 'created')
     else if (existing.deleted) await recordEvent(markupId, req.user.id, 'restored')
     else {
@@ -1189,7 +1389,19 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
   const PHOTO_MAX = 15 * 1024 * 1024
   const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
 
-  const removeFile = (key: string | null | undefined) => { void storage.remove(key) }
+  /** Deletes a stored file only when nothing else (a revision, a frozen snapshot, a photo, a setting) still points at it. */
+  async function releaseFiles(keys: (string | null | undefined)[]) {
+    for (const key of new Set(keys.filter(Boolean) as string[])) {
+      try {
+        const ref = await db.query(
+          `SELECT 1 AS x FROM document_revisions WHERE file_key = $1::text OR position($1::text in coalesce(attachments_snapshot::text, '')) > 0
+           UNION ALL SELECT 1 FROM attachments WHERE file_key = $1::text OR annotated_key = $1::text
+           UNION ALL SELECT 1 FROM settings WHERE position($1::text in value::text) > 0 LIMIT 1`, [key])
+        if (!ref.length) await storage.remove(key)
+      } catch { /* best effort */ }
+    }
+  }
+  const removeFile = (key: string | null | undefined) => { void releaseFiles([key]) }
   const optInt = (v: unknown) => {
     const n = Number(v)
     return v !== undefined && v !== '' && Number.isInteger(n) && n > 0 && n < 100000 ? n : null
@@ -1218,15 +1430,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
 
   /** Writes an uploaded photo to disk. Returns the key, or sends an error and returns null. */
   async function savePhoto(file: any, reply: FastifyReply) {
-    const ext = PHOTO_TYPES[file.mimetype]
-    if (!ext) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
-    const key = await storage.save(ext, file.file)
-    if (file.file.truncated) {
-      removeFile(key)
-      reply.code(413).send({ error: 'Photo too large (15 MB max)' })
-      return null
-    }
-    return key
+    if (!PHOTO_TYPES[file.mimetype]) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
+    const bytes = new Uint8Array(await file.toBuffer())
+    if (file.file.truncated) { reply.code(413).send({ error: 'Photo too large (15 MB max)' }); return null }
+    const ext = photoExt(bytes) // what the bytes really are, not what the client said
+    if (!ext) { reply.code(400).send({ error: 'That is not a valid JPEG, PNG or WebP image' }); return null }
+    return storage.save(ext, bytes)
   }
 
   async function attachmentsChanged(a: { markup_id: string }, req: FastifyRequest) {
@@ -1311,7 +1520,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     return { ok: true }
   })
 
-  app.get('/api/attachments/:id/file', { preHandler: auth }, async (req, reply) => {
+  app.get('/api/attachments/:id/file', { preHandler: fileAuth }, async (req, reply) => {
     const a = await attachmentWithAccess(req, reply, 'viewer')
     if (!a) return
     const variant = (req.query as any)?.variant
@@ -1319,12 +1528,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory }: A
     if (!key) return reply.code(404).send({ error: 'No such variant' })
     const stream = await storage.open(key)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
-    reply.header('Content-Type', EXT_TYPES[key.slice(key.lastIndexOf('.') + 1)] ?? 'application/octet-stream')
+    const ext = key.slice(key.lastIndexOf('.') + 1)
+    fileHeaders(reply, EXT_TYPES[ext] ?? 'application/octet-stream', `photo-${a.id}.${ext}`)
     reply.header('Cache-Control', 'private, max-age=31536000, immutable')
     return reply.send(stream)
   })
 
-  await registerAdmin({ app, db, auth, storage, forgetUser, requireRole, sign, realtime })
+  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser })
 
   // ---- Built web app (production) ----
   if (webDir && existsSync(webDir)) {

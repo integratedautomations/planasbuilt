@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it, beforeAll } from 'vitest'
 import { openDb, migrate } from './db.js'
 import { buildApp } from './app.js'
+import { makePdf } from './testutil.js'
 
 let app: Awaited<ReturnType<typeof buildApp>>
 
@@ -13,7 +14,9 @@ beforeAll(async () => {
   app = await buildApp({ db, jwtSecret: 'test', filesDir: mkdtempSync(path.join(tmpdir(), 'pm-')) })
 })
 
-const pdf = Buffer.from('%PDF-1.4\n%%EOF\n')
+const pdf = await makePdf(3, 'one')
+const pdf2 = await makePdf(2, 'revision two')
+const pdfOne = await makePdf(1, 'one'), pdfTwo = await makePdf(1, 'two')
 function multipartBody(boundary: string) {
   return Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="pageCount"\r\n\r\n3\r\n`),
@@ -369,7 +372,7 @@ describe('milestone 1 api', () => {
     const mk = '11111111-1111-4111-8111-111111111111'
     const aid = '44444444-4444-4444-8444-444444444444'
     const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4])
-    const png2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9])
+    const png2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9])
     const photoBody = (b: string, fields: Record<string, string>, data: Buffer, type = 'image/jpeg') => Buffer.concat([
       ...Object.entries(fields).map(([k, v]) => Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`)),
       Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="photo"; filename="../../x.jpg"\r\nContent-Type: ${type}\r\n\r\n`),
@@ -431,7 +434,7 @@ describe('milestone 1 api', () => {
 })
 
 describe('document revisions', () => {
-  const pdf2 = Buffer.from('%PDF-1.4\n%%EOF\n% revision two\n')
+
   const body = (pages: number, bytes: Buffer, b = 'RV') => Buffer.concat([
     Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="pageCount"\r\n\r\n${pages}\r\n`),
     Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="E-101-B.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
@@ -652,7 +655,6 @@ describe('milestone 12 revision snapshots and page tools', () => {
 })
 
 describe('restore a revision and device type order', () => {
-  const pdfBytes = (tag: string) => Buffer.from(`%PDF-1.4\n%%EOF\n% ${tag}\n`)
   const mp = (pages: number, bytes: Buffer, b = 'MC') => Buffer.concat([
     Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="pageCount"\r\n\r\n${pages}\r\n`),
     Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="P.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
@@ -667,14 +669,14 @@ describe('restore a revision and device type order', () => {
     const h = { authorization: `Bearer ${admin}` }
     const project = (await app.inject({ method: 'POST', url: '/api/projects', headers: h, payload: { name: 'Restore project' } })).json().id
     await app.inject({ method: 'PUT', url: `/api/projects/${project}/members`, headers: h, payload: { email: 'tech@x.com', role: 'viewer' } })
-    const doc = (await send(`/api/projects/${project}/documents`, admin, mp(1, pdfBytes('one')))).json().id
+    const doc = (await send(`/api/projects/${project}/documents`, admin, mp(1, pdfOne))).json().id
     const put = (id: string, x: number) => app.inject({ method: 'PUT', url: `/api/documents/${doc}/markups/${id}`, headers: h,
       payload: { page: 1, type: 'rect', geometry: { x, y: 0, width: 5, height: 5, rotation: 0 } } })
     const live = async () => (await app.inject({ url: `/api/documents/${doc}/markups`, headers: h })).json() as any[]
     expect((await put(idOf(1), 10)).statusCode).toBe(200); const p2 = await put(idOf(2), 20); expect(p2.statusCode, p2.body).toBe(200)
     await app.inject({ method: 'PUT', url: `/api/documents/${doc}/scales/1`, headers: h, payload: { points_per_foot: 12, label: 'Old' } })
     // second revision freezes revision 1 (two markups); then edit the live set
-    expect((await send(`/api/documents/${doc}/revisions`, admin, mp(1, pdfBytes('two')))).statusCode).toBe(200)
+    expect((await send(`/api/documents/${doc}/revisions`, admin, mp(1, pdfTwo))).statusCode).toBe(200)
     await put(idOf(1), 99); await put(idOf(3), 30)
     await app.inject({ method: 'DELETE', url: `/api/documents/${doc}/markups/${idOf(2)}`, headers: h })
     await app.inject({ method: 'PUT', url: `/api/documents/${doc}/scales/1`, headers: h, payload: { points_per_foot: 24, label: 'New' } })
@@ -700,7 +702,7 @@ describe('restore a revision and device type order', () => {
     expect(before.scales[0]).toMatchObject({ label: 'New' })
     expect((await app.inject({ url: `/api/documents/${doc}/scales`, headers: h })).json()).toMatchObject([{ page: 1, points_per_foot: 12, label: 'Old' }])
     const file = await app.inject({ url: `/api/documents/${doc}/file?token=${admin}` })
-    expect(file.rawPayload.toString()).toContain('one')
+    expect(file.rawPayload.equals(pdfOne)).toBe(true)
   })
 
   it('reorders device types of a set (admin only) and validates ids', async () => {

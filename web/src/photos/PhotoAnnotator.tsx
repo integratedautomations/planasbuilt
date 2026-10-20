@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Arrow, Image as KImage, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import { queuePhotoAnnotated } from '../offline/sync'
+import { useAuthedUrl } from '../useAuthedUrl'
 import './photos.css'
 
 type Kind = 'pen' | 'arrow' | 'rect' | 'text'
@@ -13,7 +14,8 @@ const TOOLS: [Kind, string][] = [['pen', 'Pen'], ['arrow', 'Arrow'], ['rect', 'B
 
 interface Props { attachmentId: string; /** URL of the unannotated original (server or local blob) */ src: string; onClose: () => void; onSaved: () => void }
 
-export function PhotoAnnotator({ attachmentId, src, onClose, onSaved }: Props) {
+export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: Props) {
+  const src = useAuthedUrl(rawSrc)
   const box = useRef<HTMLDivElement>(null)
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const [loadErr, setLoadErr] = useState('')
@@ -38,6 +40,7 @@ export function PhotoAnnotator({ attachmentId, src, onClose, onSaved }: Props) {
 
   // The unannotated original is always the base, so re-annotating never stacks on old marks.
   useEffect(() => {
+    if (!src) return
     const i = new window.Image()
     i.onload = () => setImg(i)
     i.onerror = () => setLoadErr('Could not load the photo.')

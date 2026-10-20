@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { attachmentFileUrl } from '../api'
+import { useAuthedUrl } from '../useAuthedUrl'
 import { cachePhotoView, loadAttachments } from '../offline/cache'
 import { db } from '../offline/db'
 import type { AttachmentRow } from '../offline/db'
@@ -101,7 +102,7 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
       <div className="photo-grid">
         {items.map(a => (
           <button key={a.id} type="button" className="photo-thumb" onClick={() => setOpenId(a.id)} aria-label={a.caption || 'Open photo'}>
-            <img src={srcFor(a)} alt={a.caption} loading="lazy" />
+            <AuthImg src={srcFor(a)} alt={a.caption} loading="lazy" />
             {a.pending && <span className="badge">Waiting to upload</span>}
             {a.has_annotation && <span className="badge">Marked</span>}
             {a.caption && <span className="cap">{a.caption}</span>}
@@ -142,6 +143,12 @@ interface ViewerProps {
   onCaption: (id: string, caption: string) => void
   onAnnotated: (id: string) => void
   onDeleted: (id: string) => void
+}
+
+/** <img> for a server file URL: fetched with the Authorization header, shown from a blob URL. */
+function AuthImg({ src, ...rest }: { src: string } & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'>) {
+  const url = useAuthedUrl(src)
+  return <img {...rest} src={url || undefined} />
 }
 
 function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, onAnnotated, onDeleted }: ViewerProps) {
@@ -206,7 +213,7 @@ function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, o
           const dx = e.changedTouches[0].clientX - t.x, dy = e.changedTouches[0].clientY - t.y
           if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(dx < 0 ? 1 : -1)
         }}>
-        <img src={src} alt={a.caption} draggable={false} />
+        <AuthImg src={src} alt={a.caption} draggable={false} />
         {index > 0 && <button className="pm-nav prev" onClick={() => go(-1)} aria-label="Previous photo">‹</button>}
         {index < items.length - 1 && <button className="pm-nav next" onClick={() => go(1)} aria-label="Next photo">›</button>}
       </div>

@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text, Transformer } from 'react-konva'
 import Konva from 'konva'
-import { bakeBox, bakePath, boxFromDrag, pathFromPoints, simplify, snap45 } from './geometry'
+import { bakeBox, bakePath, boxFromDrag, pathFromPoints, hasDrawableGeometry, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
 import { MarkupShape } from './MarkupShape'
 import type { Change } from './useMarkups'
@@ -512,7 +512,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id) && !isSheetArea(m)
 
   // Areas draw first (below everything) so they never cover devices
-  const ordered = [...markups.filter(m => m.type === 'area'), ...markups.filter(m => m.type !== 'area')]
+  const drawable = markups.filter(hasDrawableGeometry)
+  const ordered = [...drawable.filter(m => m.type === 'area'), ...drawable.filter(m => m.type !== 'area')]
 
   return (
     <Stage ref={stageRef} width={width} height={height} className="markup-stage"

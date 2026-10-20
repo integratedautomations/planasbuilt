@@ -58,6 +58,17 @@ export class Realtime {
     this.conns.delete(c)
   }
 
+  /** Closes every socket of a user (deactivated, password changed, role changed). */
+  kickUser(userId: string) {
+    for (const c of [...this.conns]) if (c.userId === userId) { try { c.socket.close(4401, 'Signed out') } catch { /* going away */ } this.remove(c) }
+  }
+
+  /** Takes a user out of the given documents' rooms (removed from a project). */
+  dropUserFromDocs(userId: string, documentIds: string[]) {
+    const ids = new Set(documentIds)
+    for (const c of [...this.conns]) if (c.userId === userId && c.documentId && ids.has(c.documentId)) this.leave(c)
+  }
+
   private send(c: Conn, msg: unknown) {
     if (c.socket.readyState === 1) c.socket.send(JSON.stringify(msg))
   }

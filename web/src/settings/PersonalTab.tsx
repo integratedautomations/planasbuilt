@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react'
-import { api, User } from '../api'
+import { api, setToken, User } from '../api'
 import type { ReplaceChoice } from '../markups/placeReplace'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
 import { DENSITY_PREFS } from '../prefs/density'
@@ -31,7 +31,8 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
     e.preventDefault(); setPwMsg(null)
     if (pw.next !== pw.again) { setPwMsg({ ok: false, text: 'The new passwords do not match' }); return }
     try {
-      await api('/me/password', { method: 'POST', body: JSON.stringify({ current: pw.current, password: pw.next }) })
+      const res = await api<{ token?: string }>('/me/password', { method: 'POST', body: JSON.stringify({ current: pw.current, password: pw.next }) })
+      if (res?.token) setToken(res.token) // the old session token stops working after a password change
       setPw({ current: '', next: '', again: '' }); setPwMsg({ ok: true, text: 'Password changed' })
     } catch (err) { setPwMsg({ ok: false, text: (err as Error).message }) }
   }

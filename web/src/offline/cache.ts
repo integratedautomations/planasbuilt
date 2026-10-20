@@ -5,14 +5,16 @@
  *
  * Writes never go through here; see sync.ts.
  */
-import { api, ApiError, documentFileUrl, attachmentFileUrl } from '../api'
+import { api, ApiError, authFetch, documentFileUrl, attachmentFileUrl } from '../api'
 import type { Attachment, DocumentSummary, Project } from '../api'
 import type { Layer, Markup, SymbolSet } from '../markups/types'
 import type { CatalogData } from '../catalog/types'
 import { isOfflineError, OfflineMissError } from './classify'
 import { db } from './db'
 import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
-import { mergeServerMarkups } from './sync'
+import { cacheAllowed } from './cacheOwner'
+import { isForeign } from './owner'
+import { getSyncUser, mergeServerMarkups } from './sync'
 
 /** revisions are newest first. */
 export interface DocMeta { id: string; name: string; revisions: { id?: string; revision: number; page_count: number; kind?: 'upload' | 'issued' | 'restore'; label?: string }[] }
@@ -32,10 +34,15 @@ async function readThrough<T>(
     return { data, fromCache: false }
   } catch (e) {
     if (!isOfflineError(e)) throw e
-    const data = await local()
+    const data = (await cacheAllowed()) ? await local() : undefined
     if (data === undefined) throw new OfflineMissError(what)
     return { data, fromCache: true }
   }
+}
+
+/** Ids of rows kept only for another user's unsent work: never shown to the signed-in user. */
+async function foreignTargets(): Promise<Set<string>> {
+  return new Set((await db.outbox.toArray()).filter(i => isForeign(i, getSyncUser())).map(i => i.targetId))
 }
 
 const nonEmpty = <T>(rows: T[]) => (rows.length ? rows : undefined)
@@ -131,7 +138,7 @@ export const loadMarkups = (docId: string) => readThrough(
   'Markups',
 ).then(async r => ({ data: await mergeServerMarkups(docId, r.data), fromCache: r.fromCache }))
   .catch(async e => {
-    if (!(e instanceof OfflineMissError)) throw e
+    if (!(e instanceof OfflineMissError) || !(await cacheAllowed())) throw e
     // Offline: whatever is in Dexie, if this document was ever cached.
     const cached = await db.kv.get(`cache:${docId}`)
     const rows = await db.markups.where('document_id').equals(docId).toArray()
@@ -140,7 +147,8 @@ export const loadMarkups = (docId: string) => readThrough(
   })
   .then(async r => {
     if (!r.fromCache) await markDocCached(docId, { markupsAt: Date.now() })
-    return r
+    const theirs = await foreignTargets()
+    return theirs.size ? { ...r, data: r.data.filter(m => !theirs.has(m.id)) } : r
   })
 
 export const loadAttachments = (markupId: string) => readThrough(
@@ -154,7 +162,9 @@ export const loadAttachments = (markupId: string) => readThrough(
   'Photos',
 ).then(async r => {
   // Server list + photos still waiting for upload (or edited locally), oldest first.
-  const local = await db.attachments.where('markup_id').equals(markupId).toArray()
+  // Rows kept for another user's unsent photo work are not ours to show.
+  const theirs = await foreignTargets()
+  const local = (await db.attachments.where('markup_id').equals(markupId).toArray()).filter(a => !theirs.has(a.id))
   const byId = new Map<string, AttachmentRow>(local.map(a => [a.id, a]))
   const merged = r.fromCache ? local : [...r.data.map(a => byId.get(a.id) ?? a), ...local.filter(a => a.pending && !r.data.some(x => x.id === a.id))]
   merged.sort((a, b) => a.created_at.localeCompare(b.created_at))
@@ -165,7 +175,7 @@ export const loadAttachments = (markupId: string) => readThrough(
 
 /** Fetch a PDF's bytes; throws ApiError / network errors. */
 async function fetchPdf(docId: string, onBytes?: (n: number) => void): Promise<ArrayBuffer> {
-  const res = await fetch(documentFileUrl(docId), { cache: 'no-cache' })
+  const res = await authFetch(documentFileUrl(docId), { cache: 'no-cache' })
   if (!res.ok) throw new ApiError(res.status, `Could not download the plan (${res.status})`)
   if (!res.body || !onBytes) return res.arrayBuffer()
   const reader = res.body.getReader()
@@ -189,7 +199,7 @@ async function fetchPdf(docId: string, onBytes?: (n: number) => void): Promise<A
  * The returned buffer is a COPY (pdf.js transfers buffers to its worker and would detach ours).
  */
 export async function loadPdfBytes(docId: string, revisionId?: string): Promise<ArrayBuffer> {
-  const hit = await db.pdfs.get(docId)
+  const hit = (await cacheAllowed()) ? await db.pdfs.get(docId) : undefined
   const stale = !!hit && !!revisionId && hit.revisionId !== revisionId
   if (hit && !stale) return hit.data.slice(0)
   let data: ArrayBuffer
@@ -227,7 +237,7 @@ export async function cachePhotoView(a: Attachment): Promise<void> {
   const key = `${a.id}:view`
   if (await db.photoBlobs.get(key)) return
   try {
-    const res = await fetch(attachmentFileUrl(a.id))
+    const res = await authFetch(attachmentFileUrl(a.id))
     if (!res.ok) return
     await db.photoBlobs.put({ key, attachment_id: a.id, variant: 'view', blob: await res.blob(), cachedAt: Date.now() })
   } catch { /* offline or storage full: it is only a cache */ }

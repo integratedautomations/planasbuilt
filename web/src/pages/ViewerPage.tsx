@@ -281,11 +281,16 @@ export function ViewerPage() {
     ? new Map((revDetail && revDetail.id === revParam ? revDetail.markups : []).map(m => [m.id, m] as const))
     : store.markups), [viewingOld, revDetail, revParam, store.markups])
 
-  const refreshRevs = useCallback(() => { listRevisions(documentId).then(setRevList).catch(() => {}) }, [documentId])
+  const refreshRevs = useCallback(() => { listRevisions(documentId).then(l => { if (docIdRef.current === documentId) setRevList(l) }).catch(() => {}) }, [documentId])
   useEffect(() => { refreshRevs() }, [refreshRevs, reloadTick])
+  /** The document being shown right now; answers for a document we already navigated away from are dropped. */
+  const docIdRef = useRef(documentId)
+  docIdRef.current = documentId
   const reloadScales = useCallback(() => {
-    loadScales(documentId).then(({ data: rows }) =>
-      setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))).catch(() => {})
+    loadScales(documentId).then(({ data: rows }) => {
+      if (docIdRef.current !== documentId) return
+      setScales(new Map(rows.map(r => [r.page, { pointsPerFoot: r.points_per_foot, label: r.label }])))
+    }).catch(() => {})
   }, [documentId])
 
   useEffect(() => {
@@ -377,18 +382,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   useEffect(() => { syncStage(view.current) })
 
   useEffect(() => {
-    loadDocMeta(documentId).then(r => setMeta(r.data)).catch(e => setError(e.message))
-    loadProject(projectId).then(r => setProject(r.data)).catch(() => {})
-    loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {})
+    let cancelled = false
+    loadDocMeta(documentId).then(r => { if (!cancelled) setMeta(r.data) }).catch(e => { if (!cancelled) setError(e.message) })
+    loadProject(projectId).then(r => { if (!cancelled) setProject(r.data) }).catch(() => {})
+    loadLayers(projectId).then(r => { if (!cancelled) setLayers(r.data) }).catch(() => {})
     loadSymbolSets().then(({ data: sets }) => {
+      if (cancelled) return
       setSymbolSetList(sets)
       setActiveSetId(id => id ?? sets[0]?.id ?? null)
     }).catch(() => {})
-    if (!revParam) reloadScales()
-    let cancelled = false
+    if (!revParam) reloadScales() // guarded by docIdRef: a stale answer for another document is ignored
     let task: ReturnType<typeof loadPdf> | null = null
     setNotCached(false)
     ;(revParam ? Promise.resolve(undefined) : loadDocMeta(documentId).then(r => r.data.revisions[0]?.id, () => undefined)).then(revisionId => {
+      if (cancelled) throw new Error('cancelled')
       if (revParam) return fetchRevisionPdf(documentId, revParam)
       loadedRevision.current = revisionId
       return loadPdfBytes(documentId, revisionId)
@@ -402,6 +409,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       })
     }).catch(e => {
       if (cancelled) return
+      void task?.destroy()
       if (e instanceof OfflineMissError) setNotCached(true)
       else setError(`Could not open PDF: ${e.message}`)
     })

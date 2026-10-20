@@ -1,4 +1,4 @@
-import { api, attachmentFileUrl } from '../api'
+import { api, attachmentFileUrl, authFetch } from '../api'
 import type { Attachment, DocumentSummary } from '../api'
 import type { CatalogData, DeviceType } from '../catalog/types'
 import { buildCatalog } from '../catalog/catalog'
@@ -10,6 +10,7 @@ import { downloadBytes } from './download'
 import { loadIcons } from './icons'
 import { planImport } from './importPlan'
 import type { ImportPlan } from './importPlan'
+import type { KnownIds } from './importMap'
 import { buildReport } from './report'
 import { DEFAULT_REPORT_OPTIONS } from './reportOptions'
 import type { ReportOptions } from './reportOptions'
@@ -36,8 +37,8 @@ export async function exportDocumentPdf(kind: 'annotated' | 'flattened', a: DocE
 }
 
 /** Reads an annotated PDF picked by the user and works out what importing it would change. */
-export async function planImportFile(file: File, documentId: string, existing: Map<string, Markup>): Promise<ImportPlan> {
-  return planImport(await file.arrayBuffer(), { documentId, existing })
+export async function planImportFile(file: File, documentId: string, existing: Map<string, Markup>, known?: KnownIds): Promise<ImportPlan> {
+  return planImport(await file.arrayBuffer(), { documentId, existing, known })
 }
 
 interface ProjectScaleRow { document_id: string; page: number; points_per_foot: number }
@@ -66,7 +67,7 @@ export async function exportProjectReport(projectId: string, projectName: string
     const out: ReportPhoto[] = []
     for (const a of list) {
       try {
-        const res = await fetch(attachmentFileUrl(a.id, undefined, a.created_at)) // annotated version when there is one
+        const res = await authFetch(attachmentFileUrl(a.id, undefined, a.created_at)) // annotated version when there is one
         if (res.ok) out.push({ bytes: new Uint8Array(await res.arrayBuffer()), caption: a.caption })
       } catch { /* skip a photo that can't be fetched */ }
     }
