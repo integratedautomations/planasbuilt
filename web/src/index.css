@@ -629,3 +629,7 @@ input.invalid { border-color: var(--danger); }
 .device-size-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .device-size-row input[type=range] { flex: 1; min-width: 0; }
 .icon-class { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+
+/* Device-type editor: Mount segmented control with shape previews */
+.mount-seg { align-self: flex-start; }
+.mount-seg button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px 4px 8px; }

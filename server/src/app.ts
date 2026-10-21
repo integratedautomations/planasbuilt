@@ -1119,7 +1119,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         range_ft: Number.isFinite(range) && range > 0 ? Math.min(10000, Math.round(range * 100) / 100) : 20,
       }
     }
-    return { name, icon, tag_prefix: prefix || null, fields: cleanFields(b.fields), coverage }
+    // Mount shape: 'ceiling' | 'wall' | 'square'. Not sent = keep the stored value (update) or 'ceiling' (create); anything else is invalid.
+    let mount: 'ceiling' | 'wall' | 'square' | undefined
+    if (b.mount !== undefined && b.mount !== null) {
+      if (b.mount !== 'ceiling' && b.mount !== 'wall' && b.mount !== 'square') return null
+      mount = b.mount
+    }
+    return { name, icon, tag_prefix: prefix || null, fields: cleanFields(b.fields), coverage, mount }
   }
 
   function cleanProduct(b: any) {
@@ -1203,9 +1209,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const [set] = await db.query('SELECT id FROM symbol_sets WHERE id = $1', [(req.params as any).id])
     if (!set) return reply.code(404).send({ error: 'Not found' })
     const [row] = await db.query(
-      `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, coverage, sort)
-       VALUES ($1,$2,$3,$4,$5,$6,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
-      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), t.coverage ? JSON.stringify(t.coverage) : null])
+      `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, coverage, mount, sort)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
+      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), t.coverage ? JSON.stringify(t.coverage) : null, t.mount ?? 'ceiling'])
     realtime.symbolSetsChanged(req.user.id, cid(req))
     return row
   })
@@ -1223,9 +1229,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     }
     const [row] = await db.query(
       `UPDATE device_types SET name=$1, icon=$2, tag_prefix=$3, fields=$4, default_product_id=$5,
-         coverage = CASE WHEN $7::boolean THEN $8::jsonb ELSE coverage END WHERE id=$6 RETURNING *`,
+         coverage = CASE WHEN $7::boolean THEN $8::jsonb ELSE coverage END,
+         mount = coalesce($9::text, mount) WHERE id=$6 RETURNING *`,
       [t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), defaultId, (req.params as any).id,
-        t.coverage !== undefined, t.coverage ? JSON.stringify(t.coverage) : null])
+        t.coverage !== undefined, t.coverage ? JSON.stringify(t.coverage) : null, t.mount ?? null])
     if (!row) return reply.code(404).send({ error: 'Not found' })
     realtime.symbolSetsChanged(req.user.id, cid(req))
     return row

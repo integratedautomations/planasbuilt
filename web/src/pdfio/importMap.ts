@@ -1,4 +1,5 @@
 import { pathFromPoints } from '../markups/geometry'
+import { isMount } from '../markups/mount'
 import { BOX_TYPES, DEFAULT_STYLE, STATUSES } from '../markups/types'
 import type { BoxGeometry, Markup, MarkupStyle, MarkupType, PathGeometry, Status } from '../markups/types'
 import { boundsOf, fromPdf } from './coords'
@@ -184,6 +185,7 @@ function cleanGeometry(type: string, g: unknown): BoxGeometry | PathGeometry | n
     const width = num(g.width), height = num(g.height)
     if (width === null || height === null) return null
     const out: BoxGeometry = { x, y, width, height, rotation }
+    if (isMount(g.mount)) out.mount = g.mount
     if (isObj(g.fov)) {
       const direction = num(g.fov.direction), angle = num(g.fov.angle), range = num(g.fov.range)
       if (direction !== null && angle !== null && range !== null) {

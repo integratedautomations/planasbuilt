@@ -1,5 +1,7 @@
 import { COVERAGE_OPACITY, hasCoverage, rangePx, sectorPoints } from '../markups/coverage'
 import { cloudArcs } from '../markups/geometry'
+import { iconRect, mountShape, outlineAt, resolveMount, wallFacing } from '../markups/mount'
+import type { Mount } from '../markups/mount'
 import { legendLayout, legendSettings } from '../markups/legend'
 import type { LegendRow } from '../markups/legend'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
@@ -67,6 +69,8 @@ export interface BuildCtx {
   set?: SymbolSet
   /** True when an icon PNG is available under the XObject name Ic. */
   hasIcon?: boolean
+  /** The device type's default mount shape (a device's own geometry.mount overrides it). */
+  typeMount?: Mount
   /** Width of text in the label fonts. */
   textWidth: (s: string, size: number, bold?: boolean) => number
   areaPath?: string[]
@@ -276,7 +280,10 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
           const base = top + L.rowH / 2 + fs * 0.35
           if (s.columns.includes('icon')) {
             const d = L.rowH * 0.64
-            ops.fill(hexToRgb(r.color) ?? GRAY).dash(undefined).ellipse(colX.icon + L.rowH * 0.5, top + L.rowH / 2, d / 2, d / 2).paint(true, false)
+            ops.fill(hexToRgb(r.color) ?? GRAY).dash(undefined)
+            if (!r.mount || r.mount === 'ceiling') ops.ellipse(colX.icon + L.rowH * 0.5, top + L.rowH / 2, d / 2, d / 2)
+            else ops.poly(outlineAt(mountShape(r.mount, d / 2), colX.icon + L.rowH * 0.5, top + L.rowH / 2), true)
+            ops.paint(true, false)
           }
           if (s.columns.includes('name')) ops.text(fit(r.name, L.widths.name - 4, fs), colX.name, base, fs, ink)
           if (s.columns.includes('code')) ops.text(fit(r.code, L.widths.code - 4, fs), colX.code, base, fs, [0.29, 0.31, 0.34])
@@ -307,8 +314,14 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
           ops.restore()
           for (let i = 0; i + 1 < poly.length; i += 2) extra.push(applyMatrix(CM, poly[i], poly[i + 1]))
         }
-        ops.fill(color).stroke([1, 1, 1]).width(r * 0.12).dash(undefined).ellipse(cx, cy, r, r).paint(true, true)
-        if (ctx.hasIcon) ops.image('Ic', cx - r * 0.62, cy - r * 0.62, r * 1.24, r * 1.24)
+        const mount = resolveMount(ctx.typeMount, b.mount)
+        const shape = mountShape(mount, r, wallFacing(b))
+        ops.fill(color).stroke([1, 1, 1]).width(r * 0.12).dash(undefined)
+        if (mount === 'ceiling') ops.ellipse(cx, cy, r, r)
+        else ops.poly(outlineAt(shape, cx, cy), true)
+        ops.paint(true, true)
+        const ir = iconRect(shape)
+        if (ctx.hasIcon) ops.image('Ic', cx + ir.x, cy + ir.y, ir.size, ir.size)
         const st = STATUSES.find(s => s.value === m.status)
         if (st) {
           ops.fill(hexToRgb(st.color) ?? GRAY).stroke([1, 1, 1]).width(r * 0.08)

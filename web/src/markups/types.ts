@@ -1,4 +1,5 @@
 // All geometry is in PDF page points at scale 1, origin top-left, y down (pdf.js viewport space).
+import type { Mount } from './mount'
 
 export type BoxType = 'rect' | 'ellipse' | 'cloud' | 'highlight' | 'text' | 'stamp' | 'device' | 'legend'
 export type PathType = 'line' | 'arrow' | 'polyline' | 'polygon' | 'freehand' | 'cable'
@@ -16,7 +17,8 @@ export const isBoxType = (t: MarkupType): t is BoxType => BOX_TYPES.includes(t)
  */
 export interface Fov { direction: number; angle: number; range: number; hidden?: boolean; rangeFt?: number; locked?: boolean; opacity?: number }
 
-export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number; fov?: Fov }
+/** `mount` overrides the device type's default mount shape for this device (absent = use the type's). */
+export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number; fov?: Fov; mount?: Mount }
 /** points are relative to x/y: [x0, y0, x1, y1, ...] */
 export interface PathGeometry { x: number; y: number; rotation: number; points: number[] }
 

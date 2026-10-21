@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../ui/Icon'
+import { MountBadge } from '../catalog/MountBadge'
 import { entryCommand, groupEntries, matchesSearch } from './toolEntries'
 import type { ToolEntry } from './toolEntries'
 import { ContextMenu } from './ContextMenu'
@@ -31,6 +32,7 @@ interface Props {
 
 function EntryIcon({ e, px }: { e: ToolEntry; px?: number }) {
   const size = px ? { width: px + 8, height: px + 8 } : undefined
+  if (e.image && e.mount && e.mount !== 'ceiling') return <MountBadge mount={e.mount} color={e.color ?? '#868e96'} src={e.image} size={px ? px + 8 : 28} />
   if (e.image) return <span className="set-icon" style={{ background: e.color, ...size }}><img src={e.image} alt="" /></span>
   return <span className="chest-icon" style={px ? { ['--chest-icon' as string]: `${px}px` } : undefined}>{e.icon}</span>
 }

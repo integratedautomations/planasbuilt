@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { icon, TOOLS } from './ToolRail'
 import type { DeviceType } from '../catalog/types'
+import type { Mount } from './mount'
 import type { SymbolSet, Tool } from './types'
 
 /** One pickable thing in the Tool chest: a tool, a shape variant, or a symbol set's device. */
@@ -17,6 +18,8 @@ export interface ToolEntry {
   setId?: string
   /** Device-type entries: the type this tool places. */
   typeId?: string
+  /** Device-type entries: the type's default mount shape. */
+  mount?: Mount
   /** Symbol-set entries: colour and icon image of the set. */
   color?: string
   image?: string
@@ -62,7 +65,7 @@ export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = []): T
   // Set > device types: one tool per device type (the set itself is not a placeable entry)
   const devices: ToolEntry[] = [...sets].sort((a, b) => a.sort - b.sort).flatMap(s => [
     ...types.filter(t => t.symbol_set_id === s.id).sort((a, b) => a.sort - b.sort).map(t => ({
-      id: `type:${t.id}`, label: t.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, typeId: t.id, color: s.color, image: t.icon || s.icon, initials: entryInitials(t.name, t.tag_prefix || s.tag_prefix),
+      id: `type:${t.id}`, label: t.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, typeId: t.id, color: s.color, mount: t.mount, image: t.icon || s.icon, initials: entryInitials(t.name, t.tag_prefix || s.tag_prefix),
     })),
   ])
   return [...GROUP_ORDER.flatMap(g => base.filter(e => e.group === g)), ...devices]

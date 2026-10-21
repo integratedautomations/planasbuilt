@@ -1,3 +1,4 @@
+import type { Mount } from '../markups/mount'
 import type { FieldDef } from '../markups/types'
 
 export interface DeviceType {
@@ -12,6 +13,8 @@ export interface DeviceType {
   default_product_id: string | null
   /** Default coverage for new devices of this type (range in feet); null/absent = none. */
   coverage?: { on: boolean; angle: number; range_ft: number } | null
+  /** How devices of this type are mounted (container shape); absent = ceiling. */
+  mount?: Mount
   sort: number
 }
 

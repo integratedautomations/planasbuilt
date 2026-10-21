@@ -8,6 +8,7 @@ import { BarcodeScanner } from '../photos/BarcodeScanner'
 import '../photos/photos.css'
 import type { FieldDef, Fov, Markup, Status, SymbolSet } from './types'
 import { commonField, commonValue, isUniqueFieldKey } from './mixed'
+import { mountLabel, MOUNTS, resolveMount, withMount } from './mount'
 import { clampAngle, COVERAGE_DEFAULT_PX, COVERAGE_OPACITY, formatRange, initialCoverage, normDeg, parseRange, rangeFeet, withRangeFeet } from './coverage'
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
@@ -56,6 +57,8 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
       if (next) geometry.fov = next; else delete geometry.fov
       return { ...m, geometry }
     }, key)
+  const setMount = (v: string) => onUpdate(m => withMount(m, v), `mount.${single ? d.id : 'all'}`)
+  const mountOf = commonValue(devices, m => ('width' in m.geometry ? m.geometry.mount ?? '' : undefined))
   const cat = useCatalogContext()
   const sameType = devices.every(m => (m.device_type_id ?? null) === (d.device_type_id ?? null))
   const dtype = sameType && d.device_type_id ? cat.types.get(d.device_type_id) : undefined
@@ -116,6 +119,13 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           {curProduct?.spec_url && /^https?:/i.test(curProduct.spec_url) && <a className="small" href={curProduct.spec_url} target="_blank" rel="noreferrer">Spec sheet</a>}
         </label>
       )}
+      <label className="field">Mount
+        <select value={mountOf.mixed ? '__mixed' : mountOf.value ?? ''} onChange={e => setMount(e.target.value)}>
+          {mountOf.mixed && <option value="__mixed" disabled>Mixed</option>}
+          <option value="">{sameType ? `Type default (${mountLabel(resolveMount(dtype?.mount, null))})` : 'Type default'}</option>
+          {MOUNTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </label>
       <div className="field">Status
         <div className="status-buttons">
           {STATUSES.map(s => (

@@ -202,6 +202,8 @@ CREATE TABLE IF NOT EXISTS revu_mappings (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE device_types ADD COLUMN IF NOT EXISTS coverage jsonb;
+-- How devices of this type are mounted: a circle (ceiling), a D whose flat side is the wall (wall), or a rounded square (square)
+ALTER TABLE device_types ADD COLUMN IF NOT EXISTS mount text NOT NULL DEFAULT 'ceiling';
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL;
 -- The version at which a delete or a page operation (page delete/move/rotate, revision restore) last changed the

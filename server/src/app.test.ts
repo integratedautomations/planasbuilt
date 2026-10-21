@@ -167,6 +167,16 @@ describe('milestone 1 api', () => {
     const t = (await app.inject({ method: 'POST', url: `/api/symbol-sets/${net.id}/device-types`, headers: h,
       payload: { name: 'Switch', tag_prefix: 'sw', fields: [{ label: 'Ports', type: 'number' }] } })).json()
     expect(t).toMatchObject({ name: 'Switch', tag_prefix: 'SW', fields: [{ key: 'ports', label: 'Ports', type: 'number' }] })
+    // mount shape: defaults to ceiling, validated to the 3 values, kept when a save does not send it
+    expect(t.mount).toBe('ceiling')
+    const putType = (payload: any) => app.inject({ method: 'PUT', url: `/api/device-types/${t.id}`, headers: h, payload: { name: 'Switch', ...payload } })
+    expect((await putType({ mount: 'wall' })).json().mount).toBe('wall')
+    expect((await putType({})).json().mount).toBe('wall')
+    expect((await putType({ mount: 'square' })).json().mount).toBe('square')
+    expect((await putType({ mount: 'ceiling' })).json().mount).toBe('ceiling')
+    expect((await putType({ mount: 'floor' })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'POST', url: `/api/symbol-sets/${net.id}/device-types`, headers: h, payload: { name: 'Bad', mount: 'sideways' } })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'POST', url: `/api/symbol-sets/${net.id}/device-types`, headers: h, payload: { name: 'Wall box', mount: 'wall' } })).json().mount).toBe('wall')
     const acc = (await app.inject({ method: 'POST', url: '/api/products', headers: h,
       payload: { kind: 'accessory', manufacturer: 'Generic', model: 'SFP', unit_cost: '12.5', labor_hours: 0.1 } })).json()
     expect(acc).toMatchObject({ kind: 'accessory', device_type_id: null, unit_cost: 12.5 })

@@ -15,7 +15,7 @@ import { markupBounds, markupsInBox, rectFromCorners, rectsIntersect } from './s
 import { copyMarkup } from './copy'
 import type { Rect as Box } from './selection'
 import { AREA_STYLE, isBoxType } from './types'
-import { deviceIcon } from '../catalog/catalog'
+import { deviceIcon, typeMountOf } from '../catalog/catalog'
 import { DEFAULT_LEGEND, legendFields } from './legend'
 import type { LegendRow } from './legend'
 import type { Catalog } from '../catalog/catalog'
@@ -731,6 +731,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               areaPath={m.type === 'area' ? areaPaths.get(m.id) : undefined}
               symbolSet={m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined}
               iconSrc={m.type === 'device' ? deviceIcon(m, m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined, catalog) : undefined}
+              typeMount={m.type === 'device' ? typeMountOf(m, catalog) : undefined}
               showCones={showCones}
               legendRows={m.type === 'legend' ? legendRows?.get(m.id) : undefined}
               editFov={(single?.id === m.id || (selectedIds.includes(m.id) && !!stacks.byId.get(m.id) && selectedIds.every(i => stacks.byId.get(m.id)!.members.some(x => x.id === i)))) && !readOnly && tool === 'select' && !lockedIds.has(m.id)}
@@ -756,6 +757,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           <MarkupShape key={`copy-ghost:${g.id}`} markup={{ ...g, id: `copy-ghost:${g.id}` }} zoom={zoom} scale={scale} listening={false}
             symbolSet={g.symbol_set_id ? symbolSets.get(g.symbol_set_id) : undefined}
             iconSrc={g.type === 'device' ? deviceIcon(g, g.symbol_set_id ? symbolSets.get(g.symbol_set_id) : undefined, catalog) : undefined}
+            typeMount={g.type === 'device' ? typeMountOf(g, catalog) : undefined}
             showCones={showCones} areaPath={g.type === 'area' ? areaPaths.get(g.id) : undefined} />
         ))}
         {marquee && <Rect x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} listening={false}
@@ -764,11 +766,12 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           stroke="#1971c2" strokeWidth={1.5 / zoom} dash={[4 / zoom, 3 / zoom]} opacity={0.7} />}
         {devGhost && newBase.symbolSetId && symbolSets.get(newBase.symbolSetId) && (() => {
           const set = symbolSets.get(newBase.symbolSetId!)!
-          const gm = newMarkup('device', { x: devGhost.x - 12 * (props.deviceScale ?? 1), y: devGhost.y - 12 * (props.deviceScale ?? 1), width: 24 * (props.deviceScale ?? 1), height: 24 * (props.deviceScale ?? 1), rotation: 0 })
+          const ghostFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
+          const gm = newMarkup('device', { x: devGhost.x - 12 * (props.deviceScale ?? 1), y: devGhost.y - 12 * (props.deviceScale ?? 1), width: 24 * (props.deviceScale ?? 1), height: 24 * (props.deviceScale ?? 1), rotation: 0, ...(ghostFov ? { fov: ghostFov } : {}) })
           return (
             <Group opacity={0.5} listening={false}>
               <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost' }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}
-                iconSrc={deviceIcon(gm, set, catalog)} />
+                iconSrc={deviceIcon(gm, set, catalog)} typeMount={newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined} />
             </Group>
           )
         })()}

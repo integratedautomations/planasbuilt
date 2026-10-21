@@ -181,7 +181,7 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
     const res = await prepareResources(src, input.icons)
     const ex: ExportInput = {
       pdfBytes: s.pdfBytes, markups: scaleDevices(input.markups.filter(m => m.document_id === s.documentId), s.deviceScale ?? 1),
-      symbolSets: input.symbolSets, scales: s.scales, icons: input.icons,
+      symbolSets: input.symbolSets, scales: s.scales, icons: input.icons, catalog: input.catalog,
     }
     applyMarkups(src, 'flatten', ex, res)
     const copied = await out.copyPages(src, sheetPages(s).map(p => p - 1))

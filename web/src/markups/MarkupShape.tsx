@@ -4,6 +4,8 @@ import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text
 import type Konva from 'konva'
 import { FONT_MONO, FONT_UI } from './canvasFonts'
 import { cloudArcs, deviceCenter } from './geometry'
+import { iconRect, mountShape, resolveMount, wallFacing } from './mount'
+import type { Mount } from './mount'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, radiusOf, sqftOf } from './measure'
 import { STATUSES } from './types'
 import { clampAngle, COVERAGE_OPACITY, formatRange, hasCoverage, normDeg, rangeFeet, rangePx, withRangePx } from './coverage'
@@ -22,6 +24,8 @@ interface Props {
   symbolSet?: SymbolSet
   /** Icon image for a device: its device type's icon, else the set's (default). */
   iconSrc?: string
+  /** The device type's default mount shape; the device's own geometry.mount overrides it. */
+  typeMount?: Mount
   /** Names from the outermost area down to this area (area markups only). */
   areaPath?: string[]
   draggable?: boolean
@@ -55,7 +59,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 function MarkupShapeInner(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && 'width' in g && showCones && hasCoverage(g.fov) ? g.fov : undefined
@@ -79,7 +83,7 @@ function MarkupShapeInner(props: Props) {
         onDragStart={onDragStart} onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
         {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
-            : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} zoom={zoom} stack={stack} />)
+            : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} typeMount={typeMount} zoom={zoom} stack={stack} />)
           : m.type === 'legend' ? <LegendBody m={m} g={g} rows={legendRows ?? []} />
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
@@ -112,11 +116,14 @@ export function MarkupShape(props: Props) {
   return <ShapeBoundary markup={props.markup}><MarkupShapeInner {...props} /></ShapeBoundary>
 }
 
-function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeometry; set?: SymbolSet; iconSrc?: string; zoom: number; stack?: StackView }) {
+function DeviceBody({ m, g, set, iconSrc, typeMount, zoom, stack }: { m: Markup; g: BoxGeometry; set?: SymbolSet; iconSrc?: string; typeMount?: Mount; zoom: number; stack?: StackView }) {
   const icon = useImage(iconSrc ?? set?.icon)
   const color = set?.color ?? '#868e96'
   const r = Math.min(g.width, g.height) / 2
   const cx = g.width / 2, cy = g.height / 2
+  const mount = resolveMount(typeMount, g.mount)
+  const shape = mountShape(mount, r, wallFacing(g))
+  const ir = iconRect(shape)
   const statuses = stack ? stack.statuses : [m.status ?? '']
   const distinct = [...new Set(statuses)]
   const mixed = distinct.length > 1
@@ -133,8 +140,16 @@ function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeom
   const qx = cx + r * 0.8, qy = cy + r * 0.8
   return (
     <>
-      <Circle x={cx} y={cy} radius={r} fill={color} stroke="#fff" strokeWidth={r * 0.12} />
-      {icon && <KImage image={icon} x={cx - r * 0.62} y={cy - r * 0.62} width={r * 1.24} height={r * 1.24} />}
+      {mount === 'ceiling'
+        ? <Circle x={cx} y={cy} radius={r} fill={color} stroke="#fff" strokeWidth={r * 0.12} />
+        : (
+          <>
+            {/* Invisible disc-sized box: the selection box stays the same for every mount shape */}
+            <Rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} fill="transparent" listening={false} />
+            <Line x={cx} y={cy} points={shape.outline} closed fill={color} stroke="#fff" strokeWidth={r * 0.12} lineJoin="round" />
+          </>
+        )}
+      {icon && <KImage image={icon} x={cx + ir.x} y={cy + ir.y} width={ir.size} height={ir.size} />}
       {status && <Circle x={bx} y={by} radius={br} fill={status.color} stroke="#fff" strokeWidth={r * 0.08} />}
       {mixed && (
         <>
@@ -159,11 +174,13 @@ function DeviceBody({ m, g, set, iconSrc, zoom, stack }: { m: Markup; g: BoxGeom
   )
 }
 
-function LegendIcon({ src, color, size }: { src: string; color: string; size: number }) {
+function LegendIcon({ src, color, size, mount }: { src: string; color: string; size: number; mount?: Mount }) {
   const img = useImage(src || undefined)
-  return img
-    ? <KImage image={img} width={size} height={size} />
-    : <Circle x={size / 2} y={size / 2} radius={size * 0.38} fill={color} />
+  if (img) return <KImage image={img} width={size} height={size} />
+  const r = size * 0.38
+  return mount && mount !== 'ceiling'
+    ? <Line x={size / 2} y={size / 2} points={mountShape(mount, r).outline} closed fill={color} lineJoin="round" />
+    : <Circle x={size / 2} y={size / 2} radius={r} fill={color} />
 }
 
 /** Count legend: title, then one row per device type/product with icon, name, code and count. Height follows the rows. */
@@ -189,7 +206,7 @@ function LegendBody({ m, g, rows }: { m: Markup; g: BoxGeometry; rows: LegendRow
         const y = L.titleH + L.pad + i * L.rowH
         return (
           <Group key={r.key} y={y} listening={false}>
-            {s.columns.includes('icon') && <Group x={colX.icon + L.rowH * 0.1}><LegendIcon src={r.icon} color={r.color} size={L.rowH * 0.8} /></Group>}
+            {s.columns.includes('icon') && <Group x={colX.icon + L.rowH * 0.1}><LegendIcon src={r.icon} color={r.color} size={L.rowH * 0.8} mount={r.mount} /></Group>}
             {s.columns.includes('name') && <Text text={r.name} x={colX.name} width={L.widths.name - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill={ink} fontFamily={font} />}
             {s.columns.includes('code') && <Text text={r.code} x={colX.code} width={L.widths.code - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill="#495057" fontFamily={FONT_MONO} />}
             {s.columns.includes('count') && <Text text={String(r.count)} x={colX.count} width={L.widths.count - 4} height={L.rowH} align="right" verticalAlign="middle" fontSize={fs} fontStyle="bold" fill={ink} fontFamily={FONT_MONO} />}

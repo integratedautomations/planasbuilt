@@ -2,6 +2,8 @@ import { buildAreaIndex, areaIdOf, isArea } from './areas'
 import type { AreaIndex } from './areas'
 import { productLabel } from '../catalog/catalog'
 import type { Catalog } from '../catalog/catalog'
+import { resolveMount } from './mount'
+import type { Mount } from './mount'
 import type { Markup, SymbolSet } from './types'
 
 /** A legend is a box markup; its settings live in `fields`. */
@@ -50,6 +52,8 @@ export interface LegendRow {
   icon: string
   /** Colour of the symbol set. */
   color: string
+  /** The type's default mount shape (a device's own override does not split rows). */
+  mount?: Mount
   count: number
 }
 
@@ -93,7 +97,7 @@ export function legendRows(markups: Iterable<Markup>, catalog: Catalog, scope: L
       const name = byProduct ? productLabel(product) : type?.name ?? set?.name ?? 'Device'
       const withProduct = groupBy === 'type+product' && !!product
       row = {
-        key, color: set?.color ?? '#868e96', icon: type?.icon || set?.icon || '', count: 0,
+        key, color: set?.color ?? '#868e96', icon: type?.icon || set?.icon || '', mount: resolveMount(type?.mount, null), count: 0,
         name: withProduct ? `${name} - ${productLabel(product)}` : name,
         code: '',
       }

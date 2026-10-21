@@ -60,6 +60,7 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
     const iconKey = typeKey && res.icons.has(typeKey) ? typeKey : set && res.icons.has(set.id) ? set.id : undefined
     const spec = buildAnnot(m, {
       box, ppf: input.scales.get(pageNumber) ?? null, set, hasIcon: !!iconKey, textWidth: tw,
+      typeMount: m.device_type_id ? input.catalog?.types.get(m.device_type_id)?.mount : undefined,
       areaPath: areaPaths.get(m.id), countNumber: counts.get(m.id), showCones: input.showCones, legendRows: legend?.get(m.id),
     })
     if (spec) out.push({ spec, iconKey })

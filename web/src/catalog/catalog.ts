@@ -1,3 +1,4 @@
+import type { Mount } from '../markups/mount'
 import { HARDWARE_FIELDS } from '../markups/types'
 import type { FieldDef, Markup, SymbolSet } from '../markups/types'
 import type { CatalogData, DeviceType, Product } from './types'
@@ -62,6 +63,11 @@ export function defaultProductId(cat: Catalog, typeId: string | null | undefined
 export function deviceIcon(m: Pick<Markup, 'device_type_id'>, set: SymbolSet | undefined, cat: Catalog): string | undefined {
   const t = m.device_type_id ? cat.types.get(m.device_type_id) : undefined
   return t?.icon || set?.icon || undefined
+}
+
+/** The default mount shape of a device's type (undefined = no type / ceiling). */
+export function typeMountOf(m: Pick<Markup, 'device_type_id'>, cat: Catalog | undefined): Mount | undefined {
+  return m.device_type_id ? cat?.types.get(m.device_type_id)?.mount : undefined
 }
 
 /** Field defs for a device: the set's fields, then its type's extra ones (a repeated key keeps the set's). */

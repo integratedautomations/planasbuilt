@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react'
+import { MountBadge } from '../MountBadge'
+import type { Mount } from '../../markups/mount'
 import { ICON_CLASSES, classForName } from './classIcons'
-import { ICON_CATEGORIES, iconDataUrl, iconSvg, searchIcons } from './library'
+import { ICON_CATEGORIES, iconDataUrl, searchIcons } from './library'
 import type { IconCategory, IconDef } from './library'
 
 interface Props {
-  /** Category colour: icons are previewed white on a circle of this colour, the way devices draw them. */
+  /** Category colour: icons are previewed white inside the mount shape in this colour, the way devices draw them. */
   color: string
+  /** Container shape the icons are previewed in (default ceiling = circle). */
+  mount?: Mount
   onPick: (dataUrl: string, icon: IconDef) => void
   onClose: () => void
   /** The type being edited: its class is listed first. */
@@ -15,7 +19,7 @@ interface Props {
 }
 
 /** Searchable, categorised grid of the built-in device icons. Picking one returns it as a data URL. */
-export function IconPicker({ color, onPick, onClose, suggestName, original }: Props) {
+export function IconPicker({ color, mount = 'ceiling', onPick, onClose, suggestName, original }: Props) {
   const [q, setQ] = useState('')
   const [cat, setCat] = useState<IconCategory | 'All'>('All')
   const shown = useMemo(() => searchIcons(q, cat), [q, cat])
@@ -38,7 +42,7 @@ export function IconPicker({ color, onPick, onClose, suggestName, original }: Pr
         {original && (
           <div className="icon-grid">
             <button className="icon-cell" title="Original symbol from the .btx" onClick={() => onPick(original, { id: 'btx-original', name: 'Original', category: 'Generic', keywords: '', body: '' })}>
-              <span className="set-icon" style={{ background: color }}><img src={original} alt="" /></span>
+              <MountBadge mount={mount} color={color} src={original} size={40} />
               <span className="icon-name">Original (from .btx)</span>
             </button>
           </div>
@@ -48,7 +52,7 @@ export function IconPicker({ color, onPick, onClose, suggestName, original }: Pr
             <span className="icon-name" style={{ minWidth: 190 }}>{c.name}{mine === c ? ' (suggested)' : ''}</span>
             {([['A', c.a], ['B', c.b]] as const).map(([k, i]) => (
               <button key={k} className="icon-cell" title={`${c.name}, option ${k}`} aria-label={`${c.name} option ${k}`} onClick={() => pickDef(i)}>
-                <span className="set-icon" style={{ background: color }} dangerouslySetInnerHTML={{ __html: iconSvg(i, '#ffffff') }} />
+                <MountBadge mount={mount} color={color} src={iconDataUrl(i)} size={40} />
                 <span className="icon-name">Option {k}</span>
               </button>
             ))}
@@ -57,7 +61,7 @@ export function IconPicker({ color, onPick, onClose, suggestName, original }: Pr
         <div className="icon-grid">
           {shown.map(i => (
             <button key={i.id} className="icon-cell" title={i.name} aria-label={i.name} onClick={() => onPick(iconDataUrl(i), i)}>
-              <span className="set-icon" style={{ background: color }} dangerouslySetInnerHTML={{ __html: iconSvg(i, '#ffffff') }} />
+              <MountBadge mount={mount} color={color} src={iconDataUrl(i)} size={40} />
               <span className="icon-name">{i.name}</span>
             </button>
           ))}
