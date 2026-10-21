@@ -30,7 +30,9 @@ export function signalAuthExpired() {
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) { super(message); this.status = status }
+  /** The parsed JSON error body, when there was one (e.g. a 409 conflict carries the server's current row). */
+  body?: any
+  constructor(status: number, message: string, body?: any) { super(message); this.status = status; this.body = body }
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -44,7 +46,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (res.status === 401 && token) {
     signalAuthExpired()
   }
-  if (!res.ok) throw new ApiError(res.status, data.error ?? `Request failed (${res.status})`)
+  if (!res.ok) throw new ApiError(res.status, data.error ?? `Request failed (${res.status})`, data)
   return data as T
 }
 

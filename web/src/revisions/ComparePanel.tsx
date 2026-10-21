@@ -42,8 +42,13 @@ async function pixelChanges(a: PDFDocumentProxy, b: PDFDocumentProxy, onPage: (p
     c.width = width; c.height = height
     const ctx = c.getContext('2d', { willReadFrequently: true })!
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, width, height)
-    await page.render({ canvas: c, canvasContext: ctx, viewport: vp }).promise
-    return ctx.getImageData(0, 0, width, height)
+    try {
+      await page.render({ canvas: c, canvasContext: ctx, viewport: vp }).promise
+      return ctx.getImageData(0, 0, width, height)
+    } finally {
+      c.width = c.height = 0 // release the bitmap now rather than at GC
+      page.cleanup() // the render has finished: free its operator list and decoded images
+    }
   }
   for (let p = 1; p <= n; p++) {
     onPage(p, n)

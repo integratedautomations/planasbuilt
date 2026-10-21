@@ -104,27 +104,45 @@ export function Thumbnails({ pdf, current, onSelect, canEdit, onAction }: Props)
   )
 }
 
-// Renders lazily the first time the thumbnail scrolls into view.
+// Renders only while the thumbnail is (nearly) in view and frees the bitmap when it scrolls away,
+// so a long plan set never holds every page's canvas at once (iOS kills the tab when it runs out).
 function Thumb({ pdf, pageNum }: { pdf: PDFDocumentProxy; pageNum: number }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
     let task: { cancel: () => void } | null = null
-    const io = new IntersectionObserver(async entries => {
-      if (!entries[0].isIntersecting) return
-      io.disconnect()
+    let active = false
+    let run = 0
+    const release = () => {
+      active = false
+      run++
+      task?.cancel(); task = null
+      canvas.width = canvas.height = 0 // frees the bitmap; the aspect-ratio style keeps the row height
+    }
+    const draw = async () => {
+      active = true
+      const mine = ++run
       const page = await pdf.getPage(pageNum)
+      if (mine !== run) { page.cleanup(); return }
       const base = page.getViewport({ scale: 1 })
-      const vp = page.getViewport({ scale: (THUMB_WIDTH * (window.devicePixelRatio || 1)) / base.width })
+      const vp = page.getViewport({ scale: (THUMB_WIDTH * Math.min(window.devicePixelRatio || 1, 2)) / base.width })
       canvas.width = Math.floor(vp.width)
       canvas.height = Math.floor(vp.height)
+      canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`
       const t = page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport: vp })
       task = t
-      t.promise.catch(() => {})
-    })
+      try { await t.promise } catch { /* cancelled */ }
+      if (task === t) task = null
+      page.cleanup() // drop the operator list and decoded images (pdf.js defers it if another render is running)
+    }
+    const io = new IntersectionObserver(entries => {
+      const visible = entries[entries.length - 1].isIntersecting
+      if (visible && !active) void draw().catch(() => { active = false })
+      else if (!visible && active) release()
+    }, { root: canvas.closest('.thumbs'), rootMargin: '300px 0px' })
     io.observe(canvas)
-    return () => { io.disconnect(); task?.cancel() }
+    return () => { io.disconnect(); release() }
   }, [pdf, pageNum])
   return <canvas ref={ref} className="thumb-canvas" />
 }

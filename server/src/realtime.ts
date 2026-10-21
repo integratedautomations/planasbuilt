@@ -24,6 +24,8 @@ export interface Conn extends Peer {
   socket: WebSocket
   documentId: string | null
   alive: boolean
+  /** Set by remove(): a socket that is gone must never be put back into a room. */
+  removed?: boolean
   windowStart: number
   windowCount: number
 }
@@ -60,6 +62,7 @@ export class Realtime {
   }
 
   remove(c: Conn) {
+    c.removed = true
     this.leave(c)
     this.conns.delete(c)
   }
@@ -94,14 +97,14 @@ export class Realtime {
   pong(c: Conn) { this.send(c, { type: 'pong' }) }
 
   join(c: Conn, documentId: string) {
-    if (c.documentId === documentId) return
+    if (c.removed || c.documentId === documentId) return
     this.leave(c)
     c.documentId = documentId
     c.page = null; c.cursor = null; c.selection = []; c.viewport = null; c.marquee = null
     let room = this.rooms.get(documentId)
     if (!room) this.rooms.set(documentId, (room = new Set()))
     room.add(c)
-    this.send(c, { type: 'peers', peers: [...room].filter(p => p !== c).map(Realtime.peerOf) })
+    this.send(c, { type: 'peers', peers: [...room].filter(p => p !== c && p.clientId !== c.clientId).map(Realtime.peerOf) })
     this.toRoom(documentId, { type: 'peer', peer: Realtime.peerOf(c) }, null, c)
   }
 
@@ -112,6 +115,8 @@ export class Realtime {
     const room = this.rooms.get(id)
     room?.delete(c)
     if (room && !room.size) this.rooms.delete(id)
+    // A reconnect can join before the old socket's close arrives: the peer (same clientId) is still here, so no leave.
+    if (room && [...room].some(o => o.clientId === c.clientId)) return
     this.toRoom(id, { type: 'leave', clientId: c.clientId })
   }
 

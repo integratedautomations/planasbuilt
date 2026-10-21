@@ -54,9 +54,13 @@ export const ComparePane = forwardRef<PaneHandle, Props>(function ComparePane(
   useEffect(() => {
     if (!pdf) { setPage(null); return }
     let cancelled = false
-    pdf.getPage(n).then(p => { if (!cancelled) setPage(p) })
-    return () => { cancelled = true }
+    let got: PDFPageProxy | null = null
+    pdf.getPage(n).then(p => { got = p; if (!cancelled) setPage(p) })
+    return () => { cancelled = true; got?.cleanup() } // pdf.js defers this while a render is running
   }, [pdf, n])
+
+  // Release the visible bitmap when the pane goes away (matters on iOS).
+  useEffect(() => () => { const c = canvasRef.current; if (c) c.width = c.height = 0 }, [])
 
   useEffect(() => {
     const el = viewportRef.current
@@ -88,8 +92,9 @@ export const ComparePane = forwardRef<PaneHandle, Props>(function ComparePane(
   useEffect(() => {
     if (!overlayPdf) { setOverlayPage(null); return }
     let cancelled = false
-    overlayPdf.getPage(Math.min(Math.max(1, pageNum), overlayPdf.numPages)).then(p => { if (!cancelled) setOverlayPage(p) })
-    return () => { cancelled = true }
+    let got: PDFPageProxy | null = null
+    overlayPdf.getPage(Math.min(Math.max(1, pageNum), overlayPdf.numPages)).then(p => { got = p; if (!cancelled) setOverlayPage(p) })
+    return () => { cancelled = true; got?.cleanup() }
   }, [overlayPdf, pageNum])
 
   useEffect(() => {
@@ -98,10 +103,14 @@ export const ComparePane = forwardRef<PaneHandle, Props>(function ComparePane(
     const vp = page.getViewport({ scale })
     const w = Math.floor(vp.width), h = Math.floor(vp.height)
     const tasks: { cancel: () => void }[] = []
+    const temps: HTMLCanvasElement[] = []
+    let cancelled = false
     const draw = async (p: PDFPageProxy, fitWidth: number) => {
+      if (cancelled) throw new Error('cancelled')
       const own = p.getViewport({ scale: 1 })
       const v = p.getViewport({ scale: scale * (fitWidth / own.width) })
       const c = document.createElement('canvas')
+      temps.push(c)
       c.width = w; c.height = h
       const task = p.render({ canvas: c, canvasContext: c.getContext('2d')!, viewport: v })
       tasks.push(task)
@@ -110,30 +119,34 @@ export const ComparePane = forwardRef<PaneHandle, Props>(function ComparePane(
     }
     ;(async () => {
       const base = await draw(page, page.getViewport({ scale: 1 }).width)
-      let out = base
-      if (overlayPage) {
-        const top = await draw(overlayPage, page.getViewport({ scale: 1 }).width)
+      const top = overlayPage ? await draw(overlayPage, page.getViewport({ scale: 1 }).width) : null
+      if (top) {
         for (const [c, tint] of [[base, 'red'], [top, 'cyan']] as const) {
           const ctx = c.getContext('2d')!
           const img = ctx.getImageData(0, 0, w, h)
           tintInk(img.data, tint)
           ctx.putImageData(img, 0, 0)
         }
-        out = document.createElement('canvas')
-        out.width = w; out.height = h
-        const ctx = out.getContext('2d')!
+      }
+      const c = canvasRef.current
+      if (!c) return
+      c.width = w; c.height = h
+      const ctx = c.getContext('2d')!
+      if (top) { // composite straight into the visible canvas, no third offscreen canvas
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h)
         ctx.drawImage(base, 0, 0)
         ctx.globalCompositeOperation = 'multiply'
         ctx.globalAlpha = overlayOpacity
         ctx.drawImage(top, 0, 0)
+      } else {
+        ctx.drawImage(base, 0, 0)
       }
-      const c = canvasRef.current
-      if (!c) return
-      c.width = out.width; c.height = out.height
-      c.getContext('2d')!.drawImage(out, 0, 0)
-    })().catch(() => { /* cancelled */ })
-    return () => tasks.forEach(t => t.cancel())
+    })().catch(() => { /* cancelled */ }).finally(() => {
+      for (const t of temps) t.width = t.height = 0 // release the offscreen bitmaps now rather than at GC
+      page.cleanup()
+      overlayPage?.cleanup()
+    })
+    return () => { cancelled = true; tasks.forEach(t => t.cancel()) }
   }, [page, overlayPage, overlayOpacity, settledZoom])
 
   const pageMarkups = useMemo(() => markups.filter(m => m.page === n), [markups, n])

@@ -25,7 +25,8 @@
  * Observing
  *  - `subscribe(fn)`: SyncEvent stream ('markup-adopted', 'attachment-adopted', 'item-done',
  *    'auth-required', 'changed'). `getSnapshot()` + `subscribeSnapshot()` back `useSyncStatus()`.
- *  - `hasPending(targetId)` / `pendingMarkupIds(docId)`: tell whether a local row has unsent edits.
+ *  - `hasPending(targetId)` / `pendingMarkupIds(docId)`: tell whether a local row has unsent edits. Failed items
+ *    do not count: they stay in the list for retry/discard but never freeze the row against remote changes.
  *
  * Live sync hook-in
  *  - A remote change (WebSocket push) should go through `applyRemoteMarkup(row)` /
@@ -137,7 +138,7 @@ export function configure(opts: { executor?: Executor; autoRetry?: boolean; fetc
 export function resetSyncState() {
   reachable = true; syncing = false; authRequired = false; inflightSeq = null; currentUser = null
   if (retryTimer) clearTimeout(retryTimer)
-  retryTimer = null; draining = null; rerun = false; skippedRemote.clear()
+  retryTimer = null; draining = null; rerun = false; skippedRemote.clear(); ackedAt.clear(); ackClock = 0
   snapshot = { online: true, pending: 0, failed: 0, syncing: false, authRequired: false, failedItems: [], foreign: null }
 }
 
@@ -167,7 +168,8 @@ export async function addToOutbox(input: Pick<OutboxItem, 'kind' | 'docId' | 'ta
   // Never fold this user's edit into an item another user queued: ownership must stay with the author.
   if (last && last.status === 'pending' && last.seq !== inflightSeq && !isForeign(last, currentUser)) {
     if (last.kind === input.kind && REPLACE_KINDS.has(input.kind)) {
-      await db.outbox.update(last.seq!, { payload: input.payload, attempts: 0, lastError: '' })
+      const payload = input.kind === 'markup_put' ? carryPutMeta(last.payload, input.payload) : input.payload
+      await db.outbox.update(last.seq!, { payload, attempts: 0, lastError: '' })
       return last.seq!
     }
     if (input.kind === 'markup_delete' && last.kind === 'markup_put') await db.outbox.delete(last.seq!)
@@ -176,6 +178,18 @@ export async function addToOutbox(input: Pick<OutboxItem, 'kind' | 'docId' | 'ta
     ...input, attempts: 0, lastError: '', status: 'pending', createdAt: Date.now(),
     ...(currentUser ? { userId: currentUser.id, userName: currentUser.name } : {}),
   })) as number
+}
+
+/**
+ * Folding a newer markup_put into a queued one keeps what the queued one knew about the server: the version the
+ * edits are based on (the oldest one counts) and an explicit restore.
+ */
+export function carryPutMeta(prev: any, next: any) {
+  const out = { ...next }
+  const base = typeof prev?.base_version === 'number' ? prev.base_version : next?.base_version
+  if (typeof base === 'number') out.base_version = base
+  if (prev?.restore === true || next?.restore === true) out.restore = true
+  return out
 }
 
 function afterWrite() {
@@ -192,11 +206,21 @@ export function markupBody(m: Markup) {
   }
 }
 
-export function queueMarkupPut(docId: string, m: Markup) {
+/**
+ * Save a markup locally and queue the PUT. The body carries `base_version` (the server version this edit was made
+ * on top of) so the server can refuse to resurrect a markup deleted meanwhile or undo a page move/rotation.
+ * `restore` = the user explicitly brings the markup back (undo of a delete / redo of a create): never refused.
+ */
+export function queueMarkupPut(docId: string, m: Markup, opts: { restore?: boolean } = {}) {
   return serial(async () => {
     await db.transaction('rw', db.markups, db.outbox, async () => {
+      const prev = await db.markups.get(m.id)
+      const base = prev?.version ?? m.version
       await db.markups.put(m)
-      await addToOutbox({ kind: 'markup_put', docId, targetId: m.id, payload: markupBody(m) })
+      await addToOutbox({
+        kind: 'markup_put', docId, targetId: m.id,
+        payload: { ...markupBody(m), ...(typeof base === 'number' ? { base_version: base } : {}), ...(opts.restore ? { restore: true } : {}) },
+      })
     })
     afterWrite()
   })
@@ -313,29 +337,79 @@ export function queueScaleDelete(docId: string, page: number) {
 
 // ---------------------------------------------------------------- queries
 
+/** True while something for this target is still going to be sent. Failed items (waiting for retry/discard) do not count. */
 export async function hasPending(targetId: string) {
-  return (await db.outbox.where('targetId').equals(targetId).count()) > 0
+  return (await db.outbox.where('targetId').equals(targetId).filter(i => i.status === 'pending').count()) > 0
 }
 
-/** Ids of markups in `docId` with unsent local changes (put or delete). */
+/** Ids of markups in `docId` with unsent local changes (put or delete). Failed items do not count. */
 export async function pendingMarkupIds(docId: string): Promise<Set<string>> {
   const items = await db.outbox.where('docId').equals(docId).toArray()
-  return new Set(items.filter(i => i.kind === 'markup_put' || i.kind === 'markup_delete').map(i => i.targetId))
+  return new Set(items.filter(i => i.status === 'pending' && (i.kind === 'markup_put' || i.kind === 'markup_delete')).map(i => i.targetId))
+}
+
+/** Ids of markups in `docId` whose save failed for good (kept visible for retry/discard). */
+export async function failedMarkupIds(docId: string): Promise<Set<string>> {
+  const items = await db.outbox.where('docId').equals(docId).toArray()
+  return new Set(items.filter(i => i.status === 'failed' && i.kind === 'markup_put').map(i => i.targetId))
+}
+
+// ---------------------------------------------------------------- acknowledgements
+
+/**
+ * Per-markup "the server acknowledged our write" counter. A list fetched from the server may have been computed
+ * before one of our writes landed; taking `ackSnapshot()` before the request and asking `ackedSince` afterwards
+ * tells which markups changed under it, so the older list does not overwrite them (the outbox item is already
+ * gone by then, so the outbox alone cannot tell).
+ */
+let ackClock = 0
+const ackedAt = new Map<string, number>()
+const ACK_KEEP = 5000
+
+export function ackSnapshot(): number { return ackClock }
+export function ackedSince(id: string, snapshot: number): boolean { return (ackedAt.get(id) ?? 0) > snapshot }
+function noteAck(id: string) {
+  ackedAt.delete(id)
+  ackedAt.set(id, ++ackClock)
+  if (ackedAt.size > ACK_KEEP) for (const k of ackedAt.keys()) { ackedAt.delete(k); if (ackedAt.size <= ACK_KEEP * 0.8) break }
 }
 
 // ---------------------------------------------------------------- server data -> Dexie (read & live sync)
 
 /**
- * Replace Dexie's copy of a document's markups with the server's list, except markups that have
- * unsent local edits. Returns the resulting local list.
+ * Decide what a server list does to the local copy (pure).
+ *  - a server row replaces the local one, except when the markup has unsent edits (`pending`), was acknowledged after
+ *    the list was requested (`acked`), or the local row is already newer than the server's;
+ *  - a local row the server does not list is removed, except when it is pending/acked or its save failed (`failed`:
+ *    it never reached the server, so absence says nothing; it stays for retry/discard).
  */
-export async function mergeServerMarkups(docId: string, rows: Markup[]): Promise<Markup[]> {
+export function planMerge(
+  local: Map<string, Markup>, rows: Markup[], pending: Set<string>, failed: Set<string>, acked: (id: string) => boolean,
+): { put: Markup[]; remove: string[] } {
+  const protectedId = (id: string) => pending.has(id) || acked(id)
+  const listed = new Set(rows.map(r => r.id))
+  const put = rows.filter(r => {
+    if (protectedId(r.id)) return false
+    const mine = local.get(r.id)
+    return !(mine && (mine.version ?? 0) > (r.version ?? 0))
+  })
+  const remove = [...local.keys()].filter(id => !listed.has(id) && !protectedId(id) && !failed.has(id))
+  return { put, remove }
+}
+
+/**
+ * Merge the server's list of a document's markups into Dexie, keeping markups that have unsent local edits,
+ * were acknowledged since `ackSince` (take it with `ackSnapshot()` before requesting the list) or are newer locally.
+ * Returns the resulting local list.
+ */
+export async function mergeServerMarkups(docId: string, rows: Markup[], ackSince?: number): Promise<Markup[]> {
   return db.transaction('rw', db.markups, db.outbox, async () => {
     const pending = await pendingMarkupIds(docId)
-    const keep = new Set(rows.map(r => r.id))
-    const stale = (await db.markups.where('document_id').equals(docId).primaryKeys()).filter(id => !keep.has(id) && !pending.has(id))
-    await db.markups.bulkDelete(stale)
-    await db.markups.bulkPut(rows.filter(r => !pending.has(r.id)))
+    const failed = await failedMarkupIds(docId)
+    const local = new Map((await db.markups.where('document_id').equals(docId).toArray()).map(m => [m.id, m]))
+    const plan = planMerge(local, rows, pending, failed, id => ackSince !== undefined && ackedSince(id, ackSince))
+    await db.markups.bulkDelete(plan.remove)
+    await db.markups.bulkPut(plan.put)
     return db.markups.where('document_id').equals(docId).toArray()
   })
 }
@@ -374,10 +448,12 @@ async function reconcileSkipped(id: string) {
   if (!docId || (await hasPending(id))) return
   skippedRemote.delete(id)
   let rows: Markup[]
+  const acked = ackSnapshot()
   try { rows = await fetchMarkupList(docId) } catch { skippedRemote.set(id, docId); return } // retried after the next item
   const server = rows.find(r => r.id === id)
   const changed = await db.transaction('rw', db.markups, db.outbox, async () => {
     if (await hasPending(id)) { skippedRemote.set(id, docId); return false }
+    if (ackedSince(id, acked)) return false // our own write landed after the list was requested
     const local = await db.markups.get(id)
     if (!server) { if (!local) return false; await db.markups.delete(id); return true }
     if (!local || (server.version ?? 0) > (local.version ?? 0)) { await db.markups.put(server); return true }
@@ -447,6 +523,12 @@ async function adopt(item: OutboxItem, result: unknown) {
       const tag = saved.tag && (!local.tag || local.tag === sentTag) ? saved.tag : local.tag
       await db.markups.put({ ...local, tag, version, created_by, created_by_name, created_at, updated_by, updated_by_name, updated_at })
     })
+    // Edits queued behind this one were made on top of it: they are based on the version just saved.
+    if (typeof saved.version === 'number') {
+      await db.outbox.where('targetId').equals(item.targetId)
+        .filter(i => i.kind === 'markup_put' && i.seq !== item.seq && i.payload && !i.payload.restore)
+        .modify(i => { i.payload = { ...i.payload, base_version: saved.version } })
+    }
     emit({ type: 'markup-adopted', docId: item.docId, id: item.targetId, saved, sentTag })
   } else if (item.kind === 'photo_post') {
     const rec = result as Attachment
@@ -510,8 +592,14 @@ async function drainOnce() {
       const cls = classifyError(e)
       const treatAsDone = cls === 'permanent' && (e as ApiError).status === 404 && item.kind.endsWith('_delete')
       if (treatAsDone) { await finish(item, undefined); continue }
+      // The server refused to overwrite a markup that was deleted / moved / rotated after the version this edit was based on.
+      if (cls === 'permanent' && (e as ApiError).status === 409 && item.kind === 'markup_put' && (e as ApiError).body?.conflict && (e as ApiError).body.current) {
+        try { await resolveConflict(item, (e as ApiError).body.current); continue } catch (err) { console.error('conflict handling failed', err) }
+      }
       // The markup the photo belonged to is gone on the server: nothing to attach to, drop the photo quietly.
-      if (cls === 'permanent' && (e as ApiError).status === 404 && item.kind === 'photo_post') { await dropPhoto(item); continue }
+      // But while a save of that markup is still in the outbox (failed or not) the 404 only means it never got there:
+      // keep the photo (marked failed below, so the user can retry it once the markup is saved).
+      if (cls === 'permanent' && (e as ApiError).status === 404 && item.kind === 'photo_post' && !(await hasMarkupPut(item.payload?.markupId))) { await dropPhoto(item); continue }
       const attempts = item.attempts + 1
       if (cls === 'permanent') {
         await db.outbox.update(item.seq!, { status: 'failed', attempts, lastError: msg })
@@ -537,6 +625,8 @@ async function drainOnce() {
 }
 
 async function finish(item: OutboxItem, result: unknown) {
+  // Note the acknowledgement BEFORE the outbox item disappears, so a concurrent merge sees one or the other.
+  if (item.kind === 'markup_put' || item.kind === 'markup_delete') noteAck(item.targetId)
   try { await adopt(item, result) } catch (e) { console.error('adopt failed', e) }
   // Only drop what we actually sent: if the stored item changed meanwhile, keep it to be sent again.
   const cur = await db.outbox.get(item.seq!)
@@ -546,6 +636,45 @@ async function finish(item: OutboxItem, result: unknown) {
   if (item.kind === 'markup_put' || item.kind === 'markup_delete') {
     try { await reconcileSkipped(item.targetId) } catch (e) { console.error('reconcile failed', e) }
   }
+  await refreshSnapshot()
+}
+
+/** Is a save of this markup still in the outbox (pending or failed)? */
+async function hasMarkupPut(markupId: string | undefined) {
+  if (!markupId) return false
+  return (await db.outbox.where('targetId').equals(markupId).filter(i => i.kind === 'markup_put').count()) > 0
+}
+
+const MAX_CONFLICT_RETRIES = 5
+
+/**
+ * The server refused a markup_put (409 conflict, `current` = its row now). If the markup was deleted there, our edit
+ * cannot apply: drop it and the local row. If a page operation moved/rotated it, take the server's page and geometry and
+ * keep everything else the user changed (text, style, status, fields, photos...), then send it again on top of that.
+ */
+async function resolveConflict(item: OutboxItem, current: Markup & { deleted?: boolean }) {
+  const id = item.targetId
+  await db.transaction('rw', db.markups, db.outbox, async () => {
+    const siblings = (await db.outbox.where('targetId').equals(id).toArray()).filter(i => i.kind === 'markup_put' && i.seq !== item.seq)
+    if (current.deleted) {
+      await db.outbox.bulkDelete([item.seq!, ...siblings.map(i => i.seq!)])
+      await db.markups.delete(id)
+      return
+    }
+    const local = await db.markups.get(id)
+    const { deleted: _deleted, ...server } = current
+    await db.markups.put(local
+      ? { ...local, page: server.page, geometry: server.geometry, version: server.version, updated_by: server.updated_by, updated_by_name: server.updated_by_name, updated_at: server.updated_at }
+      : server as Markup)
+    const fix = (p: any) => ({ ...p, page: server.page, geometry: server.geometry, base_version: server.version })
+    for (const s of siblings) await db.outbox.update(s.seq!, { payload: fix(s.payload) })
+    const attempts = item.attempts + 1
+    if (attempts >= MAX_CONFLICT_RETRIES)
+      await db.outbox.update(item.seq!, { status: 'failed', attempts, lastError: 'The plan keeps changing under this markup' })
+    else await db.outbox.update(item.seq!, { payload: fix(item.payload), attempts, lastError: '' })
+  })
+  noteAck(id)
+  emit({ type: 'remote-markups', docId: item.docId, ids: [id] })
   await refreshSnapshot()
 }
 
@@ -582,7 +711,12 @@ export function resumeSync() {
 }
 
 export async function retryItem(seq: number) {
+  const item = await db.outbox.get(seq)
   await db.outbox.update(seq, { status: 'pending', attempts: 0, lastError: '' })
+  // Photos that were waiting for this markup to be saved get another go too.
+  if (item?.kind === 'markup_put')
+    await db.outbox.where('status').equals('failed').filter(i => i.kind === 'photo_post' && i.payload?.markupId === item.targetId)
+      .modify({ status: 'pending', attempts: 0, lastError: '' })
   reachable = true
   await refreshSnapshot()
   void drain()

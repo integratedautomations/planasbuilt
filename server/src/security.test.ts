@@ -186,7 +186,7 @@ describe('websocket access follows the database', () => {
 })
 
 describe('tags', () => {
-  it('allocates unique numbers under concurrency, ignores odd suffixes and rejects duplicate client tags', async () => {
+  it('allocates unique numbers under concurrency, ignores odd suffixes and renumbers duplicate client tags', async () => {
     const project = (await api('POST', '/api/projects', admin, { name: 'Tags' })).json().id
     const doc = (await upload(`/api/projects/${project}/documents`, admin, mp({}, await makePdf(1)))).json().id
     const set = (await api('GET', '/api/symbol-sets', admin)).json().find((s: any) => s.tag_prefix === 'CAM')
@@ -201,8 +201,9 @@ describe('tags', () => {
     expect([...tags].sort()).toEqual(['CAM-01', 'CAM-02', 'CAM-03', 'CAM-04', 'CAM-05', 'CAM-06', 'CAM-07', 'CAM-08'])
     // duplicate client-chosen tag
     const dup = await api('PUT', `/api/documents/${doc}/markups/00000000-0000-4000-8000-0000000001ff`, admin, body({ tag: 'CAM-03' }))
-    expect(dup.statusCode).toBe(409)
-    expect(dup.json().error).toBe('Tag already used')
+    // a clash is renumbered, not rejected: a permanent failure would strand the photos queued behind it
+    expect(dup.statusCode).toBe(200)
+    expect(dup.json().tag).toBe('CAM-09')
     // an update that resends its own tag, or a blank one, keeps it
     const keep = await api('PUT', `/api/documents/${doc}/markups/${ids[2]}`, admin, body({ tag: tags[2] }))
     expect(keep.json().tag).toBe(tags[2])

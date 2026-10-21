@@ -60,7 +60,7 @@ describe('connection', () => {
     expect(socket.getStatus()).toBe('live')
     expect(ws.sent[0]).toEqual({ type: 'join', documentId: 'd1' })
     await settle()
-    expect(catchUp).toHaveBeenCalledWith('d1')
+    expect(catchUp).toHaveBeenCalledWith('d1', expect.any(AbortSignal))
   })
 
   it('does not connect without a token', () => {
@@ -105,6 +105,58 @@ describe('connection', () => {
     last().recv({ type: 'pong' })
     await settle(25_000)
     expect(last().sent).toHaveLength(2)
+  })
+})
+
+describe('catch-up', () => {
+  it('times out a stuck catch-up so other messages are not held up forever, aborting its request', async () => {
+    let signal: AbortSignal | undefined
+    socket.configureSocket({ catchUpTimeoutMs: 500, catchUp: (_id, s) => { signal = s; return new Promise<void>(() => {}) } })
+    socket.joinDocument('d1')
+    const ws = last()
+    ws.open()
+    const seen: any[] = []
+    socket.on('markup', m => seen.push(m))
+    ws.recv({ type: 'markup', op: 'upsert', by: 'Dana', markup: { id: 'm9', document_id: 'd1', page: 1, type: 'device' } })
+    await settle(100)
+    expect(seen).toHaveLength(0) // still waiting for the catch-up, as designed
+    await settle(500)
+    expect(signal?.aborted).toBe(true)
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    expect((await db.markups.get('m9'))?.id).toBe('m9')
+  })
+
+  it('retries a failed catch-up later without blocking, then announces the resync', async () => {
+    const resyncs: any[] = []
+    socket.on('resync', m => resyncs.push(m))
+    catchUp.mockRejectedValueOnce(new Error('offline'))
+    socket.joinDocument('d1')
+    last().open()
+    await settle()
+    expect(catchUp).toHaveBeenCalledTimes(1)
+    expect(resyncs).toHaveLength(0)
+    await settle(4500)
+    expect(catchUp).toHaveBeenCalledTimes(2)
+    expect(resyncs).toEqual([{ type: 'resync', documentId: 'd1' }])
+  })
+})
+
+describe('disconnect (sign-out)', () => {
+  it('closes the socket and forgets it, so the next connect() opens a fresh one', async () => {
+    socket.joinDocument('d1')
+    const first = last()
+    first.open()
+    expect(socket.getStatus()).toBe('live')
+    socket.disconnect()
+    expect(first.readyState).toBe(3)
+    expect(socket.getStatus()).toBe('idle')
+    await settle(60_000)
+    expect(MockWS.instances).toHaveLength(1) // no reconnect as the old user
+    store['planmark.token'] = 'tok-next-user'
+    socket.connect()
+    expect(MockWS.instances).toHaveLength(2)
+    expect(last().url).toContain('token=tok-next-user')
+    expect(last()).not.toBe(first)
   })
 })
 

@@ -11,6 +11,7 @@ import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
 import { Db } from './db.js'
 import { Realtime } from './realtime.js'
+import type { Conn } from './realtime.js'
 import { Storage, validateS3Config } from './storage.js'
 import type { S3Factory } from './storage.js'
 import { getSection, storageConfigOf } from './settings.js'
@@ -210,33 +211,49 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   // ---- Realtime ----
-  app.get('/api/ws', { websocket: true }, async (socket, req) => {
+  app.get('/api/ws', { websocket: true }, (socket, req) => {
     const q = (req.query ?? {}) as any
-    // Browsers cannot set headers on a WebSocket, so the token (login or file token) rides in the query string.
-    const user = await authenticate(String(q.token ?? q.ft ?? ''), 'any').catch(() => null)
-    if (!user) { socket.close(4401, 'Invalid token'); return }
-    const [u] = await db.query("SELECT name, avatar_key, avatar_version FROM users WHERE id = $1 AND status = 'active'", [user.id])
-    if (!u) { socket.close(4401, 'Invalid token'); return }
-    const conn = realtime.add(socket, {
-      clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
-      userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null,
+    let closed = false
+    let conn: Conn | null = null
+    // Handlers are attached synchronously (a message sent in the client's onopen must not be lost, and a socket that
+    // closes while we authenticate must still be cleaned up); everything else waits for this promise.
+    const ready = (async () => {
+      // Browsers cannot set headers on a WebSocket, so the token (login or file token) rides in the query string.
+      const user = await authenticate(String(q.token ?? q.ft ?? ''), 'any').catch(() => null)
+      if (!user) { socket.close(4401, 'Invalid token'); return null }
+      const [u] = await db.query("SELECT name, avatar_key, avatar_version FROM users WHERE id = $1 AND status = 'active'", [user.id])
+      if (!u) { socket.close(4401, 'Invalid token'); return null }
+      if (closed) return null
+      conn = realtime.add(socket, {
+        clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
+        userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null,
+      })
+      return { user, conn }
+    })().catch(() => { try { socket.close(4401, 'Invalid token') } catch { /* going away */ } return null })
+    // Messages are handled one at a time, in arrival order (a presence update must not overtake the join before it).
+    let queue: Promise<unknown> = ready
+    socket.on('message', (data) => {
+      queue = queue.then(async () => {
+        const ctx = await ready
+        if (!ctx || closed) return
+        const { user, conn } = ctx
+        let m: any
+        try { m = JSON.parse(String(data)) } catch { return realtime.error(conn, 'Bad message') }
+        if (!m || typeof m !== 'object') return realtime.error(conn, 'Bad message')
+        if (m.type === 'ping') realtime.pong(conn)
+        else if (m.type === 'presence') realtime.presence(conn, m)
+        else if (m.type === 'join') {
+          try {
+            const id = String(m.documentId ?? '')
+            const [doc] = UUID_RE.test(id) ? await db.query('SELECT project_id FROM documents WHERE id = $1', [id]) : []
+            if (!doc || !(await projectRole(user.id, doc.project_id))) return realtime.error(conn, 'Not allowed')
+            if (closed) return
+            realtime.join(conn, id)
+          } catch { realtime.error(conn, 'Join failed') }
+        }
+      }).catch(() => {})
     })
-    socket.on('message', async (data) => {
-      let m: any
-      try { m = JSON.parse(String(data)) } catch { return realtime.error(conn, 'Bad message') }
-      if (!m || typeof m !== 'object') return realtime.error(conn, 'Bad message')
-      if (m.type === 'ping') realtime.pong(conn)
-      else if (m.type === 'presence') realtime.presence(conn, m)
-      else if (m.type === 'join') {
-        try {
-          const id = String(m.documentId ?? '')
-          const [doc] = UUID_RE.test(id) ? await db.query('SELECT project_id FROM documents WHERE id = $1', [id]) : []
-          if (!doc || !(await projectRole(user.id, doc.project_id))) return realtime.error(conn, 'Not allowed')
-          realtime.join(conn, id)
-        } catch { realtime.error(conn, 'Join failed') }
-      }
-    })
-    socket.on('close', () => realtime.remove(conn))
+    socket.on('close', () => { closed = true; if (conn) realtime.remove(conn) })
     socket.on('error', () => socket.terminate())
   })
 
@@ -656,7 +673,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       const liveRows = await q<{ id: string }>('SELECT id FROM markups WHERE document_id = $1 AND NOT deleted', [doc.id])
       const removed = liveRows.filter(r => !keep.has(r.id)).map(r => r.id)
       if (removed.length) {
-        await q('UPDATE markups SET deleted = true, version = version + 1, updated_by = $2, updated_at = now() WHERE id = ANY($1::uuid[])', [removed, userId])
+        await q('UPDATE markups SET deleted = true, version = version + 1, struct_version = version + 1, updated_by = $2, updated_at = now() WHERE id = ANY($1::uuid[])', [removed, userId])
         await q(`INSERT INTO markup_events (markup_id, user_id, action, changes)
                  SELECT unnest($1::uuid[]), $2, 'deleted', $3::jsonb`, [removed, userId, JSON.stringify({ reason: `restored Rev ${src.revision}` })])
       }
@@ -667,7 +684,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
            ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
              style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id, symbol_set_id = EXCLUDED.symbol_set_id,
              device_type_id = EXCLUDED.device_type_id, product_id = EXCLUDED.product_id, tag = EXCLUDED.tag, status = EXCLUDED.status,
-             fields = EXCLUDED.fields, deleted = false, version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+             fields = EXCLUDED.fields, deleted = false, version = markups.version + 1, struct_version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`,
           [m.id, doc.id, m.page, m.type, JSON.stringify(m.geometry), JSON.stringify(m.style ?? {}), m.text ?? '',
             layers.has(m.layer_id) ? m.layer_id : null, sets.has(m.symbol_set_id) ? m.symbol_set_id : null, m.tag ?? '', m.status ?? '',
             JSON.stringify(m.fields ?? {}), m.created_by ?? userId, userId,
@@ -754,7 +771,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         // One statement, so pages that swap or shift never collide with each other.
         await q(
           `UPDATE markups m SET page = CASE WHEN t.np > 0 THEN t.np ELSE m.page END, deleted = (t.np = 0),
-             version = m.version + 1, updated_by = $4, updated_at = now()
+             version = m.version + 1, struct_version = m.version + 1, updated_by = $4, updated_at = now()
            FROM unnest($2::int[], $3::int[]) AS t(op, np)
            WHERE m.document_id = $1 AND NOT m.deleted AND m.page = t.op AND t.np <> t.op`, [doc.id, from, to, req.user.id])
         const scales = await q('SELECT page, points_per_foot, label, updated_by FROM page_scales WHERE document_id = $1', [doc.id])
@@ -771,7 +788,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         for (const m of rows) {
           const size = sizes[m.page - 1]
           if (!size) continue
-          await q('UPDATE markups SET geometry = $2, version = version + 1, updated_by = $3, updated_at = now() WHERE id = $1',
+          await q('UPDATE markups SET geometry = $2, version = version + 1, struct_version = version + 1, updated_by = $3, updated_at = now() WHERE id = $1',
             [m.id, JSON.stringify(rotateGeometry(m.geometry, op.degrees, size.width, size.height)), req.user.id])
         }
       }
@@ -1320,7 +1337,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     }))
   })
 
-  // Upsert by client-generated id. Last write wins; version increases on every save.
+  // Upsert by client-generated id. Last write wins; version increases on every save. Exceptions (only when the client
+  // sends `base_version`, the version its edit was based on): if the markup was deleted, or moved/rotated/restored by a
+  // page operation, after that version, the edit is NOT applied and the answer is 409 { conflict: true, current } so
+  // the client can adopt the server's page/geometry. `restore: true` (undo of a delete) skips that check.
   app.put('/api/documents/:id/markups/:markupId', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'editor')
     if (!doc) return
@@ -1329,21 +1349,22 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!/^[0-9a-f-]{36}$/i.test(markupId)) return reply.code(400).send({ error: 'Bad markup id' })
     if (!b.type || !b.geometry || !Number.isInteger(b.page) || b.page < 1 || b.page > 1_000_000)
       return reply.code(400).send({ error: 'type, page and geometry are required' })
-    const [existing] = await db.query('SELECT * FROM markups WHERE id = $1', [markupId])
-    if (existing && existing.document_id !== doc.id) return reply.code(409).send({ error: 'Markup belongs to another document' })
-    if (b.layer_id) {
+    // References that were deleted meanwhile fall back to null (like a revision restore does) instead of failing
+    // the whole save: a permanent failure here would also strand the photos queued behind it.
+    let layerId: string | null = null
+    if (b.layer_id && uuidRe.test(String(b.layer_id))) {
       const [layer] = await db.query('SELECT project_id FROM layers WHERE id = $1', [b.layer_id])
-      if (!layer || layer.project_id !== doc.project_id) return reply.code(400).send({ error: 'Unknown layer' })
+      if (layer && layer.project_id === doc.project_id) layerId = b.layer_id
     }
     const status = String(b.status ?? '')
     if (!STATUSES.includes(status)) return reply.code(400).send({ error: 'Bad status' })
-    let tag = String(b.tag ?? '').trim().slice(0, 100)
-    let autoPrefix: string | null = null
+    const clientTag = String(b.tag ?? '').trim().slice(0, 100)
+    let prefix: string | null = null
     let deviceTypeId: string | null = null, productId: string | null = null
     if (b.symbol_set_id) {
-      const [set] = await db.query('SELECT tag_prefix FROM symbol_sets WHERE id = $1', [b.symbol_set_id])
+      const [set] = uuidRe.test(String(b.symbol_set_id)) ? await db.query('SELECT tag_prefix FROM symbol_sets WHERE id = $1', [b.symbol_set_id]) : []
       if (!set) return reply.code(400).send({ error: 'Unknown symbol set' })
-      let prefix = set.tag_prefix
+      prefix = set.tag_prefix
       if (b.device_type_id) {
         const [dt] = uuidRe.test(String(b.device_type_id))
           ? await db.query('SELECT id, tag_prefix FROM device_types WHERE id = $1 AND symbol_set_id = $2', [b.device_type_id, b.symbol_set_id]) : []
@@ -1353,20 +1374,36 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       }
       if (b.product_id) {
         const [pr] = uuidRe.test(String(b.product_id)) ? await db.query('SELECT id FROM products WHERE id = $1', [b.product_id]) : []
-        if (!pr) return reply.code(400).send({ error: 'Unknown product' })
-        productId = pr.id
-      }
-      if (!tag) {
-        // An update that leaves the tag blank keeps the one it has; only a new device draws the next number.
-        if (existing && !existing.deleted && existing.tag && existing.symbol_set_id === b.symbol_set_id) tag = existing.tag
-        else autoPrefix = prefix
+        productId = pr ? pr.id : null
       }
     }
     const fields = b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields) ? b.fields : {}
-    const padding = autoPrefix !== null ? (await getSection(db, 'tags')).padding : 2
-    // A client-chosen tag that is new to this markup must not collide with another one in the project.
-    const checkTag = autoPrefix === null && tag !== '' && (!existing || existing.deleted || existing.tag !== tag)
-    const row = await db.transaction(async q => {
+    const padding = (await getSection(db, 'tags')).padding
+    const baseVersion = Number.isInteger(b.base_version) ? (b.base_version as number) : null
+    const restore = b.restore === true
+    const out = await db.transaction(async q => {
+      // Same-id requests (a replayed retry racing the original) run one after the other, and the existing row is read
+      // under that lock, so the second one sees the first one's tag instead of drawing another number.
+      await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`markup|${markupId}`])
+      const [existing] = await q('SELECT * FROM markups WHERE id = $1 FOR UPDATE', [markupId])
+      if (existing && existing.document_id !== doc.id) throw new HttpError(409, 'Markup belongs to another document')
+      if (existing && baseVersion !== null && !restore && Number(existing.struct_version ?? 0) > baseVersion) {
+        const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
+        const [current] = await q(
+          `SELECT ${cols}, m.deleted, cu.name AS created_by_name, uu.name AS updated_by_name
+           FROM markups m LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
+           WHERE m.id = $1`, [markupId])
+        return { conflict: current as any }
+      }
+      let tag = clientTag
+      let autoPrefix: string | null = null
+      // An update that leaves the tag blank keeps the one it has; only a new device draws the next number.
+      if (prefix !== null && !tag) {
+        if (existing && !existing.deleted && existing.tag && existing.symbol_set_id === b.symbol_set_id) tag = existing.tag
+        else autoPrefix = prefix
+      }
+      // A client-chosen tag that is new to this markup must not collide with another one in the project.
+      const checkTag = autoPrefix === null && tag !== '' && (!existing || existing.deleted || existing.tag !== tag)
       // One lock per project+prefix, held until commit, so two simultaneous creates cannot draw the same number.
       if (autoPrefix !== null || checkTag)
         await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`${doc.project_id}|${autoPrefix ?? tagPrefixOf(tag)}`])
@@ -1375,7 +1412,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         const dup = await q(
           `SELECT 1 FROM markups m JOIN documents d ON d.id = m.document_id
            WHERE d.project_id = $1 AND NOT m.deleted AND m.tag = $2 AND m.id <> $3 LIMIT 1`, [doc.project_id, tag, markupId])
-        if (dup.length) throw new HttpError(409, 'Tag already used')
+        // Taken by another markup (typed offline, or by someone else meanwhile): renumber instead of failing the save for good.
+        // The client adopts the tag in the answer.
+        if (dup.length) tag = await nextTag(q, padding, doc.project_id, tagPrefixOf(tag))
       }
       const [r] = await q(
       `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by, device_type_id, product_id)
@@ -1386,9 +1425,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
          deleted = false, version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
        RETURNING ${MARKUP_COLUMNS}`,
       [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
-        String(b.text ?? ''), b.layer_id || null, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id, deviceTypeId, productId])
-      return r
+        String(b.text ?? ''), layerId, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id, deviceTypeId, productId])
+      return { row: r, existing }
     })
+    if ('conflict' in out) {
+      return reply.code(409).send({
+        error: out.conflict.deleted ? 'This markup was deleted by someone else' : 'This markup was moved by a page change', conflict: true, current: out.conflict })
+    }
+    const { row, existing } = out
     if (!existing) await recordEvent(markupId, req.user.id, 'created')
     else if (existing.deleted) await recordEvent(markupId, req.user.id, 'restored')
     else {
@@ -1407,7 +1451,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!doc) return
     const { markupId } = req.params as any
     const gone = await db.query(
-      `UPDATE markups SET deleted = true, version = version + 1, updated_by = $1, updated_at = now()
+      `UPDATE markups SET deleted = true, version = version + 1, struct_version = version + 1, updated_by = $1, updated_at = now()
        WHERE id = $2 AND document_id = $3 AND NOT deleted RETURNING id`, [req.user.id, markupId, doc.id])
     if (gone.length) {
       await recordEvent(markupId, req.user.id, 'deleted')

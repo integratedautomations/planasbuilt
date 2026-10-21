@@ -492,10 +492,18 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   useEffect(() => {
     if (!pdf) return
     let cancelled = false
-    pdf.getPage(pageNum).then(p => { if (!cancelled) { setPage(p); setPageSrc(pdf) } })
+    let got: PDFPageProxy | null = null
+    pdf.getPage(pageNum).then(p => {
+      got = p
+      if (!cancelled) { setPage(p); setPageSrc(pdf) }
+    })
     setSelectedIds([])
-    return () => { cancelled = true }
+    // Free the old page's operator list and decoded images (pdf.js defers this while a render is running).
+    return () => { cancelled = true; got?.cleanup() }
   }, [pdf, pageNum])
+
+  // The visible canvas is not tracked by React once removed: release its bitmap memory (matters on iOS).
+  useEffect(() => () => { const c = canvasRef.current; if (c) c.width = c.height = 0 }, [])
 
   useEffect(() => {
     const el = viewportRef.current
@@ -521,7 +529,10 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       c.width = off.width
       c.height = off.height
       c.getContext('2d')!.drawImage(off, 0, 0)
-    }).catch(() => { /* cancelled */ })
+    }).catch(() => { /* cancelled */ }).finally(() => {
+      off.width = off.height = 0 // release the offscreen bitmap now rather than at GC
+      page.cleanup() // drop the operator list and decoded images; the next render re-parses
+    })
     return () => task.cancel()
   }, [page, settledZoom, showOrig])
 

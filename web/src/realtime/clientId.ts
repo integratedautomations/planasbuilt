@@ -1,16 +1,12 @@
 import { uuid } from '../uuid'
 
-const KEY = 'planmark.clientId'
 let memo: string | null = null
 
-/** Per-tab id (sessionStorage), sent as X-Client-Id and as ?clientId= so the server doesn't echo our own changes back. */
+/**
+ * Per-page-load id, sent as X-Client-Id and as ?clientId= so the server doesn't echo our own changes back.
+ * Kept in memory only: sessionStorage is copied by "Duplicate tab", which would give two live tabs the same id
+ * (each would then miss the other's changes and the server could not tell their sockets apart).
+ */
 export function getClientId(): string {
-  if (memo) return memo
-  try {
-    const s = sessionStorage.getItem(KEY)
-    if (s) return (memo = s)
-    memo = uuid()
-    sessionStorage.setItem(KEY, memo)
-  } catch { memo ??= uuid() }
-  return memo
+  return (memo ??= uuid())
 }

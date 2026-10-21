@@ -6,7 +6,7 @@ import { cacheUser, cachedUser } from './offline/user'
 import { resumeSync, setSyncUser } from './offline/sync'
 import { claimCache, purgeCache, releaseCache } from './offline/cacheOwner'
 import { ForeignNotice } from './offline/ForeignNotice'
-import { connect as connectRealtime } from './realtime/socket'
+import { connect as connectRealtime, disconnect as disconnectRealtime } from './realtime/socket'
 import { setPrefsUser, usePrefs } from './prefs/store'
 import { applyTheme } from './prefs/theme'
 import { AuthPage } from './pages/AuthPage'
@@ -70,6 +70,7 @@ export default function App() {
     setSyncUser(null) // first: nothing may be sent or read as this user from here on
     releaseCache()
     setToken(null); cacheUser(null); setUser(null)
+    disconnectRealtime() // the socket is the old user's: the next sign-in opens its own
     // Don't leave one user's plans on a shared device, but never throw away unsent field work:
     // with unsent changes everything else is purged and only what the queued work needs stays.
     if ((await db.outbox.count()) === 0) await clearLocalData()

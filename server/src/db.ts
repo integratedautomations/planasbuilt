@@ -204,6 +204,10 @@ CREATE TABLE IF NOT EXISTS revu_mappings (
 ALTER TABLE device_types ADD COLUMN IF NOT EXISTS coverage jsonb;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS device_type_id uuid REFERENCES device_types(id) ON DELETE SET NULL;
 ALTER TABLE markups ADD COLUMN IF NOT EXISTS product_id uuid REFERENCES products(id) ON DELETE SET NULL;
+-- The version at which a delete or a page operation (page delete/move/rotate, revision restore) last changed the
+-- markup's existence, page or geometry. A queued offline edit based on an older version must not overwrite that.
+ALTER TABLE markups ADD COLUMN IF NOT EXISTS struct_version int NOT NULL DEFAULT 0;
+UPDATE markups SET struct_version = version WHERE deleted AND struct_version = 0;
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'upload';
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS label text NOT NULL DEFAULT '';
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '';

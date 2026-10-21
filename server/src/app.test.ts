@@ -154,7 +154,10 @@ describe('milestone 1 api', () => {
       .toMatch(/^CAM-/)
     // a type from another set is rejected
     expect((await put('44444444-4444-4444-8444-444444444444', { device_type_id: noPrefix.id })).statusCode).toBe(400)
-    expect((await put('44444444-4444-4444-8444-444444444445', { product_id: '55555555-5555-4555-8555-555555555555' })).statusCode).toBe(400)
+    // a product that no longer exists falls back to none instead of failing the save
+    const gone = await put('44444444-4444-4444-8444-444444444445', { product_id: '55555555-5555-4555-8555-555555555555' })
+    expect(gone.statusCode).toBe(200)
+    expect(gone.json().product_id).toBeNull()
   })
 
   it('lets admins manage device types and products, and keeps used products', async () => {

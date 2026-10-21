@@ -14,7 +14,7 @@ import { db } from './db'
 import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
 import { cacheAllowed } from './cacheOwner'
 import { isForeign } from './owner'
-import { getSyncUser, mergeServerMarkups } from './sync'
+import { ackSnapshot, getSyncUser, mergeServerMarkups } from './sync'
 
 /** revisions are newest first. */
 export interface DocMeta { id: string; name: string; device_scale?: number; revisions: { id?: string; revision: number; page_count: number; kind?: 'upload' | 'issued' | 'restore'; label?: string }[] }
@@ -131,12 +131,19 @@ const loadScalesRaw = (docId: string) => readThrough(
 /** Local scales with queued edits already applied (used instead of the server list while edits are unsent). */
 export const localScales = (docId: string) => db.scales.where('document_id').equals(docId).toArray()
 
-export const loadMarkups = (docId: string) => readThrough(
-  () => api<Markup[]>(`/documents/${docId}/markups`),
-  async () => {}, // merged below so unsent local edits survive
-  async () => undefined,
-  'Markups',
-).then(async r => ({ data: await mergeServerMarkups(docId, r.data), fromCache: r.fromCache }))
+/**
+ * The document's markups: network first (merged into Dexie so unsent local edits survive), Dexie when offline.
+ * The acknowledgement snapshot is taken BEFORE the request goes out: an edit the outbox gets acknowledged after
+ * that point may be missing from the (older) server list and must not be overwritten by it.
+ */
+export const loadMarkups = (docId: string, signal?: AbortSignal) => {
+  const acked = ackSnapshot()
+  return readThrough(
+    () => api<Markup[]>(`/documents/${docId}/markups`, signal ? { signal } : {}),
+    async () => {}, // merged below so unsent local edits survive
+    async () => undefined,
+    'Markups',
+  ).then(async r => ({ data: await mergeServerMarkups(docId, r.data, acked), fromCache: r.fromCache }))
   .catch(async e => {
     if (!(e instanceof OfflineMissError) || !(await cacheAllowed())) throw e
     // Offline: whatever is in Dexie, if this document was ever cached.
@@ -150,6 +157,7 @@ export const loadMarkups = (docId: string) => readThrough(
     const theirs = await foreignTargets()
     return theirs.size ? { ...r, data: r.data.filter(m => !theirs.has(m.id)) } : r
   })
+}
 
 export const loadAttachments = (markupId: string) => readThrough(
   () => api<AttachmentRow[]>(`/markups/${markupId}/attachments`),

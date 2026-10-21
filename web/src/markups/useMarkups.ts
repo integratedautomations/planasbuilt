@@ -62,7 +62,9 @@ export function useMarkups(documentId: string) {
   const persist = useCallback((change: Change) => {
     clock.current.edit(change.map(c => (c.after ?? c.before)!.id))
     for (const { before, after } of change) {
-      if (after) void queueMarkupPut(documentId, after)
+      // A put with nothing before it creates the markup, or brings back one that was deleted (undo of a delete):
+      // that is an explicit restore, so the server does not refuse it as an edit of a deleted markup.
+      if (after) void queueMarkupPut(documentId, after, before === null ? { restore: true } : {})
       else void queueMarkupDelete(documentId, before!.id)
     }
   }, [documentId])
