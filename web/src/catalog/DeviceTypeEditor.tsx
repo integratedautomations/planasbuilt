@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import { api } from '../api'
 import type { FieldDef, SymbolSet } from '../markups/types'
 import type { DeviceType } from './types'
@@ -19,7 +20,9 @@ export const draftOfType = (t: DeviceType): TypeDraft => ({
 })
 
 /** The device-type editor dialog (name, tag prefix, icon, extra fields). Used by the catalog page and the viewer's tool chest. */
-export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: {
+export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved, inline = false }: {
+  /** Render in the page (catalog detail pane) instead of as a modal dialog. */
+  inline?: boolean
   initial: TypeDraft
   set: SymbolSet | undefined
   onClose: () => void
@@ -54,10 +57,9 @@ export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: 
 
   return (
     <>
-      <div className="modal-backdrop" onClick={onClose}>
-        <div className="card modal wide" onClick={e => e.stopPropagation()}>
-          <div className="row"><h3>{draft.id ? 'Edit device type' : 'New device type'}</h3><span className="spacer" />
-            <button onClick={onClose}>Close</button></div>
+      <Wrap inline={inline} onClose={onClose}>
+          {!inline && <div className="row"><h3>{draft.id ? 'Edit device type' : 'New device type'}</h3><span className="spacer" />
+            <button onClick={onClose}>Close</button></div>}
           <div className="grid2">
             <label className="field">Name<input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} /></label>
             <label className="field">Tag prefix (blank = set's prefix)
@@ -80,7 +82,7 @@ export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: 
             {MOUNTS.map(o => (
               <button key={o.value} type="button" role="radio" aria-checked={mount === o.value} className={mount === o.value ? 'active' : ''}
                 title={o.hint} onClick={() => setDraft({ ...draft, mount: o.value })}>
-                <MountBadge mount={o.value} color={mount === o.value ? '#fff' : set?.color ?? '#868e96'} src={draft.icon || set?.icon || undefined} size={28} />
+                <MountBadge mount={o.value} color={set?.color ?? '#868e96'} src={draft.icon || set?.icon || undefined} size={28} />
                 <span>{o.label}</span>
               </button>
             ))}
@@ -110,12 +112,20 @@ export function DeviceTypeEditor({ initial, set, onClose, onSaved, onRemoved }: 
             <span className="spacer" />
             <button className="primary" onClick={save} disabled={!draft.name.trim()}>Save</button>
           </div>
-        </div>
-      </div>
+      </Wrap>
       {picking && (
         <IconPicker color={set?.color ?? '#1971c2'} mount={mount} suggestName={draft.name} onClose={() => setPicking(false)}
           onPick={url => { setDraft({ ...draft, icon: url }); setPicking(false) }} />
       )}
     </>
+  )
+}
+
+function Wrap({ inline, onClose, children }: { inline: boolean; onClose: () => void; children: ReactNode }) {
+  if (inline) return <div className="card type-inline">{children}</div>
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="card modal wide" onClick={e => e.stopPropagation()}>{children}</div>
+    </div>
   )
 }

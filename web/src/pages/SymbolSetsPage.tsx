@@ -1,3 +1,4 @@
+import { MountBadge } from '../catalog/MountBadge'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, post } from '../api'
@@ -114,7 +115,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
                 </button>
                 {(catalog.typesBySet.get(s.id) ?? []).map(t => (
                   <button key={t.id} className={'sub' + (sel?.kind === 'type' && sel.typeId === t.id ? ' on' : '')} onClick={() => setSel({ kind: 'type', setId: s.id, typeId: t.id })}>
-                    <span className="set-icon" style={{ background: s.color, width: 20, height: 20 }}>{(t.icon || s.icon) && <img src={t.icon || s.icon} alt="" />}</span>{t.name}
+                    <MountBadge mount={t.mount ?? 'ceiling'} color={s.color} src={t.icon || s.icon || undefined} size={22} />{t.name}
                   </button>
                 ))}
               </div>
@@ -166,8 +167,14 @@ export function SymbolSetsPage({ user }: { user: User }) {
                   <h3>{selSet.name} › {selType.name}</h3>
                   <span className="muted"> · tags {typePrefixHint(selType, selSet)}{selType.fields.length ? ` · ${selType.fields.length} extra field${selType.fields.length === 1 ? '' : 's'}` : ''}</span>
                   <span className="spacer" />
-                  {admin && <button onClick={() => setTypeDraft(draftOfType(selType))}>Edit type</button>}
                 </div>
+                {admin && (
+                  <DeviceTypeEditor inline key={`${selType.id}:${JSON.stringify(selType)}`} initial={draftOfType(selType)} set={selSet}
+                    onClose={() => {}}
+                    onSaved={async saved => { await reload(); setSel({ kind: 'type', setId: selSet.id, typeId: saved.id }) }}
+                    onRemoved={async (_id, setId) => { await reload(); setSel({ kind: 'set', setId }) }} />
+                )}
+                <h4>Products</h4>
                 <ProductsTable products={products} allProducts={data.products} type={selType} set={selSet} admin={admin} onChanged={reload} onError={setError} />
               </>
             )}
