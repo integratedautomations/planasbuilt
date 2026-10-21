@@ -16,6 +16,7 @@ import { Storage, validateS3Config } from './storage.js'
 import type { S3Factory } from './storage.js'
 import { getSection, storageConfigOf } from './settings.js'
 import { registerAdmin } from './admin.js'
+import { installLibrary, previewLibrary } from './standardLibrary.js'
 import { BoundedTtlMap } from './ttlmap.js'
 import { clientIp, normalizePublicUrl, TRUSTED_PROXIES } from './net.js'
 import { countPages, editPdf, isIdentity, pageSizes, PageOpError, parsePageList, remapPages, rotateGeometry } from './pages.js'
@@ -1154,6 +1155,18 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     device_types: await db.query('SELECT * FROM device_types WHERE NOT archived ORDER BY symbol_set_id, sort, created_at'),
     products: (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut),
   }))
+
+  // ---- Standard device library: symbol sets and device types for the built-in icon set (admins; only ever adds or fills blanks) ----
+  app.get('/api/catalog/standard-library', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    return previewLibrary(db)
+  })
+  app.post('/api/catalog/standard-library', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const result = await installLibrary(db)
+    if (result.setsCreated || result.typesAdded || result.typesUpdated) realtime.symbolSetsChanged(req.user.id, cid(req))
+    return result
+  })
 
   // ---- Revu converter mappings (one set per organization: Revu signature -> device type / product) ----
   const REVU_ACTIONS = ['device', 'plain', 'skip']

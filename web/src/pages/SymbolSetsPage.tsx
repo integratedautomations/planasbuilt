@@ -7,6 +7,7 @@ import { CatalogImport, exportCatalogExcel } from '../catalog/CatalogImport'
 import { DeviceTypeEditor, draftOfType } from '../catalog/DeviceTypeEditor'
 import type { TypeDraft } from '../catalog/DeviceTypeEditor'
 import { FieldsEditor } from '../catalog/FieldsEditor'
+import { StandardLibraryDialog } from '../catalog/StandardLibraryDialog'
 import { ProductsTable } from '../catalog/ProductsTable'
 import { readIcon } from '../catalog/readIcon'
 import { IconPicker } from '../catalog/icons/IconPicker'
@@ -30,7 +31,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [typeDraft, setTypeDraft] = useState<TypeDraft | null>(null)
   const [sel, setSel] = useState<Sel>(null)
-  const [dialog, setDialog] = useState<'excel' | 'btx' | null>(null)
+  const [dialog, setDialog] = useState<'excel' | 'btx' | 'library' | null>(null)
   /** Which editor the icon picker fills in. */
   const [picking, setPicking] = useState<'set' | null>(null)
   const [dragType, setDragType] = useState<string | null>(null)
@@ -100,6 +101,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
           <button onClick={() => exportCatalogExcel(data, sets).catch(e => setError(e.message))} title="Download the catalog as an Excel workbook">Export Excel</button>
           {admin && <button onClick={() => setDialog('excel')}>Import Excel</button>}
           {admin && <button onClick={() => setDialog('btx')} title="Convert a Bluebeam Revu tool set into device types">Import Revu .btx</button>}
+          {admin && <button onClick={() => setDialog('library')} title="Add the built-in symbol sets and device types, or fill in missing icons and defaults. Never deletes anything.">Install / update standard library</button>}
           {admin && <button className="primary" onClick={() => setDraft({ ...EMPTY })}>New set</button>}
         </div>
         {error && <div className="error">{error}</div>}
@@ -234,6 +236,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
       )}
 
       {dialog === 'excel' && <CatalogImport data={data} sets={sets} onClose={() => setDialog(null)} onDone={reload} />}
+      {dialog === 'library' && <StandardLibraryDialog onClose={() => setDialog(null)} onDone={async () => { await loadSets(); await reload() }} />}
       {dialog === 'btx' && <BtxImport data={data} sets={sets} onClose={() => setDialog(null)} onDone={reload} />}
     </div>
   )
