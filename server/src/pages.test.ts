@@ -81,3 +81,13 @@ describe('parsePageList', () => {
     expect(parsePageList('a', 9)).toBeNull()
   })
 })
+
+describe('parsePageList limits', () => {
+  it('rejects a range beyond the real page count instead of expanding it', () => {
+    const t = Date.now()
+    expect(parsePageList('1-999999999', 5)).toBeNull()
+    expect(parsePageList('1-5', 5)).toEqual([1, 2, 3, 4, 5])
+    expect(parsePageList('1-5', 0)).toBeNull()
+    expect(Date.now() - t).toBeLessThan(500)
+  })
+})

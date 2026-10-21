@@ -37,8 +37,8 @@ const api = (method: string, url: string, token: string, payload?: any, headers:
   app.inject({ method: method as any, url, payload, headers: { ...(token ? bearer(token) : {}), ...headers } })
 const login = async (email: string, password = 'password1') =>
   (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email, password } })).json().token as string
-const mkUser = async (email: string, isAdmin = false) => {
-  const r = await api('POST', '/api/users', admin, { email, name: email.split('@')[0], password: 'password1', isAdmin })
+const mkUser = async (email: string, isAdmin = false, canCreateProjects = false) => {
+  const r = await api('POST', '/api/users', admin, { email, name: email.split('@')[0], password: 'password1', isAdmin, canCreateProjects })
   expect(r.statusCode).toBe(200)
   return r.json().id as string
 }
@@ -55,13 +55,13 @@ beforeAll(async () => {
   app = await buildApp({ db, jwtSecret: 'test', filesDir: (filesDir = mkdtempSync(path.join(tmpdir(), 'pm-sec-'))), s3Factory: fakeS3 })
   await app.listen({ port: 0, host: '127.0.0.1' })
   port = (app.server.address() as any).port
-  admin = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'boss@x.com', name: 'Boss', password: 'password1' } })).json().token
+  admin = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'boss@x.com', name: 'Boss', password: 'password1', setupCode: 'test-setup-code' } })).json().token
 })
 afterAll(async () => { await app.close() })
 
 describe('invites by project admins', () => {
   it('cannot hijack or promote a pending invite created by someone else', async () => {
-    const pa = await mkUser('pa@x.com'); void pa
+    const pa = await mkUser('pa@x.com', false, true); void pa
     const pat = await login('pa@x.com')
     const project = (await api('POST', '/api/projects', pat, { name: 'PA project' })).json().id
     const other = (await api('POST', '/api/projects', admin, { name: 'Other' })).json().id

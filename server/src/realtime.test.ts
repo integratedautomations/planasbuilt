@@ -47,7 +47,7 @@ beforeAll(async () => {
   app = await buildApp({ db, jwtSecret: 'test', filesDir: mkdtempSync(path.join(tmpdir(), 'pm-rt-')) })
   await app.listen({ port: 0, host: '127.0.0.1' })
   port = (app.server.address() as any).port
-  const setup = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'Ann', password: 'password1' } })).json()
+  const setup = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'Ann', password: 'password1', setupCode: 'test-setup-code' } })).json()
   tokA = setup.token; userA = setup.user.id
   await post('/api/users', tokA, { email: 'b@x.com', name: 'Bob', password: 'password1' })
   await post('/api/users', tokA, { email: 'c@x.com', name: 'Cy', password: 'password1' })

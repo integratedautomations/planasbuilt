@@ -9,7 +9,8 @@ import { Icon } from '../ui/Icon'
 
 interface Props { user: User; onSignOut: () => void }
 
-export function ProjectsPage(_: Props) {
+export function ProjectsPage({ user }: Props) {
+  const canCreate = !!(user.is_admin || user.can_create_projects)
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
@@ -40,13 +41,15 @@ export function ProjectsPage(_: Props) {
       <OfflineBanner />
       <main className="content">
         <h2>Projects</h2>
-        <form className="row" onSubmit={create}>
-          <input placeholder="New project name" value={name} onChange={e => setName(e.target.value)} required />
-          <button className="primary">Create</button>
-        </form>
+        {canCreate && (
+          <form className="row" onSubmit={create}>
+            <input placeholder="New project name" value={name} onChange={e => setName(e.target.value)} required />
+            <button className="primary">Create</button>
+          </form>
+        )}
         {error && <div className="error">{error}</div>}
         {projects === null ? <p className="muted">Loading…</p> : projects.length === 0 ? (
-          <p className="muted">No projects yet. Create one above.</p>
+          <p className="muted">{canCreate ? 'No projects yet. Create one above.' : 'No projects yet. Ask an admin to add you to one.'}</p>
         ) : (
           <>
             <h3 className="muted">Open ({open.length})</h3>

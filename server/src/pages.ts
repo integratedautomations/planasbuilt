@@ -159,8 +159,9 @@ export async function countPages(bytes: Uint8Array): Promise<number> {
   return (await load(bytes)).getPageCount()
 }
 
-/** "3", "2-4", "1,3,5-6" to sorted unique pages; null when malformed. */
+/** "3", "2-4", "1,3,5-6" to sorted unique pages; null when malformed or when any page is beyond `count` (the real page count: a range is checked before it is expanded, never after). */
 export function parsePageList(text: string, count: number): number[] | null {
+  if (!Number.isInteger(count) || count < 1) return null
   const out = new Set<number>()
   for (const part of text.split(',').map(s => s.trim()).filter(Boolean)) {
     const m = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(part)

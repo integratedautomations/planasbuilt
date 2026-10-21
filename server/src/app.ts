@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
 import jwt from '@fastify/jwt'
@@ -16,6 +16,8 @@ import { Storage, validateS3Config } from './storage.js'
 import type { S3Factory } from './storage.js'
 import { getSection, storageConfigOf } from './settings.js'
 import { registerAdmin } from './admin.js'
+import { BoundedTtlMap } from './ttlmap.js'
+import { clientIp, normalizePublicUrl, TRUSTED_PROXIES } from './net.js'
 import { countPages, editPdf, isIdentity, pageSizes, PageOpError, parsePageList, remapPages, rotateGeometry } from './pages.js'
 import type { PageMapping, PageOp } from './pages.js'
 
@@ -52,10 +54,27 @@ export interface AppOptions {
   s3Factory?: S3Factory
   /** Requests per minute per IP on auth/invite/reset endpoints (and failed logins per email). Tests default to a high value. */
   rateLimitMax?: number
+  /** Public origin of the site (e.g. https://pab.example.com). Defaults to the PUBLIC_URL env var. Used for emailed links and CORS. */
+  publicUrl?: string
+  /** First-run setup code. Defaults to the SETUP_TOKEN env var; when neither is set and there are no users, a random one is logged. */
+  setupToken?: string
+  /** Invite / resend requests allowed per user per hour (default 30). */
+  inviteRateLimitMax?: number
+  /** Open websockets allowed per user (default 20). */
+  maxSocketsPerUser?: number
 }
 
-export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rateLimitMax }: AppOptions) {
-  const RL_MAX = rateLimitMax ?? (process.env.NODE_ENV === 'test' || process.env.VITEST ? 100_000 : 10)
+/** Failed logins per account: after RL_MAX failures the account locks, for 1 min, then 2, 4... up to 15 min. */
+const LOCK_BASE_MS = 60_000, LOCK_CAP_MS = 15 * 60_000, FAILURE_MEMORY_MS = 60 * 60_000
+
+export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rateLimitMax, publicUrl: publicUrlOpt, setupToken: setupTokenOpt, inviteRateLimitMax, maxSocketsPerUser }: AppOptions) {
+  const isTest = !!(process.env.NODE_ENV === 'test' || process.env.VITEST)
+  const RL_MAX = rateLimitMax ?? (isTest ? 100_000 : 10)
+  const INVITE_RL_MAX = inviteRateLimitMax ?? (isTest ? 100_000 : 30)
+  const MAX_SOCKETS = maxSocketsPerUser ?? 20
+  const publicUrl = normalizePublicUrl(publicUrlOpt ?? process.env.PUBLIC_URL)
+  if (!publicUrl && !isTest)
+    console.warn('[config] PUBLIC_URL is not set: invite and reset links will use the request Host header and cross-origin API access is disabled. Set PUBLIC_URL (e.g. https://pab.example.com).')
   mkdirSync(filesDir, { recursive: true })
   const storage = new Storage(filesDir,
     async () => storageConfigOf(await getSection(db, 'storage')),
@@ -63,7 +82,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     async () => { const s = (await getSection(db, 'storage')).s3; return validateS3Config(s) ? null : s })
   const app = Fastify({
     logger: false,
-    trustProxy: true, // behind Cloudflare Tunnel / cloudflared
+    // Forwarding headers (X-Forwarded-For/Proto/Host) are honoured only from private/loopback peers, i.e. the cloudflared
+    // container on the docker network; a client reaching us directly cannot spoof them.
+    trustProxy: TRUSTED_PROXIES,
     bodyLimit: 10 * 1024 * 1024, // JSON bodies; file uploads stream via multipart (200MB cap below)
   })
   app.setErrorHandler((err: any, req, reply) => {
@@ -81,9 +102,15 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       return reply.code(503).send({ status: 'error', db: 'error' })
     }
   })
-  await app.register(cors)
+  // Same-origin requests need no CORS headers. Cross-origin browsers get them only for the configured public origin,
+  // plus localhost dev servers outside production.
+  const DEV_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/
+  await app.register(cors, {
+    origin: (origin, cb) => cb(null, !!origin && (origin === publicUrl || (process.env.NODE_ENV !== 'production' && DEV_ORIGIN.test(origin)))),
+  })
   await app.register(jwt, { secret: jwtSecret })
-  await app.register(rateLimit, { global: false })
+  // Every limiter is keyed on the real client IP (see clientIp), never on a client-controlled header.
+  await app.register(rateLimit, { global: false, keyGenerator: clientIp })
   await app.register(helmet, {
     contentSecurityPolicy: {
       useDefaults: false,
@@ -224,6 +251,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       const [u] = await db.query("SELECT name, avatar_key, avatar_version FROM users WHERE id = $1 AND status = 'active'", [user.id])
       if (!u) { socket.close(4401, 'Invalid token'); return null }
       if (closed) return null
+      if (realtime.countFor(user.id) >= MAX_SOCKETS) { socket.close(4429, 'Too many connections'); return null }
       conn = realtime.add(socket, {
         clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
         userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null,
@@ -243,6 +271,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         if (m.type === 'ping') realtime.pong(conn)
         else if (m.type === 'presence') realtime.presence(conn, m)
         else if (m.type === 'join') {
+          if (!realtime.allowJoin(conn)) return realtime.error(conn, 'Too many join requests')
           try {
             const id = String(m.documentId ?? '')
             const [doc] = UUID_RE.test(id) ? await db.query('SELECT project_id FROM documents WHERE id = $1', [id]) : []
@@ -260,9 +289,25 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // ---- Auth ----
   app.get('/api/auth/status', async () => ({ needsSetup: (await userCount()) === 0 }))
 
+  // First-run setup code: whoever reaches a fresh install first must still know it. SETUP_TOKEN (env) wins; otherwise a
+  // random code is generated while there are no users and printed to the server log.
+  let setupCode: string | null = setupTokenOpt || process.env.SETUP_TOKEN || null
+  const sha = (s: string) => createHash('sha256').update(s).digest()
+  const setupCodeMatches = (given: unknown) => typeof given === 'string' && !!setupCode && timingSafeEqual(sha(given.trim()), sha(setupCode))
+  if (!setupCode && (await userCount()) === 0) {
+    setupCode = randomBytes(12).toString('base64url')
+    console.log(`First-run setup code: ${setupCode}`)
+  }
+
   // First user only: creates the initial admin. Later users are added by an admin.
   app.post('/api/auth/setup', rl, async (req, reply) => {
     if ((await userCount()) > 0) return reply.code(409).send({ error: 'Already set up' })
+    if (!setupCode) { // every user was removed after startup: issue a fresh code
+      setupCode = randomBytes(12).toString('base64url')
+      console.log(`First-run setup code: ${setupCode}`)
+    }
+    if (!setupCodeMatches((req.body as any)?.setupCode))
+      return reply.code(403).send({ error: 'Wrong setup code. It is printed in the server log (docker compose logs app) or set as SETUP_TOKEN.' })
     if (!validNewUser(req.body))
       return reply.code(400).send({ error: 'Email, name and an 8+ character password are required' })
     const { email, name, password } = req.body as any
@@ -277,37 +322,49 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       return u
     })
     if (!user) return reply.code(409).send({ error: 'Already set up' })
+    setupCode = null
     return { token: sign(user), user: publicUser(user) }
   })
 
-  // Failed-login counter per email (the route-level limiter above covers per-IP).
-  const failures = new Map<string, { n: number; until: number }>()
+  // Failed-login bookkeeping per email (the route-level limiter above covers per-IP). Accounts that exist and emails
+  // that do not live in separate bounded maps with identical behaviour, so spraying junk emails can only churn the
+  // second one and never evicts a real account's lockout. After RL_MAX failures the account locks, for 1 min, then
+  // 2, 4... up to 15 min; attempts made while locked do not extend it. Entries are forgotten an hour after the last failure.
+  interface Fail { n: number; lockedUntil: number }
+  const accountFailures = new BoundedTtlMap<Fail>(10_000, FAILURE_MEMORY_MS)
+  const unknownFailures = new BoundedTtlMap<Fail>(10_000, FAILURE_MEMORY_MS)
   const DUMMY_HASH = bcrypt.hashSync('planmark-no-such-user', 10)
 
   app.post('/api/auth/login', rl, async (req, reply) => {
     const { email, password } = (req.body ?? {}) as any
-    const key = String(email ?? '').toLowerCase()
-    const now = Date.now()
-    const f = failures.get(key)
-    if (f && f.until > now && f.n >= RL_MAX) return reply.code(429).send({ error: 'Too many attempts. Try again in a minute.' })
+    const key = String(email ?? '').toLowerCase().slice(0, 320)
     const [user] = await db.query('SELECT * FROM users WHERE email = $1', [key])
     const real = !!user && user.status !== 'invited'
+    const failures = real ? accountFailures : unknownFailures
+    const now = Date.now()
+    const f = failures.get(key)
+    if (f && f.lockedUntil > now) {
+      const wait = Math.ceil((f.lockedUntil - now) / 1000)
+      reply.header('Retry-After', String(wait))
+      return reply.code(429).send({ error: `Too many attempts. Try again in ${wait > 90 ? `${Math.ceil(wait / 60)} minutes` : 'a minute'}.` })
+    }
     // Always spend one bcrypt compare so response time does not reveal whether the email exists.
     const ok = await bcrypt.compare(String(password ?? ''), real ? user.password_hash : DUMMY_HASH)
     if (!real || !ok) {
-      if (failures.size > 10_000) failures.clear()
-      failures.set(key, { n: f && f.until > now ? f.n + 1 : 1, until: f && f.until > now ? f.until : now + 60_000 })
+      const n = (f?.n ?? 0) + 1
+      failures.set(key, { n, lockedUntil: n >= RL_MAX ? now + Math.min(LOCK_CAP_MS, LOCK_BASE_MS * 2 ** Math.min(n - RL_MAX, 10)) : 0 })
       return reply.code(401).send({ error: 'Wrong email or password' })
     }
-    failures.delete(key)
+    accountFailures.delete(key)
     if (user.status === 'deactivated')
       return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
-    return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin, avatar: user.avatar_key ? user.avatar_version : null } }
+    return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin, can_create_projects: user.is_admin || !!user.can_create_projects, avatar: user.avatar_key ? user.avatar_version : null } }
   })
 
   app.get('/api/me', { preHandler: auth }, async (req) => {
     const [user] = await db.query(
-      'SELECT id, email, name, is_admin, CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar FROM users WHERE id = $1', [req.user.id])
+      `SELECT id, email, name, is_admin, (is_admin OR can_create_projects) AS can_create_projects,
+         CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar FROM users WHERE id = $1`, [req.user.id])
     return user
   })
 
@@ -335,12 +392,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
     if (!validNewUser(req.body))
       return reply.code(400).send({ error: 'Email, name and an 8+ character password are required' })
-    const { email, name, password, isAdmin } = req.body as any
+    const { email, name, password, isAdmin, canCreateProjects } = req.body as any
     const exists = await db.query('SELECT 1 FROM users WHERE email = $1', [String(email).toLowerCase()])
     if (exists.length) return reply.code(409).send({ error: 'Email already in use' })
     const [user] = await db.query(
-      'INSERT INTO users (email, name, password_hash, is_admin) VALUES ($1,$2,$3,$4) RETURNING id, email, name, is_admin',
-      [String(email).toLowerCase(), name, await bcrypt.hash(password, 10), !!isAdmin])
+      'INSERT INTO users (email, name, password_hash, is_admin, can_create_projects) VALUES ($1,$2,$3,$4,$5) RETURNING id, email, name, is_admin, can_create_projects',
+      [String(email).toLowerCase(), name, await bcrypt.hash(password, 10), !!isAdmin, !!canCreateProjects])
     return user
   })
 
@@ -352,7 +409,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
        FROM projects p JOIN project_members m ON m.project_id = p.id
        WHERE m.user_id = $1 ORDER BY p.created_at DESC`, [req.user.id]))
 
+  // Creating a project makes you its admin (members, invites, uploads), so it is limited to app admins and to users an
+  // admin has granted can_create_projects.
   app.post('/api/projects', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) {
+      const [u] = await db.query('SELECT can_create_projects FROM users WHERE id = $1', [req.user.id])
+      if (!u?.can_create_projects) return reply.code(403).send({ error: 'Ask an admin to create projects for you' })
+    }
     const name = String((req.body as any)?.name ?? '').trim()
     if (!name) return reply.code(400).send({ error: 'Project name is required' })
     const [project] = await db.query(
@@ -677,23 +740,32 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         await q(`INSERT INTO markup_events (markup_id, user_id, action, changes)
                  SELECT unnest($1::uuid[]), $2, 'deleted', $3::jsonb`, [removed, userId, JSON.stringify({ reason: `restored Rev ${src.revision}` })])
       }
-      for (const m of snapMarkups) {
+      // One statement for all snapshot markups (a repeated id in the snapshot: the last one wins).
+      const rows = new Map<string, unknown>()
+      for (const m of snapMarkups)
+        rows.set(m.id, {
+          id: m.id, page: m.page, type: m.type, geometry: m.geometry, style: m.style ?? {}, text: m.text ?? '',
+          layer_id: layers.has(m.layer_id) ? m.layer_id : null, symbol_set_id: sets.has(m.symbol_set_id) ? m.symbol_set_id : null,
+          tag: m.tag ?? '', status: m.status ?? '', fields: m.fields ?? {}, created_by: m.created_by ?? userId,
+          device_type_id: types.has(m.device_type_id) ? m.device_type_id : null, product_id: products.has(m.product_id) ? m.product_id : null,
+        })
+      if (rows.size)
         await q(
           `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by, device_type_id, product_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           SELECT s.id, $1::uuid, s.page, s.type, s.geometry, s.style, s.text, s.layer_id, s.symbol_set_id, s.tag, s.status, s.fields, s.created_by, $3::uuid, s.device_type_id, s.product_id
+           FROM jsonb_to_recordset($2::jsonb) AS s(id uuid, page int, type text, geometry jsonb, style jsonb, text text, layer_id uuid,
+             symbol_set_id uuid, tag text, status text, fields jsonb, created_by uuid, device_type_id uuid, product_id uuid)
            ON CONFLICT (id) DO UPDATE SET page = EXCLUDED.page, type = EXCLUDED.type, geometry = EXCLUDED.geometry,
              style = EXCLUDED.style, text = EXCLUDED.text, layer_id = EXCLUDED.layer_id, symbol_set_id = EXCLUDED.symbol_set_id,
              device_type_id = EXCLUDED.device_type_id, product_id = EXCLUDED.product_id, tag = EXCLUDED.tag, status = EXCLUDED.status,
              fields = EXCLUDED.fields, deleted = false, version = markups.version + 1, struct_version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-          [m.id, doc.id, m.page, m.type, JSON.stringify(m.geometry), JSON.stringify(m.style ?? {}), m.text ?? '',
-            layers.has(m.layer_id) ? m.layer_id : null, sets.has(m.symbol_set_id) ? m.symbol_set_id : null, m.tag ?? '', m.status ?? '',
-            JSON.stringify(m.fields ?? {}), m.created_by ?? userId, userId,
-            types.has(m.device_type_id) ? m.device_type_id : null, products.has(m.product_id) ? m.product_id : null])
-      }
+          [doc.id, JSON.stringify([...rows.values()]), userId])
       await q('DELETE FROM page_scales WHERE document_id = $1', [doc.id])
-      for (const s of snapScales)
-        await q('INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by) VALUES ($1,$2,$3,$4,$5)',
-          [doc.id, s.page, s.points_per_foot, s.label ?? '', userId])
+      if (snapScales.length)
+        await q(
+          `INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by)
+           SELECT $1::uuid, t.page, t.ppf, t.label, $5::uuid FROM unnest($2::int[], $3::float8[], $4::text[]) AS t(page, ppf, label)`,
+          [doc.id, snapScales.map(s => s.page), snapScales.map(s => s.points_per_foot), snapScales.map(s => s.label ?? ''), userId])
       return { ...created, label, restored_from: src.revision, removed_markups: removed.length, restored_markups: snapMarkups.length }
     })
     realtime.revisionChanged(doc.id, result.id, result.revision, userId, cid(req))
@@ -776,21 +848,25 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
            WHERE m.document_id = $1 AND NOT m.deleted AND m.page = t.op AND t.np <> t.op`, [doc.id, from, to, req.user.id])
         const scales = await q('SELECT page, points_per_foot, label, updated_by FROM page_scales WHERE document_id = $1', [doc.id])
         await q('DELETE FROM page_scales WHERE document_id = $1', [doc.id])
-        for (const s of scales) {
-          const np = mapping.map[s.page - 1]
-          if (np) await q('INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by) VALUES ($1,$2,$3,$4,$5)',
-            [doc.id, np, s.points_per_foot, s.label, s.updated_by])
-        }
+        const kept = scales.map(s => ({ ...s, np: mapping.map[s.page - 1] })).filter(s => s.np)
+        if (kept.length)
+          await q(
+            `INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by)
+             SELECT $1::uuid, t.page, t.ppf, t.label, t.uid FROM unnest($2::int[], $3::float8[], $4::text[], $5::uuid[]) AS t(page, ppf, label, uid)`,
+            [doc.id, kept.map(s => s.np), kept.map(s => s.points_per_foot), kept.map(s => s.label), kept.map(s => s.updated_by)])
       }
       if (op.type === 'rotate') {
         const rows = await q<{ id: string; page: number; geometry: any }>(
           'SELECT id, page, geometry FROM markups WHERE document_id = $1 AND NOT deleted AND page = ANY($2::int[])', [doc.id, op.pages])
-        for (const m of rows) {
+        const turned = rows.flatMap(m => {
           const size = sizes[m.page - 1]
-          if (!size) continue
-          await q('UPDATE markups SET geometry = $2, version = version + 1, struct_version = version + 1, updated_by = $3, updated_at = now() WHERE id = $1',
-            [m.id, JSON.stringify(rotateGeometry(m.geometry, op.degrees, size.width, size.height)), req.user.id])
-        }
+          return size ? [{ id: m.id, geometry: rotateGeometry(m.geometry, op.degrees, size.width, size.height) }] : []
+        })
+        if (turned.length)
+          await q(
+            `UPDATE markups m SET geometry = t.geometry, version = m.version + 1, struct_version = m.version + 1, updated_by = $2, updated_at = now()
+             FROM jsonb_to_recordset($1::jsonb) AS t(id uuid, geometry jsonb) WHERE m.id = t.id`,
+            [JSON.stringify(turned), req.user.id])
       }
       return insertRevision(q, doc.id, { kind: 'upload', label, note: '', fileKey, pageCount: edited.pageCount, userId: req.user.id })
     }) } catch (e) { void storage.remove(fileKey); throw e }
@@ -825,7 +901,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!doc) return
     const up = await pageToolUpload(req, reply)
     if (!up) return
-    const pages = parsePageList(String(up.fields.pages?.value ?? ''), 1_000_000)
+    // Ranges are checked against the plan's real page count before they are expanded ("1-999999999" is rejected, not expanded).
+    const [latest] = await db.query('SELECT page_count FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
+    const pages = parsePageList(String(up.fields.pages?.value ?? ''), latest?.page_count ?? 0)
     if (!pages) return reply.code(400).send({ error: 'Pages must look like 3 or 2-4' })
     return runPageOp(req, reply, doc, { type: 'replace', pages }, `Replaced ${describePages(pages)}`, up.bytes)
   })
@@ -891,8 +969,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!validPpf(b.points_per_foot) || !Array.isArray(b.pages) || !b.pages.length || b.pages.length > 5000 || !b.pages.every(validPage))
       return reply.code(400).send({ error: 'points_per_foot and a list of pages are required' })
     const pages = [...new Set<number>(b.pages)].sort((x, y) => x - y)
-    const rows = []
-    for (const p of pages) rows.push(await upsertScale(doc.id, p, b.points_per_foot, String(b.label ?? ''), req.user.id))
+    const rows = await db.transaction(q => q(
+      `INSERT INTO page_scales (document_id, page, points_per_foot, label, updated_by)
+       SELECT $1::uuid, p, $3::float8, $4::text, $5::uuid FROM unnest($2::int[]) AS p
+       ON CONFLICT (document_id, page) DO UPDATE SET points_per_foot = EXCLUDED.points_per_foot,
+         label = EXCLUDED.label, updated_by = EXCLUDED.updated_by, updated_at = now()
+       RETURNING ${SCALE_COLUMNS}`, [doc.id, pages, b.points_per_foot, String(b.label ?? ''), req.user.id]))
+    rows.sort((x: any, y: any) => x.page - y.page)
     realtime.scalesChanged(doc.id, req.user.id, cid(req))
     return rows
   })
@@ -1073,36 +1156,43 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   app.get('/api/revu-mappings', { preHandler: auth }, async () => listRevuMappings())
 
+  // Mappings are shared by the whole organization, so only app admins may change them.
   app.put('/api/revu-mappings', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) {
-      const [r] = await db.query("SELECT 1 AS ok FROM project_members WHERE user_id = $1 AND role IN ('admin','editor') LIMIT 1", [req.user.id])
-      if (!r) return reply.code(403).send({ error: 'Not allowed' })
-    }
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
     const list = (req.body as any)?.mappings
     if (!Array.isArray(list) || list.length > 2000) return reply.code(400).send({ error: 'mappings must be a list' })
-    const clean: { signature: string; set: string | null; type: string | null; product: string | null; action: string }[] = []
+    const id = (v: unknown) => (v ? String(v).toLowerCase() : null)
+    const clean = new Map<string, { signature: string; set: string | null; type: string | null; product: string | null; action: string }>()
     for (const m of list) {
       const signature = String(m?.signature ?? '').trim()
       const action = String(m?.action ?? 'device')
       if (!signature || signature.length > 300 || !REVU_ACTIONS.includes(action)) return reply.code(400).send({ error: 'Bad mapping' })
-      const id = (v: unknown) => (v ? String(v) : null)
       const set = id(m.symbol_set_id), type = id(m.device_type_id), product = id(m.product_id)
       for (const v of [set, type, product]) if (v && !uuidRe.test(v)) return reply.code(400).send({ error: 'Bad id' })
-      if (action === 'device') {
-        if (!set) return reply.code(400).send({ error: 'A device mapping needs a symbol set' })
-        if (!(await db.query('SELECT 1 FROM symbol_sets WHERE id = $1', [set])).length) return reply.code(400).send({ error: 'Unknown symbol set' })
-        if (type && !(await db.query('SELECT 1 FROM device_types WHERE id = $1 AND symbol_set_id = $2', [type, set])).length) return reply.code(400).send({ error: 'Unknown device type' })
-        if (product && !(await db.query('SELECT 1 FROM products WHERE id = $1', [product])).length) return reply.code(400).send({ error: 'Unknown product' })
-      }
       const dev = action === 'device'
-      clean.push({ signature, set: dev ? set : null, type: dev ? type : null, product: dev ? product : null, action })
+      clean.set(signature, { signature, set: dev ? set : null, type: dev ? type : null, product: dev ? product : null, action }) // a repeated signature: last wins
     }
-    for (const c of clean)
+    // Referenced ids are checked with three queries in total, not three per mapping.
+    const devices = [...clean.values()].filter(c => c.action === 'device')
+    const ids = (pick: (c: (typeof devices)[number]) => string | null) => [...new Set(devices.map(pick).filter((v): v is string => !!v))]
+    const sets = new Set((await db.query<{ id: string }>('SELECT id FROM symbol_sets WHERE id = ANY($1::uuid[])', [ids(c => c.set)])).map(r => r.id))
+    const types = new Map((await db.query<{ id: string; symbol_set_id: string }>(
+      'SELECT id, symbol_set_id FROM device_types WHERE id = ANY($1::uuid[])', [ids(c => c.type)])).map(r => [r.id, r.symbol_set_id]))
+    const products = new Set((await db.query<{ id: string }>('SELECT id FROM products WHERE id = ANY($1::uuid[])', [ids(c => c.product)])).map(r => r.id))
+    for (const c of devices) {
+      if (!c.set) return reply.code(400).send({ error: 'A device mapping needs a symbol set' })
+      if (!sets.has(c.set)) return reply.code(400).send({ error: 'Unknown symbol set' })
+      if (c.type && types.get(c.type) !== c.set) return reply.code(400).send({ error: 'Unknown device type' })
+      if (c.product && !products.has(c.product)) return reply.code(400).send({ error: 'Unknown product' })
+    }
+    const rows = [...clean.values()]
+    if (rows.length)
       await db.query(
-        `INSERT INTO revu_mappings (signature, symbol_set_id, device_type_id, product_id, action) VALUES ($1,$2,$3,$4,$5)
+        `INSERT INTO revu_mappings (signature, symbol_set_id, device_type_id, product_id, action)
+         SELECT * FROM unnest($1::text[], $2::uuid[], $3::uuid[], $4::uuid[], $5::text[])
          ON CONFLICT (signature) DO UPDATE SET symbol_set_id = EXCLUDED.symbol_set_id, device_type_id = EXCLUDED.device_type_id,
            product_id = EXCLUDED.product_id, action = EXCLUDED.action, updated_at = now()`,
-        [c.signature, c.set, c.type, c.product, c.action])
+        [rows.map(c => c.signature), rows.map(c => c.set), rows.map(c => c.type), rows.map(c => c.product), rows.map(c => c.action)])
     return listRevuMappings()
   })
 
@@ -1642,7 +1732,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return reply.send(stream)
   })
 
-  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser })
+  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX })
 
   // ---- Built web app (production) ----
   if (webDir && existsSync(webDir)) {

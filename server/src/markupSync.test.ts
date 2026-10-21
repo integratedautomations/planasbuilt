@@ -37,7 +37,7 @@ beforeAll(async () => {
   app = await buildApp({ db, jwtSecret: 'test', filesDir: mkdtempSync(path.join(tmpdir(), 'pm-ms-')) })
   await app.listen({ port: 0, host: '127.0.0.1' })
   port = (app.server.address() as any).port
-  admin = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'Ann', password: 'password1' } })).json().token
+  admin = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'Ann', password: 'password1', setupCode: 'test-setup-code' } })).json().token
   project = (await app.inject({ method: 'POST', url: '/api/projects', headers: h(), payload: { name: 'P' } })).json().id
 })
 afterAll(async () => { await app.close() })

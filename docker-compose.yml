@@ -10,6 +10,10 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgres://planmark:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/planmark
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      # https://pab.example.com : used for invite/reset links and CORS. Strongly recommended (see .env.example).
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      # Optional first-run setup code; if empty one is generated and logged while there are no users.
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
     volumes:
       - files:/data
     # Uncomment for local debugging only (loopback, never public):
@@ -47,6 +51,7 @@ services:
         condition: service_healthy
 
   # Nightly pg_dump (custom format) + tar of the files volume -> ./backups, 14-day retention.
+  # backup.sh makes ./backups mode 700 and every backup file mode 600 (they contain password hashes and all plans).
   backup:
     image: postgres:17
     restart: unless-stopped

@@ -28,9 +28,13 @@ export interface Conn extends Peer {
   removed?: boolean
   windowStart: number
   windowCount: number
+  joinWindowStart: number
+  joinCount: number
 }
 
 const MAX_PRESENCE_PER_SEC = 15
+/** Joins cost a database lookup each, so they are limited per socket. */
+const JOIN_WINDOW_MS = 10_000, MAX_JOINS_PER_WINDOW = 20
 
 /** Rooms of websocket connections keyed by document id, plus broadcast helpers. */
 export class Realtime {
@@ -54,11 +58,25 @@ export class Realtime {
   add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null }): Conn {
     const c: Conn = {
       socket, ...info, avatar: info.avatar ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
-      documentId: null, alive: true, windowStart: 0, windowCount: 0,
+      documentId: null, alive: true, windowStart: 0, windowCount: 0, joinWindowStart: 0, joinCount: 0,
     }
     this.conns.add(c)
     socket.on('pong', () => { c.alive = true })
     return c
+  }
+
+  /** Open sockets of a user (across all their devices and tabs). */
+  countFor(userId: string) {
+    let n = 0
+    for (const c of this.conns) if (c.userId === userId) n++
+    return n
+  }
+
+  /** False when this socket is joining rooms too fast (a fixed window per socket). */
+  allowJoin(c: Conn) {
+    const now = Date.now()
+    if (now - c.joinWindowStart >= JOIN_WINDOW_MS) { c.joinWindowStart = now; c.joinCount = 0 }
+    return ++c.joinCount <= MAX_JOINS_PER_WINDOW
   }
 
   remove(c: Conn) {

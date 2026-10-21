@@ -98,16 +98,17 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
   const [u, setU] = useState<ManagedUser | null>(null)
   const [name, setName] = useState('')
   const [admin, setAdmin] = useState(false)
+  const [canCreate, setCanCreate] = useState(false)
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
   const [link, setLink] = useState<LinkResult | null>(null)
   const [addId, setAddId] = useState('')
   const [addRole, setAddRole] = useState<Role>('editor')
 
-  const apply = (next: ManagedUser) => { setU(next); setName(next.name); setAdmin(next.is_admin); onChanged() }
+  const apply = (next: ManagedUser) => { setU(next); setName(next.name); setAdmin(next.is_admin); setCanCreate(next.can_create_projects); onChanged() }
   useEffect(() => {
     setU(null); setLink(null); setError(''); setMsg('')
-    api<ManagedUser>(`/users/${id}`).then(next => { setU(next); setName(next.name); setAdmin(next.is_admin) }).catch(e => setError(e.message))
+    api<ManagedUser>(`/users/${id}`).then(next => { setU(next); setName(next.name); setAdmin(next.is_admin); setCanCreate(next.can_create_projects) }).catch(e => setError(e.message))
   }, [id])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -130,7 +131,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
 
   function submit(e: FormEvent) {
     e.preventDefault()
-    void patch({ name, is_admin: admin })
+    void patch({ name, is_admin: admin, can_create_projects: canCreate })
   }
 
   return (
@@ -150,7 +151,10 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
                   <option value="admin">Admin (manages settings and users)</option>
                 </select>
               </label>
-              <div><button className="primary" disabled={name === u.name && admin === u.is_admin}>Save</button></div>
+              <label className="check">
+                <input type="checkbox" checked={admin || canCreate} disabled={admin} onChange={e => setCanCreate(e.target.checked)} /> Can create projects{admin && <span className="muted small"> (admins always can)</span>}
+              </label>
+              <div><button className="primary" disabled={name === u.name && admin === u.is_admin && canCreate === u.can_create_projects}>Save</button></div>
             </form>
 
             <h4>Projects</h4>

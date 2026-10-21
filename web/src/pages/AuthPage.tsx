@@ -9,6 +9,7 @@ export function AuthPage({ onSignedIn }: Props) {
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [setupCode, setSetupCode] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [forgot, setForgot] = useState(false)
@@ -24,7 +25,7 @@ export function AuthPage({ onSignedIn }: Props) {
     setBusy(true); setError('')
     try {
       const res = needsSetup
-        ? await post<{ token: string; user: User }>('/auth/setup', { email, name, password })
+        ? await post<{ token: string; user: User }>('/auth/setup', { email, name, password, setupCode: setupCode.trim() })
         : await post<{ token: string; user: User }>('/auth/login', { email, password })
       onSignedIn(res.token, res.user)
     } catch (err) {
@@ -41,6 +42,12 @@ export function AuthPage({ onSignedIn }: Props) {
         <p className="muted">
           {needsSetup ? 'Create the first admin account.' : 'Sign in to your team workspace.'}
         </p>
+        {needsSetup && (
+          <label>Setup code
+            <input value={setupCode} onChange={e => setSetupCode(e.target.value)} required autoComplete="off" spellCheck={false} />
+            <span className="muted small">Printed in the server log on first start (<code>docker compose logs app</code>), or the SETUP_TOKEN you configured.</span>
+          </label>
+        )}
         {needsSetup && (
           <label>Name<input value={name} onChange={e => setName(e.target.value)} required autoComplete="name" /></label>
         )}

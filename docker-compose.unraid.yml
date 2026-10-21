@@ -3,6 +3,8 @@
 #   docker compose -f docker-compose.yml -f docker-compose.unraid.yml up -d
 # The image is private: run `docker login ghcr.io` once on Unraid (username + a PAT with read:packages).
 # Pin a version with PLANASBUILT_TAG=sha-<commit> in .env to roll back.
+# Add PUBLIC_URL=https://<your tunnel hostname> to .env (the base compose file passes it to the app): invite/reset links
+# and CORS use it. The LAN port below is for trusted LAN access only; anything on your LAN can reach it directly.
 services:
   app:
     image: ghcr.io/integratedautomations/planasbuilt:${PLANASBUILT_TAG:-latest}

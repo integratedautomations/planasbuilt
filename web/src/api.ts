@@ -2,7 +2,7 @@ import { getClientId } from './realtime/clientId'
 
 export type Role = 'admin' | 'editor' | 'viewer'
 
-export interface User { id: string; email: string; name: string; is_admin: boolean; avatar?: number | null }
+export interface User { id: string; email: string; name: string; is_admin: boolean; /** Admins always can; other people only when an admin granted it. */ can_create_projects?: boolean; avatar?: number | null }
 export interface Project { id: string; name: string; created_at: string; role: Role; document_count?: number; status?: 'open' | 'completed'; completed_at?: string | null }
 export interface DocumentSummary {
   id: string; name: string; created_at: string; device_scale?: number
@@ -106,7 +106,7 @@ export const companyLogoUrl = (v?: string | number) =>
 
 export type UserStatus = 'active' | 'invited' | 'deactivated'
 export interface ManagedUser {
-  id: string; email: string; name: string; is_admin: boolean; status: UserStatus
+  id: string; email: string; name: string; is_admin: boolean; can_create_projects: boolean; status: UserStatus
   last_seen_at: string | null; created_at: string; project_count: number; invite_expires_at: string | null
   projects?: { id: string; name: string; role: Role }[]
 }

@@ -18,7 +18,7 @@ beforeAll(async () => {
   const db = await openDb(undefined, null)
   await migrate(db)
   app = await buildApp({ db, jwtSecret: 'test', filesDir: mkdtempSync(path.join(tmpdir(), 'pm-prof-')) })
-  const setup = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'Ann Admin', password: 'password1' } })).json()
+  const setup = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'Ann Admin', password: 'password1', setupCode: 'test-setup-code' } })).json()
   admin = setup.token; adminId = setup.user.id
   await app.inject({ method: 'POST', url: '/api/users', headers: H(admin), payload: { email: 'b@x.com', name: 'Bob', password: 'password1' } })
   bob = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'b@x.com', password: 'password1' } })).json().token

@@ -40,8 +40,8 @@ beforeAll(async () => {
   const db = await openDb(undefined, null)
   await migrate(db)
   filesDir = mkdtempSync(path.join(tmpdir(), 'pm-admin-'))
-  app = await buildApp({ db, jwtSecret: 'test', filesDir, s3Factory: fakeS3 })
-  admin = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'boss@x.com', name: 'Boss', password: 'password1' } })).json().token
+  app = await buildApp({ db, jwtSecret: 'test', filesDir, s3Factory: fakeS3, publicUrl: 'https://pm.example.com' })
+  admin = (await app.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'boss@x.com', name: 'Boss', password: 'password1', setupCode: 'test-setup-code' } })).json().token
 })
 
 const login = (email: string, password: string) => app.inject({ method: 'POST', url: '/api/auth/login', payload: { email, password } })
@@ -118,7 +118,7 @@ describe('invites and resets', () => {
   let projectId = ''
   it('creates an invite that can be accepted once', async () => {
     projectId = (await app.inject({ method: 'POST', url: '/api/projects', headers: H(), payload: { name: 'Inv' } })).json().id
-    const res = await app.inject({ method: 'POST', url: '/api/invites', headers: { ...H(), origin: 'https://pm.example.com' },
+    const res = await app.inject({ method: 'POST', url: '/api/invites', headers: { ...H(), origin: 'https://evil.example' }, // links come from PUBLIC_URL, never the Origin header
       payload: { email: 'New@x.com', role: 'user', projects: [{ id: projectId, role: 'editor' }] } })
     expect(res.statusCode).toBe(200)
     const inv = res.json()
@@ -159,7 +159,7 @@ describe('invites and resets', () => {
     const dbq = await openDb(undefined, null)
     await migrate(dbq)
     const a2 = await buildApp({ db: dbq, jwtSecret: 't', filesDir: mkdtempSync(path.join(tmpdir(), 'pm-x-')) })
-    const adm = (await a2.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'A', password: 'password1' } })).json().token
+    const adm = (await a2.inject({ method: 'POST', url: '/api/auth/setup', payload: { email: 'a@x.com', name: 'A', password: 'password1', setupCode: 'test-setup-code' } })).json().token
     const inv = (await a2.inject({ method: 'POST', url: '/api/invites', headers: { authorization: `Bearer ${adm}` }, payload: { email: 'e@x.com', role: 'user' } })).json()
     await dbq.query("UPDATE user_tokens SET expires_at = now() - interval '1 minute'")
     const res = await a2.inject(`/api/invites/${tokenOf(inv.link)}`)

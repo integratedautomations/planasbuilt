@@ -31,7 +31,7 @@ describe('milestone 1 api', () => {
   it('sets up the first admin only once', async () => {
     expect((await app.inject('/api/auth/status')).json()).toEqual({ needsSetup: true })
     const res = await app.inject({ method: 'POST', url: '/api/auth/setup',
-      payload: { email: 'Boss@x.com', name: 'Boss', password: 'password1' } })
+      payload: { email: 'Boss@x.com', name: 'Boss', password: 'password1', setupCode: 'test-setup-code' } })
     expect(res.statusCode).toBe(200)
     admin = res.json().token
     const again = await app.inject({ method: 'POST', url: '/api/auth/setup',
@@ -218,7 +218,7 @@ describe('milestone 1 api', () => {
     // viewers cannot save
     const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
     const vr = await put({ mappings: [{ signature: 'v', action: 'plain' }] }, { authorization: `Bearer ${viewer}` })
-    expect([200, 403]).toContain(vr.statusCode)
+    expect(vr.statusCode).toBe(403)
     expect((await app.inject({ url: '/api/revu-mappings' })).statusCode).toBe(401)
   })
 

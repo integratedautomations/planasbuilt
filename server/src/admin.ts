@@ -29,6 +29,10 @@ export interface AdminContext {
   keepsAnAdmin: (projectId: string, userId: string) => Promise<boolean>
   dropFromProject: (userId: string, projectId: string) => Promise<void>
   publicUser: (u: any) => any
+  /** The site's public origin (PUBLIC_URL), or null when unset. Every emailed or returned link is built from it. */
+  publicUrl: string | null
+  /** Invite requests allowed per user per hour. */
+  inviteRateLimitMax: number
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -44,17 +48,29 @@ const NO_PASSWORD = '!'
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 export async function registerAdmin(ctx: AdminContext) {
-  const { app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser } = ctx
+  const { app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser, publicUrl, inviteRateLimitMax } = ctx
 
   const adminOnly = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.user.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return false }
     return true
   }
-  const originOf = (req: FastifyRequest) => {
-    const o = req.headers.origin
-    if (typeof o === 'string' && /^https?:\/\/[^/\s]+$/.test(o)) return o
-    return `${req.protocol}://${req.headers.host ?? req.hostname}`
+  /**
+   * Base of every invite / reset link: PUBLIC_URL when configured. Never the Origin header, which the client controls.
+   * Without PUBLIC_URL it falls back to this request's Host (protocol from the trusted proxy), which only an authenticated
+   * admin's own request can influence.
+   */
+  const linkBase = (req: FastifyRequest) => {
+    if (publicUrl) return publicUrl
+    const host = req.headers.host
+    const plain = /^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-fA-F:]+\](:\d{1,5})?$/ // a bare host[:port], nothing that could carry a path or markup
+    return `${req.protocol}://${typeof host === 'string' && plain.test(host) ? host : 'localhost'}`
   }
+  // Creating or resending invites: per signed-in user, shared by the three routes that do it. The limiter runs after
+  // authentication (preHandler) so it can key on the user.
+  const inviteLimit = { config: { rateLimit: {
+    max: inviteRateLimitMax, timeWindow: '1 hour', hook: 'preHandler' as const, groupId: 'invites',
+    keyGenerator: (req: FastifyRequest) => `user:${req.user.id}`,
+  } } }
 
   // ---- Company + public-to-members settings ----
   async function companyInfo() {
@@ -299,7 +315,7 @@ export async function registerAdmin(ctx: AdminContext) {
 
   // ---- Users ----
   const USER_LIST_SQL = `
-    SELECT u.id, u.email, u.name, u.is_admin, u.status, u.last_seen_at, u.created_at,
+    SELECT u.id, u.email, u.name, u.is_admin, u.can_create_projects, u.status, u.last_seen_at, u.created_at,
       (SELECT count(*)::int FROM project_members m WHERE m.user_id = u.id) AS project_count,
       (SELECT t.expires_at FROM user_tokens t WHERE t.user_id = u.id AND t.purpose = 'invite' AND t.used_at IS NULL
          ORDER BY t.created_at DESC LIMIT 1) AS invite_expires_at
@@ -352,6 +368,7 @@ export async function registerAdmin(ctx: AdminContext) {
       if (!name) return reply.code(400).send({ error: 'Name is required' })
     }
     if ('is_admin' in b) isAdmin = !!b.is_admin
+    const canCreate = 'can_create_projects' in b ? !!b.can_create_projects : !!u.can_create_projects
     if ('status' in b) {
       if (!['active', 'deactivated'].includes(b.status)) return reply.code(400).send({ error: 'Status must be active or deactivated' })
       if (u.status === 'invited') return reply.code(400).send({ error: 'This person has not accepted their invite yet. Revoke the invite instead.' })
@@ -365,7 +382,8 @@ export async function registerAdmin(ctx: AdminContext) {
       return reply.code(400).send({ error: 'There must be at least one active admin' })
     // A role or status change signs the person out everywhere (their old tokens carry the old token_version).
     const bump = isAdmin !== u.is_admin || status !== u.status ? 1 : 0
-    await db.query('UPDATE users SET name = $1, is_admin = $2, status = $3, token_version = token_version + $5 WHERE id = $4', [name, isAdmin, status, id, bump])
+    await db.query('UPDATE users SET name = $1, is_admin = $2, status = $3, token_version = token_version + $5, can_create_projects = $6 WHERE id = $4',
+      [name, isAdmin, status, id, bump, canCreate])
     forgetUser(id)
     if (bump) realtime.kickUser(id)
     return userDetail(id)
@@ -467,7 +485,7 @@ export async function registerAdmin(ctx: AdminContext) {
     for (const p of input.projects)
       await db.query(`INSERT INTO project_members VALUES ($1,$2,$3) ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`, [p.id, userId, p.role])
     const t = await makeToken(userId, 'invite', req.user.id)
-    const link = linkFor(originOf(req), 'invite', t.raw)
+    const link = linkFor(linkBase(req), 'invite', t.raw)
     const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
     const mail = await maybeEmail(email, 'invite', link, me?.name ?? 'An admin')
     return { user_id: userId, email, link, expires_at: t.expires_at, ...mail }
@@ -476,7 +494,7 @@ export async function registerAdmin(ctx: AdminContext) {
   const cleanProjects = (v: unknown): { id: string; role: Role }[] =>
     (Array.isArray(v) ? v : []).filter(p => p && typeof p === 'object').map((p: any) => ({ id: String(p.id), role: p.role }))
 
-  app.post('/api/invites', { preHandler: auth }, async (req, reply) => {
+  app.post('/api/invites', { preHandler: auth, ...inviteLimit }, async (req, reply) => {
     if (!(await adminOnly(req, reply))) return
     const b = (req.body ?? {}) as any
     return createInvite(req, reply, {
@@ -485,7 +503,7 @@ export async function registerAdmin(ctx: AdminContext) {
   })
 
   // A project admin can invite someone straight into their project (never as an app admin).
-  app.post('/api/projects/:id/invites', { preHandler: auth }, async (req, reply) => {
+  app.post('/api/projects/:id/invites', { preHandler: auth, ...inviteLimit }, async (req, reply) => {
     const { id } = req.params as any
     if (!(await requireRole(req, reply, id, 'admin'))) return
     const b = (req.body ?? {}) as any
@@ -494,13 +512,13 @@ export async function registerAdmin(ctx: AdminContext) {
     })
   })
 
-  app.post('/api/users/:id/invite', { preHandler: auth }, async (req, reply) => {
+  app.post('/api/users/:id/invite', { preHandler: auth, ...inviteLimit }, async (req, reply) => {
     if (!(await adminOnly(req, reply))) return
     const { id } = req.params as any
     const [u] = UUID_RE.test(id) ? await db.query('SELECT id, email, status FROM users WHERE id = $1', [id]) : []
     if (!u || u.status !== 'invited') return reply.code(404).send({ error: 'No pending invite for that user' })
     const t = await makeToken(u.id, 'invite', req.user.id)
-    const link = linkFor(originOf(req), 'invite', t.raw)
+    const link = linkFor(linkBase(req), 'invite', t.raw)
     const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
     return { user_id: u.id, email: u.email, link, expires_at: t.expires_at, ...(await maybeEmail(u.email, 'invite', link, me?.name ?? 'An admin')) }
   })
@@ -523,7 +541,7 @@ export async function registerAdmin(ctx: AdminContext) {
     if (!u) return reply.code(404).send({ error: 'Not found' })
     if (u.status === 'invited') return reply.code(400).send({ error: 'This person has not accepted their invite yet. Resend the invite instead.' })
     const t = await makeToken(u.id, 'reset', req.user.id)
-    const link = linkFor(originOf(req), 'reset', t.raw)
+    const link = linkFor(linkBase(req), 'reset', t.raw)
     return { user_id: u.id, email: u.email, link, expires_at: t.expires_at, ...(await maybeEmail(u.email, 'reset', link, 'An admin')) }
   })
 
