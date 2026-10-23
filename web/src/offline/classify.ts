@@ -14,6 +14,7 @@ export function classifyError(e: unknown): ErrorClass {
   const s = e.status
   if (s === 401) return 'auth'
   if (s === 502 || s === 503 || s === 504 || s === 0) return 'network' // dev proxy / gateway with server down
+  if (s === 423) return 'permanent' // company archived: it will not come back by retrying
   if (s === 408 || s === 425 || s === 429 || s >= 500) return 'retry'
   if (s >= 400) return 'permanent'
   return 'retry'

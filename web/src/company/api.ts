@@ -48,3 +48,9 @@ export function describeMove(r: MoveResult): string[] {
   if (typeof r.members_added === 'number') lines.push(`${r.members_added} member${r.members_added === 1 ? '' : 's'} added to the new company`)
   return lines
 }
+
+/** Invitations for an existing account to join a company (the person must accept). `id` is the invitation id. */
+export interface CompanyInvitation { id: string; company: { id: string; name: string }; role: string; projects: number; invited_by: string | null; created_at: string }
+export const listInvitations = () => api<CompanyInvitation[]>('/company-invitations')
+export const acceptInvitation = (id: string) => api<unknown>(`/company-invitations/${id}/accept`, { method: 'POST' })
+export const declineInvitation = (id: string) => api<unknown>(`/company-invitations/${id}/decline`, { method: 'POST' })

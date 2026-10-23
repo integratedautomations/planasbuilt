@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises'
 import { BlockList, isIP } from 'node:net'
 import type { FastifyRequest } from 'fastify'
 
@@ -44,4 +45,41 @@ export function normalizePublicUrl(raw: string | undefined | null): string | nul
   try { u = new URL(s) } catch { throw new Error(`PUBLIC_URL is not a valid URL: ${s}`) }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('PUBLIC_URL must start with https:// (or http://)')
   return u.origin
+}
+
+// ---- Outbound requests an admin can aim (S3 endpoint, SMTP host): refuse the server's own network ----
+const INTERNAL = new BlockList()
+for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15]] as const)
+  INTERNAL.addSubnet(net, bits, 'ipv4')
+INTERNAL.addAddress('::', 'ipv6'); INTERNAL.addAddress('::1', 'ipv6')
+INTERNAL.addSubnet('fc00::', 7, 'ipv6'); INTERNAL.addSubnet('fe80::', 10, 'ipv6')
+
+/** Loopback, private, link-local (cloud metadata) and other non-public addresses. */
+export function isInternalAddress(addr: string): boolean {
+  const a = stripMapped(addr.replace(/^\[|\]$/g, ''))
+  const kind = isIP(a)
+  return kind !== 0 && INTERNAL.check(a, kind === 4 ? 'ipv4' : 'ipv6')
+}
+
+export type HostResolver = (host: string) => Promise<string[]>
+let resolveHost: HostResolver = async host => (await lookup(host, { all: true })).map(r => r.address)
+/** Tests replace DNS here. */
+export const setHostResolver = (r: HostResolver) => { resolveHost = r }
+
+export const INTERNAL_HOST_MESSAGE = 'That address points at a private or internal network. Only a platform admin can use one.'
+
+/** A problem message when `host` (a name or IP) is, or resolves to, a private/loopback/link-local address; null when it is public or cannot be resolved. */
+export async function internalHostProblem(host: string): Promise<string | null> {
+  const h = host.trim().replace(/^\[|\]$/g, '')
+  if (!h) return null
+  if (/^localhost$|\.localhost$|\.internal$|\.local$/i.test(h)) return INTERNAL_HOST_MESSAGE
+  if (isIP(h)) return isInternalAddress(h) ? INTERNAL_HOST_MESSAGE : null
+  let addrs: string[] = []
+  try { addrs = await resolveHost(h) } catch { return null } // unknown names cannot reach anything
+  return addrs.some(isInternalAddress) ? INTERNAL_HOST_MESSAGE : null
+}
+
+/** The host of an endpoint URL (or a bare host), '' when there is none. */
+export function hostOf(endpoint: string): string {
+  try { return new URL(endpoint).hostname } catch { return '' }
 }

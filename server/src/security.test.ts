@@ -69,13 +69,14 @@ describe('invites by project admins', () => {
     const inv = (await api('POST', '/api/invites', admin, { email: 'pend@x.com', role: 'admin', projects: [{ id: other, role: 'viewer' }] })).json()
     const oldToken = inv.link.split('/').pop()
     const res = await api('POST', `/api/projects/${project}/invites`, pat, { email: 'pend@x.com', role: 'editor', name: 'Hacked' })
-    expect(res.statusCode).toBe(409)
-    // link still valid (token not regenerated), still an admin invite, name untouched, but added to the project
+    // the answer is the same as for any address, no link, and nothing changed
+    expect(res.json()).toEqual({ ok: true, email: 'pend@x.com', invited: true })
+    // link still valid (token not regenerated), still an admin invite, name untouched, NOT added to the project
     expect((await app.inject(`/api/invites/${oldToken}`)).statusCode).toBe(200)
     const u = (await api('GET', `/api/users/${inv.user_id}`, admin)).json()
     expect(u).toMatchObject({ is_admin: true, status: 'invited' })
     expect(u.name).not.toBe('Hacked')
-    expect(u.projects.map((p: any) => p.id).sort()).toEqual([project, other].sort())
+    expect(u.projects.map((p: any) => p.id)).toEqual([other])
   })
 
   it('never lets a project admin set isAdmin, even on their own invite', async () => {
@@ -85,7 +86,8 @@ describe('invites by project admins', () => {
     expect(first.statusCode).toBe(200)
     const again = await api('POST', `/api/projects/${project}/invites`, pat, { email: 'mine@x.com', role: 'viewer', isAdmin: true })
     expect(again.statusCode).toBe(200) // their own invite may be re-sent
-    expect((await api('GET', `/api/users/${first.json().user_id}`, admin)).json().is_admin).toBe(false)
+    const mine = (await api('GET', '/api/users', admin)).json().find((x: any) => x.email === 'mine@x.com')
+    expect(mine).toMatchObject({ is_admin: false, company_role: 'guest' }) // a project invite is at most a guest of the company
   })
 })
 

@@ -112,3 +112,8 @@
 
 /* ---- Project tabs ---- */
 .auth-card .link-btn.forgot { align-self: flex-start; }
+.user-menu-invites { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.user-menu-invite { display: flex; gap: 6px; align-items: center; }
+.user-menu-invite span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar-btn { position: relative; }
+.invite-dot { position: absolute; top: 0; right: 0; width: 9px; height: 9px; border-radius: 50%; background: var(--accent, #d33); }

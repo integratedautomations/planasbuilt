@@ -191,3 +191,20 @@ describe('messages', () => {
     expect(pres[pres.length - 1].cursor.x).toBe(29)
   })
 })
+
+describe('company message while connecting', () => {
+  it('is sent once the socket opens, and the connect URL carries the latest company', () => {
+    store['planmark.activeCompany'] = 'old'
+    socket.connect()
+    socket.setSocketCompany('new')
+    expect(last().sent).toEqual([])
+    last().open()
+    expect(last().sent[0]).toEqual({ type: 'company', companyId: 'new' })
+  })
+  it('a connect after the switch uses the new company in the URL', () => {
+    store['planmark.activeCompany'] = 'old'
+    socket.setSocketCompany('new')
+    socket.connect()
+    expect(last().url).toContain('company=new')
+  })
+})

@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import pg from 'pg'
 import { PGlite } from '@electric-sql/pglite'
+import { companyFolder } from './fileLayout.js'
 
 export interface Db {
   query<T = any>(sql: string, params?: unknown[]): Promise<T[]>
@@ -239,6 +240,8 @@ CREATE TABLE IF NOT EXISTS relayout_jobs (
   next_run_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS relayout_jobs_open ON relayout_jobs(status, next_run_at);
+-- Keys whose original file may still need deleting after a move was committed (the worker sweeps them if it crashed in between).
+ALTER TABLE relayout_jobs ADD COLUMN IF NOT EXISTS pending_unlinks jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version int NOT NULL DEFAULT 0;
@@ -426,12 +429,38 @@ export async function seedStarterCatalog(q: Q, companyId: string) {
 export const slugify = (name: string) =>
   name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'company'
 
-/** Creates a company (unique slug) with its branding row. Run inside a transaction when other writes depend on it. */
-export async function createCompanyRow(q: Q, name: string): Promise<{ id: string; name: string; slug: string; archived: boolean; created_at: string }> {
+/**
+ * The folder a company gets on the file share: its sanitized name, or "name (2)", "name (3)"... when another company already has
+ * that folder (compared without case: SMB shares and Windows disks are case-insensitive). Assigned once; renames do not move it.
+ */
+export async function uniqueCompanyFolder(q: Q, name: string, exceptId: string | null = null): Promise<string> {
+  const base = companyFolder(name)
+  for (let n = 1; n < 10_000; n++) {
+    const cand = n === 1 ? base : `${base} (${n})`
+    const hit = await q('SELECT 1 FROM companies WHERE lower(folder) = lower($1) AND ($2::uuid IS NULL OR id <> $2::uuid) LIMIT 1', [cand, exceptId])
+    if (!hit.length) return cand
+  }
+  throw new Error('Could not find a free company folder')
+}
+
+/**
+ * Renames a company. Its folder follows the new name only when that folder is free (no other company has it, ignoring case);
+ * otherwise the old folder stays, so two companies can never end up sharing one. `followFolder: false` keeps the folder as it is.
+ */
+export async function setCompanyName(q: Q, id: string, name: string, followFolder = true) {
+  await q('UPDATE companies SET name = $2 WHERE id = $1', [id, name])
+  if (!followFolder) return
+  const want = await uniqueCompanyFolder(q, name, id)
+  if (want.toLowerCase() === companyFolder(name).toLowerCase()) await q('UPDATE companies SET folder = $2 WHERE id = $1 AND folder IS DISTINCT FROM $2', [id, want])
+}
+
+/** Creates a company (unique slug and folder) with its branding row. Run inside a transaction when other writes depend on it. */
+export async function createCompanyRow(q: Q, name: string): Promise<{ id: string; name: string; slug: string; folder: string; archived: boolean; created_at: string }> {
   const base = slugify(name)
   let slug = base
   for (let n = 2; (await q('SELECT 1 FROM companies WHERE slug = $1', [slug])).length; n++) slug = `${base}-${n}`
-  const [c] = await q('INSERT INTO companies (name, slug) VALUES ($1,$2) RETURNING id, name, slug, archived, created_at', [name, slug])
+  const folder = await uniqueCompanyFolder(q, name)
+  const [c] = await q('INSERT INTO companies (name, slug, folder) VALUES ($1,$2,$3) RETURNING id, name, slug, folder, archived, created_at', [name, slug, folder])
   await q(`INSERT INTO settings (company_id, key, value) VALUES ($1,'company',$2) ON CONFLICT DO NOTHING`, [c.id, JSON.stringify({ name })])
   return c
 }
@@ -507,12 +536,38 @@ async function upgradeToCompanies(db: Db) {
     }
     for (const t of ['projects', 'symbol_sets', 'device_types', 'products', 'cable_types', 'revu_mappings'])
       await q(`CREATE INDEX IF NOT EXISTS ${t}_company ON ${t}(company_id)`)
+
+    // Each company's folder on the file share: assigned once (oldest company first, so existing paths keep their folder), unique
+    // without case. Companies that had to take "name (2)" have their files queued to move out of the folder they used to share.
+    await q('ALTER TABLE companies ADD COLUMN IF NOT EXISTS folder text')
+    const unfoldered = await q<{ id: string; name: string }>('SELECT id, name FROM companies WHERE folder IS NULL ORDER BY created_at, id')
+    for (const c of unfoldered) {
+      const folder = await uniqueCompanyFolder(q, c.name, c.id)
+      await q('UPDATE companies SET folder = $2 WHERE id = $1', [c.id, folder])
+      if (folder !== companyFolder(c.name))
+        await q(`INSERT INTO relayout_jobs (kind, scope, scope_id, company_id) VALUES ('relayout','company',$1::text,$1::uuid)`, [c.id])
+    }
+    await q('CREATE UNIQUE INDEX IF NOT EXISTS companies_folder_ci ON companies (lower(folder))')
+
+    // A company inviting someone who already has an account: they join only when they accept (consent).
+    await q(`CREATE TABLE IF NOT EXISTS company_invitations (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role text NOT NULL CHECK (role IN ('owner','admin','member','guest')),
+      can_create_projects boolean NOT NULL DEFAULT false,
+      projects jsonb NOT NULL DEFAULT '[]',
+      invited_by uuid REFERENCES users(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (company_id, user_id)
+    )`)
+    await q('CREATE INDEX IF NOT EXISTS company_invitations_user ON company_invitations(user_id)')
   })
 }
 
 /**
  * Database triggers that queue a re-layout job (relayout_jobs) whenever a name that is part of a file's readable path changes:
- * company / project / plan name, a project's company, a device's tag, device type or plan, a photo caption, a device type name.
+ * company folder (not the company name: the folder is stored and does not follow renames), project / plan name, a project's company, a device's tag, device type or plan, a photo caption, a device type name.
  * Doing it in the database means every code path that renames something is covered, inside the same transaction.
  */
 const RELAYOUT_TRIGGERS: string[] = [
@@ -524,7 +579,7 @@ const RELAYOUT_TRIGGERS: string[] = [
    END $$ LANGUAGE plpgsql`,
   `CREATE OR REPLACE FUNCTION relayout_on_company() RETURNS trigger AS $$
    BEGIN
-     IF NEW.name IS DISTINCT FROM OLD.name THEN PERFORM relayout_enqueue('company', NEW.id::text, NEW.id); END IF;
+     IF OLD.folder IS NOT NULL AND NEW.folder IS DISTINCT FROM OLD.folder THEN PERFORM relayout_enqueue('company', NEW.id::text, NEW.id); END IF;
      RETURN NEW;
    END $$ LANGUAGE plpgsql`,
   `CREATE OR REPLACE FUNCTION relayout_on_project() RETURNS trigger AS $$
@@ -545,7 +600,7 @@ const RELAYOUT_TRIGGERS: string[] = [
    BEGIN
      IF (NEW.tag IS DISTINCT FROM OLD.tag OR NEW.device_type_id IS DISTINCT FROM OLD.device_type_id OR NEW.document_id IS DISTINCT FROM OLD.document_id)
         AND EXISTS (SELECT 1 FROM attachments WHERE markup_id = NEW.id) THEN
-       PERFORM relayout_enqueue('markup', NEW.id::text,
+       PERFORM relayout_enqueue('document', NEW.document_id::text,
          (SELECT p.company_id FROM documents d JOIN projects p ON p.id = d.project_id WHERE d.id = NEW.document_id));
      END IF;
      RETURN NEW;
@@ -553,7 +608,7 @@ const RELAYOUT_TRIGGERS: string[] = [
   `CREATE OR REPLACE FUNCTION relayout_on_attachment() RETURNS trigger AS $$
    BEGIN
      IF NEW.caption IS DISTINCT FROM OLD.caption THEN
-       PERFORM relayout_enqueue('attachment', NEW.id::text,
+       PERFORM relayout_enqueue('document', (SELECT m.document_id::text FROM markups m WHERE m.id = NEW.markup_id),
          (SELECT p.company_id FROM markups m JOIN documents d ON d.id = m.document_id JOIN projects p ON p.id = d.project_id WHERE m.id = NEW.markup_id));
      END IF;
      RETURN NEW;
@@ -564,7 +619,7 @@ const RELAYOUT_TRIGGERS: string[] = [
      RETURN NEW;
    END $$ LANGUAGE plpgsql`,
   ...([
-    ['relayout_company', 'companies', 'name', 'relayout_on_company'],
+    ['relayout_company', 'companies', 'folder', 'relayout_on_company'],
     ['relayout_project', 'projects', 'name, company_id', 'relayout_on_project'],
     ['relayout_document', 'documents', 'name, project_id', 'relayout_on_document'],
     ['relayout_markup', 'markups', 'tag, device_type_id, document_id', 'relayout_on_markup'],
@@ -576,11 +631,40 @@ const RELAYOUT_TRIGGERS: string[] = [
   ]),
 ]
 
+/**
+ * Sign-in rules (session length, lockout) and the trash retention are install-wide, platform-admin-only values in system_settings.
+ * Installs that kept them per company start from the strictest sign-in values / the longest trash time of their companies.
+ */
+async function migrateSystemSettings(db: Db) {
+  const has = async (key: string) => (await db.query('SELECT 1 FROM system_settings WHERE key = $1', [key])).length > 0
+  if (!(await has('security'))) {
+    const rows = await db.query<{ value: any }>("SELECT value FROM settings WHERE key = 'security'")
+    const secs = rows.map(r => ({ session_days: 30, lockout_limit: 0, lockout_base_min: 1, lockout_cap_min: 15, ...(r.value ?? {}) }))
+    const limits = secs.map(s => Number(s.lockout_limit)).filter(n => n > 0)
+    const v = secs.length
+      ? {
+        session_days: Math.min(...secs.map(s => s.session_days)),
+        lockout_limit: limits.length ? Math.min(...limits) : 0,
+        lockout_base_min: Math.max(...secs.map(s => s.lockout_base_min)),
+        lockout_cap_min: Math.max(...secs.map(s => Math.max(s.lockout_cap_min, s.lockout_base_min))),
+      }
+      : { session_days: 30, lockout_limit: 0, lockout_base_min: 1, lockout_cap_min: 15 }
+    await db.query("INSERT INTO system_settings (key, value) VALUES ('security', $1) ON CONFLICT (key) DO NOTHING", [JSON.stringify(v)])
+  }
+  if (!(await has('trash_days'))) {
+    const rows = await db.query<{ d: string | null }>(
+      "SELECT s.value->>'trash_days' AS d FROM companies c LEFT JOIN settings s ON s.company_id = c.id AND s.key = 'retention'")
+    const days = Math.max(0, ...rows.map(r => (r.d == null ? 30 : Number(r.d) || 0)))
+    await db.query("INSERT INTO system_settings (key, value) VALUES ('trash_days', $1) ON CONFLICT (key) DO NOTHING", [JSON.stringify({ days })])
+  }
+}
+
 export async function migrate(db: Db) {
   for (const stmt of SCHEMA.split(';').map(s => s.trim()).filter(Boolean)) {
     await db.query(stmt)
   }
   await upgradeToCompanies(db)
+  await migrateSystemSettings(db)
   for (const stmt of RELAYOUT_TRIGGERS) await db.query(stmt)
   // First install only: the starter symbol sets and catalog go to the first company.
   const [def] = await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1')

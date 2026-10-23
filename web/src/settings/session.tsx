@@ -11,6 +11,8 @@ export interface Session {
   switchCompany: (id: string) => Promise<void>
   /** Reload the company list (after creating, renaming or archiving one). */
   refreshCompanies: () => Promise<void>
+  /** Accept or decline a pending invitation to join a company, then reload the list. */
+  answerInvitation: (companyId: string, accept: boolean) => Promise<void>
 }
 export const SessionContext = createContext<Session | null>(null)
 export const useSession = () => useContext(SessionContext)

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { post, Project, User } from '../api'
-import { loadProjects } from '../offline/cache'
+import { isStale, loadProjects } from '../offline/cache'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { UserMenu } from '../settings/UserMenu'
 import { Brand } from '../Brand'
@@ -17,7 +17,7 @@ export function ProjectsPage({ user }: Props) {
   const [error, setError] = useState('')
   const [showCompleted, setShowCompleted] = useState(false)
 
-  useEffect(() => { loadProjects().then(r => setProjects(r.data)).catch(e => setError(e.message)) }, [])
+  useEffect(() => { loadProjects().then(r => setProjects(r.data)).catch(e => { if (!isStale(e)) setError(e.message) }) }, [])
 
   async function create(e: FormEvent) {
     e.preventDefault()

@@ -25,20 +25,38 @@ export interface ServerScale { page: number; points_per_foot: number; label: str
 
 export interface Loaded<T> { data: T; fromCache: boolean }
 
+/**
+ * A company-scoped answer (project list, catalog, symbol sets) arrived after the user switched company.
+ * It is stored under the company it was asked for, but must not be shown: callers treat it as "ignore".
+ */
+export class StaleCompanyError extends Error {
+  constructor() { super('The company changed while loading') }
+}
+export const isStale = (e: unknown) => e instanceof StaleCompanyError
+
+/**
+ * `store` and `local` receive the company that was active when the request STARTED: an answer that arrives after a
+ * switch is still that company's data and is never stamped with (or replaces the cache of) the new one.
+ * With `scoped`, such a late answer is stored and then rejected with StaleCompanyError so the UI drops it.
+ */
 async function readThrough<T>(
   fetcher: () => Promise<T>,
-  store: (data: T) => Promise<unknown>,
-  local: () => Promise<T | undefined>,
+  store: (data: T, company: string) => Promise<unknown>,
+  local: (company: string) => Promise<T | undefined>,
   what: string,
+  scoped = false,
 ): Promise<Loaded<T>> {
+  const company = scopeId()
   try {
     const data = await fetcher()
-    try { await store(data) } catch (e) { console.warn('offline cache write failed', e) }
+    try { await store(data, company) } catch (e) { console.warn('offline cache write failed', e) }
+    if (scoped && scopeId() !== company) throw new StaleCompanyError()
     return { data, fromCache: false }
   } catch (e) {
-    if (!isOfflineError(e)) throw e
-    const data = (await cacheAllowed()) ? await local() : undefined
+    if (e instanceof StaleCompanyError || !isOfflineError(e)) throw e
+    const data = (await cacheAllowed()) ? await local(company) : undefined
     if (data === undefined) throw new OfflineMissError(what)
+    if (scoped && scopeId() !== company) throw new StaleCompanyError()
     return { data, fromCache: true }
   }
 }
@@ -52,18 +70,20 @@ const nonEmpty = <T>(rows: T[]) => (rows.length ? rows : undefined)
 
 export const loadProjects = () => readThrough(
   () => api<Project[]>('/projects'),
-  async rows => { const company = scopeId(); await db.transaction('rw', db.projects, () => replaceScoped(db.projects, rows, company)) },
-  async () => (await readScoped(db.projects)),
+  async (rows, company) => { await db.transaction('rw', db.projects, () => replaceScoped(db.projects, rows, company)) },
+  async company => (await readScoped(db.projects, company)),
   'Your project list',
+  true,
 )
 
 export const loadProject = (id: string) => readThrough(
   () => api<Project>(`/projects/${id}`),
-  p => db.projects.put(stamp([p])[0]),
+  (p, company) => db.projects.put(stamp([p], company)[0]),
   () => db.projects.get(id),
   'This project',
 ).then(r => {
   // A project belongs to one company: its catalog and settings are that company's, so follow it there.
+  // The app listens for this change and remounts the pages, so the catalog and symbol sets reload for that company.
   const owner = r.data?.company_id
   if (!r.fromCache && owner && owner !== getActiveCompanyId()) setActiveCompanyId(owner)
   // The project's status list and rules apply everywhere statuses are shown, online or from the offline copy.
@@ -103,26 +123,27 @@ export const loadLayers = (projectId: string) => readThrough(
 
 export const loadSymbolSets = () => readThrough(
   () => api<SymbolSet[]>('/symbol-sets'),
-  async rows => { const company = scopeId(); await db.transaction('rw', db.symbolSets, () => replaceScoped(db.symbolSets, rows, company)) },
-  async () => nonEmpty(await readScoped(db.symbolSets)),
+  async (rows, company) => { await db.transaction('rw', db.symbolSets, () => replaceScoped(db.symbolSets, rows, company)) },
+  async company => nonEmpty(await readScoped(db.symbolSets, company)),
   'Symbol sets',
+  true,
 )
 
 export const loadCatalog = () => readThrough(
   () => api<CatalogData>('/catalog'),
-  async d => {
-    const company = scopeId()
+  async (d, company) => {
     await db.transaction('rw', db.deviceTypes, db.products, db.cableTypes, async () => {
       await replaceScoped(db.deviceTypes, d.device_types, company)
       await replaceScoped(db.products, d.products, company)
       await replaceScoped(db.cableTypes, d.cable_types ?? [], company)
     })
   },
-  async () => {
-    const device_types = await readScoped(db.deviceTypes), products = await readScoped(db.products), cable_types = await readScoped(db.cableTypes)
+  async company => {
+    const device_types = await readScoped(db.deviceTypes, company), products = await readScoped(db.products, company), cable_types = await readScoped(db.cableTypes, company)
     return device_types.length || products.length ? { device_types, products, cable_types } : undefined
   },
   'Catalog',
+  true,
 )
 
 /** Scales for a document, always read back from Dexie so queued (unsent) scale edits are respected. */

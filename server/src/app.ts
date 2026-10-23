@@ -18,7 +18,7 @@ import type { FileCtx } from './fileLayout.js'
 import { photoCtx, planCtx } from './fileCtx.js'
 import { registerFileTools } from './fileTools.js'
 import type { S3Factory } from './storage.js'
-import { DEFAULTS, getSection, storageConfigOf } from './settings.js'
+import { DEFAULTS, getSecurity, getSection, getTrashDays, storageConfigOf } from './settings.js'
 import { registerCompanies, roleRank } from './companies.js'
 import type { CompanyCtx, CompanyRole } from './companies.js'
 import { defaultsPart, formatTag, missingRequired, nextNumber, publicProjectSettings, readProjectSettings, tagNumber, tagPrefixFromTag } from './projectSettings.js'
@@ -76,12 +76,14 @@ export interface AppOptions {
   inviteRateLimitMax?: number
   /** Open websockets allowed per user (default 20). */
   maxSocketsPerUser?: number
+  /** Project zip downloads allowed per user per hour (default 6). */
+  zipRateLimitMax?: number
 }
 
 /** Failed logins per account: after the limit (organization setting, default RL_MAX) the account locks, for the base time (1 min), then 2x, 4x... up to the cap (15 min). */
 const FAILURE_MEMORY_MS = 60 * 60_000
 
-export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rateLimitMax, publicUrl: publicUrlOpt, setupToken: setupTokenOpt, inviteRateLimitMax, maxSocketsPerUser }: AppOptions) {
+export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rateLimitMax, publicUrl: publicUrlOpt, setupToken: setupTokenOpt, inviteRateLimitMax, maxSocketsPerUser, zipRateLimitMax }: AppOptions) {
   const isTest = !!(process.env.NODE_ENV === 'test' || process.env.VITEST)
   const RL_MAX = rateLimitMax ?? (isTest ? 100_000 : 10)
   const INVITE_RL_MAX = inviteRateLimitMax ?? (isTest ? 100_000 : 30)
@@ -90,9 +92,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   if (!publicUrl && !isTest)
     console.warn('[config] PUBLIC_URL is not set: invite and reset links will use the request Host header and cross-origin API access is disabled. Set PUBLIC_URL (e.g. https://pab.example.com).')
   mkdirSync(filesDir, { recursive: true })
-  // Organization settings the hot paths need synchronously (session length, lockout, upload size). Reloaded when an admin saves them.
-  // Sign-in happens before any company is chosen, so the sign-in rules (session length, lockout) are the strictest of all
-  // companies' security settings. The upload limit is each company's own (uploadMb / uploadBytes).
+  // Settings the hot paths need synchronously (session length, lockout, upload size). Reloaded when an admin saves them.
+  // Session length and lockout are install-wide (system_settings, platform admins only); the upload limit is each company's own.
   const runtime = {
     sessionDays: 30, lockoutLimit: RL_MAX, lockBaseMs: 60_000, lockCapMs: 15 * 60_000, maxUploadMb: 200, maxUploadBytes: 200 * 1024 * 1024,
     uploadMbByCompany: new Map<string, number>(),
@@ -101,12 +102,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const uploadBytes = (companyId?: string | null) => uploadMb(companyId) * 1024 * 1024
   const reloadRuntime = async () => {
     try {
-      const secs = (await db.query<{ value: any }>("SELECT value FROM settings WHERE key = 'security'")).map(r => ({ ...DEFAULTS.security, ...(r.value ?? {}) }))
-      if (!secs.length) secs.push({ ...DEFAULTS.security })
-      runtime.sessionDays = Math.min(...secs.map(s => s.session_days))
-      runtime.lockoutLimit = Math.min(...secs.map(s => (s.lockout_limit > 0 ? s.lockout_limit : RL_MAX)))
-      runtime.lockBaseMs = Math.max(...secs.map(s => s.lockout_base_min)) * 60_000
-      runtime.lockCapMs = Math.max(...secs.map(s => Math.max(s.lockout_cap_min, s.lockout_base_min))) * 60_000
+      const sec = await getSecurity(db)
+      runtime.sessionDays = sec.session_days
+      runtime.lockoutLimit = sec.lockout_limit > 0 ? sec.lockout_limit : RL_MAX
+      runtime.lockBaseMs = sec.lockout_base_min * 60_000
+      runtime.lockCapMs = Math.max(sec.lockout_cap_min, sec.lockout_base_min) * 60_000
       const ups = await db.query<{ company_id: string; value: any }>("SELECT company_id, value FROM settings WHERE key = 'uploads'")
       runtime.uploadMbByCompany = new Map(ups.map(r => [r.company_id, { ...DEFAULTS.uploads, ...(r.value ?? {}) }.max_upload_mb]))
       runtime.maxUploadMb = Math.max(DEFAULTS.uploads.max_upload_mb, ...runtime.uploadMbByCompany.values())
@@ -120,11 +120,24 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     primaryCompany ??= (await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1'))[0]?.id ?? null
     return primaryCompany
   }
-  /** How long removed files wait in _trash: the longest of the companies' settings (the trash is one folder for the install). */
-  async function trashDays() {
-    const rows = await db.query<{ d: string | null }>(
-      "SELECT s.value->>'trash_days' AS d FROM companies c LEFT JOIN settings s ON s.company_id = c.id AND s.key = 'retention'")
-    return Math.max(0, ...rows.map(r => (r.d == null ? DEFAULTS.retention.trash_days : Number(r.d) || 0)))
+  /** The company that owns a stored key, from the row that references it (S3 credentials are chosen by owner, never by bucket name). */
+  async function ownerOfKey(key: string): Promise<string | null> {
+    const rows = await db.query<{ c: string }>(
+      `SELECT c FROM (
+         SELECT 1 AS pri, p.company_id AS c FROM document_revisions r JOIN documents d ON d.id = r.document_id JOIN projects p ON p.id = d.project_id WHERE r.file_key = $1::text
+         UNION ALL SELECT 2, p.company_id FROM attachments a JOIN markups m ON m.id = a.markup_id JOIN documents d ON d.id = m.document_id JOIN projects p ON p.id = d.project_id
+           WHERE a.file_key = $1::text OR a.annotated_key = $1::text
+         UNION ALL SELECT 3, company_id FROM settings WHERE key = 'company' AND value->>'logo_key' = $1::text
+         UNION ALL SELECT 4, company_id FROM projects WHERE settings->'report'->>'logo_key' = $1::text
+         UNION ALL SELECT 5, p.company_id FROM document_revisions r JOIN documents d ON d.id = r.document_id JOIN projects p ON p.id = d.project_id
+           WHERE r.attachments_snapshot IS NOT NULL AND position($1::text in r.attachments_snapshot::text) > 0
+       ) x ORDER BY pri, c LIMIT 1`, [key])
+    return rows[0]?.c ?? null
+  }
+  const s3Of = async (companyId: string | null | undefined) => {
+    const id = companyId ?? (await primaryCompanyId())
+    const s3 = id ? (await getSection(db, id, 'storage')).s3 : null
+    return s3 && !validateS3Config(s3) ? [s3] : []
   }
   const storage = new Storage(filesDir,
     async companyId => {
@@ -132,10 +145,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       return storageConfigOf(id ? await getSection(db, id, 'storage') : DEFAULTS.storage)
     },
     s3Factory,
+    s3Of,
+    () => getTrashDays(db),
+    ownerOfKey,
     async () => (await db.query<{ value: any }>("SELECT value->'s3' AS value FROM settings WHERE key = 'storage'"))
       .map(r => ({ ...DEFAULTS.storage.s3, ...(r.value ?? {}) }))
-      .filter(s => !validateS3Config(s)),
-    trashDays)
+      .filter(c => !validateS3Config(c)))
+  const trashDays = () => getTrashDays(db)
   // Files moved after a rename and the admin's "Organize files" run in the background (relayout.ts). Tests drive it by hand.
   const relayout = new Relayout(db, storage, { trashDays })
   const app = Fastify({
@@ -426,10 +442,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!access) {
       // A project of a company the user is not in does not exist as far as they can tell.
       const [p] = UUID_RE.test(String(projectId))
-        ? await db.query<{ member: string | null }>(
-          'SELECT cm.user_id AS member FROM projects p LEFT JOIN company_members cm ON cm.company_id = p.company_id AND cm.user_id = $2 WHERE p.id = $1', [projectId, req.user.id])
+        ? await db.query<{ member: string | null; archived: boolean }>(
+          `SELECT cm.user_id AS member, c.archived FROM projects p JOIN companies c ON c.id = p.company_id
+           LEFT JOIN company_members cm ON cm.company_id = p.company_id AND cm.user_id = $2 WHERE p.id = $1`, [projectId, req.user.id])
         : []
       if (!p || (!p.member && !req.user.isAdmin)) { reply.code(404).send({ error: 'Not found' }); return null }
+      // A member of an archived company is told so (an offline client marks its queued items failed with this message).
+      if (p.archived && !req.user.isAdmin) { reply.code(423).send({ error: 'company archived' }); return null }
     }
     if (!accessCan(access, cap)) {
       reply.code(403).send({ error: access?.locked && can(access.role, cap, { editorsSeeCosts: access.editorsSeeCosts }) ? 'This project is locked. Only admins can make changes.' : 'Not allowed' })
@@ -869,7 +888,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         return { doc, rev }
       })
       return { id: doc.id, name: doc.name, created_at: doc.created_at, revision_id: rev.id, revision: 1, page_count: pageCount }
-    } catch (e) { void storage.remove(fileKey, { hard: true }); throw e }
+    } catch (e) { void storage.remove(fileKey, { hard: true, companyId: access.companyId }); throw e }
   })
 
   async function documentWithAccess(req: FastifyRequest, reply: FastifyReply, cap: Cap) {
@@ -913,7 +932,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
        UNION SELECT a.file_key FROM attachments a JOIN markups m ON m.id = a.markup_id WHERE m.document_id = $1
        UNION SELECT a.annotated_key FROM attachments a JOIN markups m ON m.id = a.markup_id WHERE m.document_id = $1 AND a.annotated_key IS NOT NULL`, [doc.id])
     await db.query('DELETE FROM documents WHERE id = $1', [doc.id])
-    await releaseFiles(keys.map(r => r.k))
+    await releaseFiles(keys.map(r => r.k), accessOf(req).companyId)
     return { ok: true }
   })
 
@@ -926,7 +945,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         'SELECT id, file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : [])
       : await db.query('SELECT id, file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
-    const stream = await storage.open(rev.file_key)
+    const stream = await storage.open(rev.file_key, accessOf(req).companyId)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
     fileHeaders(reply, 'application/pdf', `${doc.name}.pdf`)
     // Current-revision URL changes meaning on upload, so only explicit revisions are immutable.
@@ -1009,7 +1028,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         await freezeLatest(q, doc.id)
         return insertRevision(q, doc.id, { kind: 'upload', label, note, fileKey, pageCount, userId: req.user.id, originalName: file.filename })
       })
-    } catch (e) { void storage.remove(fileKey, { hard: true }); throw e }
+    } catch (e) { void storage.remove(fileKey, { hard: true, companyId }); throw e }
     const orphans = await db.query<{ id: string; page: number }>(
       'SELECT id, page FROM markups WHERE document_id = $1 AND NOT deleted AND page > $2 ORDER BY page', [doc.id, pageCount])
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
@@ -1144,7 +1163,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const { rid } = req.params as any
     const [rev] = UUID_RE.test(String(rid)) ? await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : []
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
-    const stream = await storage.open(rev.file_key)
+    const stream = await storage.open(rev.file_key, accessOf(req).companyId)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
     fileHeaders(reply, 'application/pdf', `${doc.name}.pdf`)
     reply.header('Cache-Control', 'private, max-age=31536000, immutable')
@@ -1156,7 +1175,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   async function runPageOp(req: FastifyRequest, reply: FastifyReply, doc: any, op: PageOp, label: string, other?: Uint8Array) {
     const [latest] = await db.query('SELECT id, file_key FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC LIMIT 1', [doc.id])
-    const srcBytes = latest ? await storage.read(latest.file_key) : null
+    const srcBytes = latest ? await storage.read(latest.file_key, accessOf(req).companyId) : null
     if (!srcBytes) return reply.code(404).send({ error: 'File missing' })
     const src = new Uint8Array(srcBytes)
     let sizes: { width: number; height: number }[], mapping: PageMapping, edited: { bytes: Uint8Array; pageCount: number }
@@ -1216,7 +1235,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
             [JSON.stringify(turned), req.user.id])
       }
       return insertRevision(q, doc.id, { kind: 'upload', label, note: '', fileKey, pageCount: edited.pageCount, userId: req.user.id })
-    }) } catch (e) { void storage.remove(fileKey, { hard: true }); throw e }
+    }) } catch (e) { void storage.remove(fileKey, { hard: true, companyId: accessOf(req).companyId }); throw e }
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
     realtime.scalesChanged(doc.id, req.user.id, cid(req))
     return { ...rev, mapping: mapping.map, deleted_markups: deletedMarkups }
@@ -2085,7 +2104,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
 
   /** Deletes a stored file only when nothing else (a revision, a frozen snapshot, a photo, a setting) still points at it. */
-  async function releaseFiles(keys: (string | null | undefined)[]) {
+  async function releaseFiles(keys: (string | null | undefined)[], companyId?: string | null) {
     for (const key of new Set(keys.filter(Boolean) as string[])) {
       try {
         const ref = await db.query(
@@ -2093,11 +2112,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
            UNION ALL SELECT 1 FROM attachments WHERE file_key = $1::text OR annotated_key = $1::text
            UNION ALL SELECT 1 FROM settings WHERE position($1::text in value::text) > 0
            UNION ALL SELECT 1 FROM projects WHERE position($1::text in settings::text) > 0 LIMIT 1`, [key])
-        if (!ref.length) await storage.remove(key)
+        if (!ref.length) await storage.remove(key, { companyId })
       } catch { /* best effort */ }
     }
   }
-  const removeFile = (key: string | null | undefined) => { void releaseFiles([key]) }
+  const removeFile = (key: string | null | undefined, companyId?: string | null) => { void releaseFiles([key], companyId) }
   const optInt = (v: unknown) => {
     const n = Number(v)
     return v !== undefined && v !== '' && Number.isInteger(n) && n > 0 && n < 100000 ? n : null
@@ -2183,7 +2202,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [id, m.id, key, String(f.caption?.value ?? ''), optInt(f.width?.value), optInt(f.height?.value), req.user.id, at])
     } catch (e) {
-      void storage.remove(key, { hard: true })
+      void storage.remove(key, { hard: true, companyId })
       // lost a race with a concurrent retry of the same id
       const [again] = await db.query('SELECT markup_id FROM attachments WHERE id = $1', [id])
       if (again && again.markup_id === m.id) return attRow(id)
@@ -2214,7 +2233,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const key = await savePhoto(file, reply, companyId, ext => photoCtx(db, a.markup_id, ext, a.caption, true, a.created_at))
     if (!key) return
     await db.query('UPDATE attachments SET annotated_key = $1 WHERE id = $2', [key, a.id])
-    removeFile(a.annotated_key)
+    removeFile(a.annotated_key, companyId)
     await recordEvent(a.markup_id, req.user.id, 'photo_annotated', { attachment_id: a.id, caption: a.caption })
     await attachmentsChanged(a, req)
     return attRow(a.id)
@@ -2225,8 +2244,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (!a) return
     await db.query('DELETE FROM attachments WHERE id = $1', [a.id])
     await recordEvent(a.markup_id, req.user.id, 'photo_deleted', { attachment_id: a.id, caption: a.caption })
-    removeFile(a.file_key)
-    removeFile(a.annotated_key)
+    removeFile(a.file_key, accessOf(req).companyId)
+    removeFile(a.annotated_key, accessOf(req).companyId)
     await attachmentsChanged(a, req)
     return { ok: true }
   })
@@ -2237,7 +2256,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const variant = (req.query as any)?.variant
     const key = variant === 'original' ? a.file_key : variant === 'annotated' ? a.annotated_key : (a.annotated_key ?? a.file_key)
     if (!key) return reply.code(404).send({ error: 'No such variant' })
-    const stream = await storage.open(key)
+    const stream = await storage.open(key, accessOf(req).companyId)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
     const ext = key.slice(key.lastIndexOf('.') + 1)
     fileHeaders(reply, EXT_TYPES[ext] ?? 'application/octet-stream', `photo-${a.id}.${ext}`)
@@ -2285,10 +2304,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   await registerProjectSettings({ app, db, auth, fileAuth, storage, requireCap, requireCompany, releaseFile: removeFile })
   await registerAdmin({
-    app, db, auth, fileAuth, storage, forgetUser, requireCap, requireCompany, companyCtx, companyMemberRemoved, sign, realtime, rl, keepsAnAdmin, dropFromProject,
+    app, db, auth, fileAuth, storage, forgetUser, forgetCompany, requireCap, requireCompany, companyCtx, companyMemberRemoved, sign, realtime, rl, keepsAnAdmin, dropFromProject,
     refreshAccess, sessionUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX, reloadRuntime,
   })
-  await registerFileTools({ app, db, auth, fileAuth, storage, relayout, requireCap, requireCompany, visibleMarkups })
+  await registerFileTools({ app, db, auth, fileAuth, storage, relayout, requireCap, requireCompany, visibleMarkups, zipRateLimitMax: zipRateLimitMax ?? (isTest ? 100_000 : 6) })
   await registerBackups({ app, db, auth, requireCompany })
   await registerCompanies({
     app, db, auth, requireCompany, companyCtx, resolveCompany, forgetUser, forgetCompany, companyMemberRemoved, reloadRuntime, realtime,

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { UserAvatar } from '../ui/UserAvatar'
 import { useSession } from './session'
+import { pendingInvitations } from '../company/switcher'
 
 export const initials = (name: string) =>
   name.trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() ?? '').join('') || '?'
@@ -10,6 +11,8 @@ export const initials = (name: string) =>
 export function UserMenu() {
   const session = useSession()
   const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [inviteErr, setInviteErr] = useState('')
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
@@ -20,15 +23,34 @@ export function UserMenu() {
     return () => { window.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey) }
   }, [open])
   if (!session) return null
-  const { user, signOut } = session
+  const { user, signOut, companies, answerInvitation } = session
+  const invites = pendingInvitations(companies ?? [])
+  const answer = async (id: string, accept: boolean) => {
+    setBusy(id); setInviteErr('')
+    try { await answerInvitation(id, accept) } catch (e) { setInviteErr((e as Error).message) } finally { setBusy('') }
+  }
   return (
     <div className="user-menu" ref={ref}>
       <button className="avatar-btn" aria-haspopup="menu" aria-expanded={open} title={user.name} onClick={() => setOpen(o => !o)}>
         <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} bare />
+        {invites.length > 0 && <span className="invite-dot" aria-label={`${invites.length} pending invitation${invites.length === 1 ? '' : 's'}`} />}
       </button>
       {open && (
         <div className="user-menu-pop" role="menu" onClick={() => setOpen(false)}>
           <div className="user-menu-who"><strong>{user.name}</strong><span className="muted small">{user.email}</span></div>
+          {invites.length > 0 && (
+            <div className="user-menu-invites" onClick={e => e.stopPropagation()}>
+              <span className="muted small">Invitations</span>
+              {invites.map(c => (
+                <div key={c.id} className="user-menu-invite">
+                  <span>{c.name}</span>
+                  <button type="button" disabled={busy === c.id} onClick={() => void answer(c.id, true)}>Accept</button>
+                  <button type="button" disabled={busy === c.id} onClick={() => void answer(c.id, false)}>Decline</button>
+                </div>
+              ))}
+              {inviteErr && <span className="error small" role="alert">{inviteErr}</span>}
+            </div>
+          )}
           <Link role="menuitem" to="/preferences">Preferences</Link>
           <Link role="menuitem" to="/settings">Settings</Link>
           {user.is_admin && <Link role="menuitem" to="/users">Company members</Link>}

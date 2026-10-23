@@ -27,6 +27,8 @@ export interface FileToolsContext {
   relayout: Relayout
   requireCap: (req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) => Promise<Access | null>
   requireCompany: (req: FastifyRequest, reply: FastifyReply, min?: CompanyRole) => Promise<CompanyCtx | null>
+  /** Zip downloads allowed per user per hour (default 6). */
+  zipRateLimitMax?: number
   visibleMarkups: <T extends { symbol_set_id?: string | null; layer_id?: string | null; fields?: Record<string, any> }>(access: Access, list: T[]) => Promise<T[]>
 }
 
@@ -39,6 +41,12 @@ const csvCell = (v: unknown) => {
 
 export async function registerFileTools(ctx: FileToolsContext) {
   const { app, db, auth, fileAuth, storage, relayout, requireCap, requireCompany, visibleMarkups } = ctx
+  // A project zip reads every file of the project: per user, a few per hour and one at a time.
+  const zipLimit = { config: { rateLimit: {
+    max: ctx.zipRateLimitMax ?? 6, timeWindow: '1 hour', hook: 'preHandler' as const, groupId: 'project-zip',
+    keyGenerator: (req: FastifyRequest) => `user:${req.user.id}`,
+  } } }
+  const zipping = new Set<string>()
 
   /** The company the request works in, or "all companies" (platform admins only). Answers the error itself. */
   async function organizeScope(req: FastifyRequest, reply: FastifyReply): Promise<{ companyId: string | null } | null> {
@@ -83,10 +91,14 @@ export async function registerFileTools(ctx: FileToolsContext) {
   })
 
   // ---- Download project folder ----
-  app.get('/api/projects/:id/folder.zip', { preHandler: fileAuth }, async (req, reply) => {
+  app.get('/api/projects/:id/folder.zip', { preHandler: fileAuth, ...zipLimit }, async (req, reply) => {
     const { id } = req.params as any
     const access = await requireCap(req, reply, id, 'view')
     if (!access) return
+    if (zipping.has(req.user.id)) return reply.code(429).send({ error: 'A zip download is already being prepared for you. Wait for it to finish.' })
+    zipping.add(req.user.id)
+    let streaming = false
+    try {
     const names = await projectNames(db, id)
     const root = sanitizeSegment(names.project, 'Project')
     const used = new Set<string>()
@@ -96,7 +108,7 @@ export async function registerFileTools(ctx: FileToolsContext) {
     /** Adds a stored file at its layout path (below the project folder), skipping missing files and keys already added. */
     const addFile = async (key: string, c: FileCtx, mtime?: Date) => {
       if (!key || seenKeys.has(key)) return
-      const size = await storage.size(key).catch(() => null)
+      const size = await storage.size(key, access.companyId).catch(() => null)
       if (size === null) return
       seenKeys.add(key)
       // Layout paths are <Company>/Projects/<Project>/...: the zip starts at the project folder.
@@ -104,7 +116,7 @@ export async function registerFileTools(ctx: FileToolsContext) {
       for (let n = 1; ; n++) { const cand = withSuffix(rel, n); if (!used.has(cand.toLowerCase())) { rel = cand; break } }
       used.add(rel.toLowerCase())
       bytes += size
-      entries.push({ name: rel, open: () => storage.open(key), mtime })
+      entries.push({ name: rel, open: () => storage.open(key, access.companyId), mtime })
     }
 
     const plans = await db.query<any>(
@@ -153,6 +165,12 @@ export async function registerFileTools(ctx: FileToolsContext) {
     reply.header('X-Content-Type-Options', 'nosniff')
     reply.header('Content-Disposition', `attachment; filename="${fileName.replace(/[^A-Za-z0-9._ -]+/g, '_')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`)
     reply.header('Cache-Control', 'private, no-store')
+    // The slot is held until the download ends (or the client goes away).
+    streaming = true
+    let freed = false
+    const free = () => { if (!freed) { freed = true; zipping.delete(req.user.id) } }
+    reply.raw.once('close', free); reply.raw.once('finish', free)
     return reply.send(zipStream(entries))
+    } finally { if (!streaming) zipping.delete(req.user.id) }
   })
 }

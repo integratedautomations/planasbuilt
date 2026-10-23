@@ -18,6 +18,11 @@ export interface FileCtx {
   /** File extension without the dot. */
   ext: string
   company?: string
+  /**
+   * The company's stored folder (companies.folder). It wins over `company`: the folder is assigned once, unique without case, and
+   * does not follow renames, so two companies never share a folder.
+   */
+  companyFolder?: string
   project?: string
   plan?: string
   /** Revision number (plans). */
@@ -114,7 +119,7 @@ function fit(segs: string[]): string[] {
 /** The path a file should have, from the names around it. Never touches storage, never makes a name unique. */
 export function buildPath(ctx: FileCtx): string {
   const ext = sanitizeExt(ctx.ext)
-  const C = companyFolder(ctx.company)
+  const C = ctx.companyFolder ? sanitizeSegment(ctx.companyFolder, 'Company') : companyFolder(ctx.company)
   const P = sanitizeSegment(ctx.project, 'Project')
   const Plan = sanitizeSegment(ctx.plan, 'Plan')
   switch (ctx.kind) {

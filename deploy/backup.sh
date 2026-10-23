@@ -11,6 +11,10 @@
 #   company  one company's own data only: its folder under $DATA_DIR/files (synced; deleted/replaced files are kept in
 #            files-deleted/<timestamp> for the target's retention days) plus db/company-export-<timestamp>.json, the company's
 #            database rows fetched from the app (APP_URL + BACKUP_INTERNAL_TOKEN, the same token in the app container).
+#            The folder is the company's stored folder (companies.folder, named in the export): unique, and it does not follow renames.
+#            The folder copy is skipped while the app still has file moves queued for that company.
+# While the database dump and the tar of /data are taken, the app's file-moving worker is paused (POST /api/internal/relayout/pause
+# with the same token), so the two always describe the same set of files. It resumes at the end, and by itself after two hours.
 set -uo pipefail
 # Backups hold every password hash and plan: only the owner (root in the container) may read them.
 umask 077
@@ -46,6 +50,33 @@ prepare_rclone_dir() {
 # remote + subpath ("t1234:folder" -> "t1234:folder/sub"; "t1234c:" -> "t1234c:sub")
 join_remote() { case "$1" in *:) printf '%s%s' "$1" "$2" ;; *) printf '%s/%s' "$1" "$2" ;; esac; }
 
+# Pauses / resumes the app's background file mover (best effort: without the token or the app the backup still runs).
+relayout_pause() {
+  [ -n "$BACKUP_INTERNAL_TOKEN" ] && command -v curl >/dev/null 2>&1 || return 0
+  curl -fsS --max-time 120 -X POST -H "X-Backup-Token: $BACKUP_INTERNAL_TOKEN" "$APP_URL/api/internal/relayout/pause" >/dev/null 2>&1 \
+    || echo "[backup] WARNING: could not pause the app's file mover; files and database may differ slightly" >&2
+}
+relayout_resume() {
+  [ -n "$BACKUP_INTERNAL_TOKEN" ] && command -v curl >/dev/null 2>&1 || return 0
+  curl -fsS --max-time 30 -X POST -H "X-Backup-Token: $BACKUP_INTERNAL_TOKEN" "$APP_URL/api/internal/relayout/resume" >/dev/null 2>&1 || true
+}
+
+# Deletes the files-deleted/<timestamp> folders older than $2 days. The age comes from the timestamp in the folder NAME (set when
+# the files were replaced), never from file times: rclone keeps a file's original modification time, so an old file that was only
+# just replaced would otherwise be deleted at once.
+prune_files_deleted() {
+  local remote="$1" days="$2" cutoff d name ts
+  cutoff=$(date -d "$days days ago" +%Y%m%d-%H%M%S 2>/dev/null) || return 0
+  rclone "${RCLONE_FLAGS[@]}" lsf --dirs-only "$(join_remote "$remote" files-deleted)" 2>/dev/null | while IFS= read -r d; do
+    name="${d%/}"
+    [[ "$name" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+    ts="$name"
+    if [[ "$ts" < "$cutoff" ]]; then
+      rclone "${RCLONE_FLAGS[@]}" purge "$(join_remote "$remote" "files-deleted/$name")" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 # One company target: sync the company's folder and upload a fresh database export of its rows. Prints an error and returns
 # non-zero on failure.
 company_offsite() {
@@ -57,10 +88,15 @@ company_offsite() {
   if ! out=$(curl -fsS --max-time 300 -H "X-Backup-Token: $BACKUP_INTERNAL_TOKEN" "$APP_URL/api/admin/companies/$cid/export" -o "$tmp" 2>&1); then
     rm -f "$tmp"; echo "database export failed: $(tail -n 2 <<<"$out" | tr '\n' ' ')"; return 1
   fi
-  local folder; folder=$(jq -r '.company.folder // empty' "$tmp" 2>/dev/null)
+  local folder pending; folder=$(jq -r '.company.folder // empty' "$tmp" 2>/dev/null)
+  pending=$(jq -r '.relayout_pending // 0' "$tmp" 2>/dev/null)
   if [ -z "$folder" ]; then rm -f "$tmp"; echo "database export did not name the company folder"; return 1; fi
+  # The folder must be a single plain name below files/ (it comes from the app, but is never trusted as a path).
+  case "$folder" in */*|.|..|*$'\n'*) rm -f "$tmp"; echo "database export named an invalid company folder"; return 1 ;; esac
   local src="$DATA_DIR/files/$folder"
-  if [ -d "$src" ]; then
+  if [ "${pending:-0}" -gt 0 ] 2>/dev/null; then
+    echo "folder copy skipped: $pending file move(s) are still queued for this company (it is copied at the next backup)" >&2
+  elif [ -d "$src" ]; then
     local args=(); [ "$days" -gt 0 ] 2>/dev/null && args=(--backup-dir "$(join_remote "$remote" "files-deleted/$ts")")
     if ! out=$(rclone "${RCLONE_FLAGS[@]}" sync "$src" "$(join_remote "$remote" files)" "${args[@]}" 2>&1 >/dev/null); then
       rc=1; echo "folder copy failed: $(tail -n 3 <<<"$out" | tr '\n' ' ')"
@@ -72,10 +108,10 @@ company_offsite() {
     fi
   fi
   if [ "$rc" = 0 ] && [ "$days" -gt 0 ] 2>/dev/null; then
-    for sub in db files-deleted; do
-      rclone "${RCLONE_FLAGS[@]}" delete "$(join_remote "$remote" "$sub")" --min-age "${days}d" >/dev/null 2>&1 || true
-      rclone "${RCLONE_FLAGS[@]}" rmdirs "$(join_remote "$remote" "$sub")" --leave-root >/dev/null 2>&1 || true
-    done
+    rclone "${RCLONE_FLAGS[@]}" delete "$(join_remote "$remote" db)" --min-age "${days}d" >/dev/null 2>&1 || true
+    rclone "${RCLONE_FLAGS[@]}" rmdirs "$(join_remote "$remote" db)" --leave-root >/dev/null 2>&1 || true
+    prune_files_deleted "$remote" "$days"
+    rclone "${RCLONE_FLAGS[@]}" rmdirs "$(join_remote "$remote" files-deleted)" --leave-root >/dev/null 2>&1 || true
   fi
   rm -f "$tmp"
   return $rc
@@ -142,17 +178,20 @@ run_backup() {
   # Leftovers of an interrupted run are never valid backups.
   rm -f "$BACKUP_DIR"/*.tmp
 
+  # The app's file mover stays paused until both the dump and the tar exist, so they describe the same files.
+  relayout_pause
   if ! pg_dump -Fc -f "$db.tmp"; then
-    echo "[backup] FAILED: pg_dump" >&2; rm -f "$db.tmp"; return 1
+    echo "[backup] FAILED: pg_dump" >&2; rm -f "$db.tmp"; relayout_resume; return 1
   fi
   chmod 600 "$db.tmp"
-  mv "$db.tmp" "$db" || { echo "[backup] FAILED: could not finalize $db" >&2; return 1; }
+  mv "$db.tmp" "$db" || { echo "[backup] FAILED: could not finalize $db" >&2; relayout_resume; return 1; }
 
   if ! tar -czf "$files.tmp" -C "$DATA_DIR" .; then
     echo "[backup] FAILED: tar of $DATA_DIR" >&2; rm -f "$files.tmp"
     rm -f "$db"   # keep dump and files as a matching pair
-    return 1
+    relayout_resume; return 1
   fi
+  relayout_resume
   chmod 600 "$files.tmp"
   mv "$files.tmp" "$files" || { echo "[backup] FAILED: could not finalize $files" >&2; rm -f "$db"; return 1; }
 

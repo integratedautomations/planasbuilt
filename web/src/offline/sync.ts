@@ -592,7 +592,7 @@ async function drainOnce() {
       result = await executor(item)
     } catch (e) {
       inflightSeq = null; syncing = false
-      const msg = (e as Error).message || 'Request failed'
+      const msg = (e instanceof ApiError && e.status === 423) ? 'This company is archived, so changes can no longer be saved' : ((e as Error).message || 'Request failed')
       const cls = classifyError(e)
       const treatAsDone = cls === 'permanent' && (e as ApiError).status === 404 && item.kind.endsWith('_delete')
       if (treatAsDone) { await finish(item, undefined); continue }

@@ -8,7 +8,7 @@ import { claimCache, purgeCache, releaseCache } from './offline/cacheOwner'
 import { ForeignNotice } from './offline/ForeignNotice'
 import { connect as connectRealtime, disconnect as disconnectRealtime, setSocketCompany } from './realtime/socket'
 import { getActiveCompanyId, setActiveCompanyId, subscribeActiveCompany } from './company/activeCompany'
-import { listCompanies } from './company/api'
+import { acceptInvitation, declineInvitation, listCompanies, listInvitations } from './company/api'
 import { adoptCompany, pathAfterSwitch } from './company/switcher'
 import type { CompanyRow } from './company/switcher'
 import { CompaniesPage } from './settings/CompaniesPage'
@@ -45,7 +45,12 @@ export default function App() {
   const [companies, setCompanies] = useState<CompanyRow[]>([])
   /** Bumped by an explicit company switch: remounts the pages so everything reloads for the new company. */
   const [epoch, setEpoch] = useState(0)
-  const switching = useRef(false)
+  /** Requests to change company in flight (explicit switches): the "company changed elsewhere" listener stays quiet meanwhile. */
+  const switching = useRef(0)
+  /** Latest company-change request; an older /me answer that arrives after a newer request started is ignored. */
+  const seq = useRef(0)
+  const userRef = useRef<User | null>(null)
+  userRef.current = user
   const [loading, setLoading] = useState(!!getToken())
   /** The user whose local cache is ready to read (the previous user's data is purged first). */
   const [cacheFor, setCacheFor] = useState<string | null>(null)
@@ -78,36 +83,55 @@ export default function App() {
   const refreshCompanies = useCallback(async () => {
     if (!user) return
     try {
-      const rows = await listCompanies(user.platform_admin ? {} : { mine: true })
-      setCompanies(rows)
+      const [rows, invites] = await Promise.all([
+        listCompanies(user.platform_admin ? {} : { mine: true }),
+        listInvitations().catch(() => []),
+      ])
+      // Pending invitations ride along as non-switchable rows; their id is the invitation id (used to accept or decline).
+      setCompanies([...rows, ...invites.map(i => ({ id: i.id, name: i.company.name, slug: '', archived: false, created_at: i.created_at, role: null, member: false, can_create_projects: false, active: false, pending: true }))])
     } catch { /* offline: keep what we had */ }
   }, [user?.id, user?.platform_admin])
   useEffect(() => { void refreshCompanies() }, [refreshCompanies])
 
   const switchCompany = useCallback(async (id: string) => {
     if (!user || id === getActiveCompanyId()) return
-    const previous = getActiveCompanyId()
-    switching.current = true
+    // Restore to the company we were last confirmed in (not an unconfirmed one from a switch still in flight).
+    const previous = userRef.current?.company?.id ?? null
+    const my = ++seq.current
+    switching.current++
     try {
       setActiveCompanyId(id)
       const next = await api<User>('/me')
+      if (my !== seq.current) return // a newer switch took over: its answer decides
       adoptCompany(next)
       setSocketCompany(next.company?.id ?? id)
       cacheUser(next); setUser(next)
       await refreshCompanies()
+      if (my !== seq.current) return
       const to = pathAfterSwitch(location.pathname)
       if (to !== location.pathname) navigate(to, { replace: true })
       setEpoch(n => n + 1)
     } catch (e) {
-      setActiveCompanyId(previous)
+      if (my === seq.current) setActiveCompanyId(previous)
       throw e
-    } finally { switching.current = false }
+    } finally { switching.current-- }
   }, [user, location.pathname, navigate, refreshCompanies])
+
+  const answerInvitation = useCallback(async (id: string, accept: boolean) => {
+    await (accept ? acceptInvitation(id) : declineInvitation(id))
+    await refreshCompanies()
+  }, [refreshCompanies])
 
   // The active company changed without the switcher (e.g. opening a project of another company): refresh who we are there.
   useEffect(() => subscribeActiveCompany(id => {
-    if (switching.current || !id || !user || user.company?.id === id) return
-    fetchMe().then(u => { cacheUser(u); setUser(u); setSocketCompany(id) }).catch(() => {})
+    if (switching.current > 0 || !id || !user || user.company?.id === id) return
+    const my = ++seq.current
+    fetchMe().then(u => {
+      if (my !== seq.current) return
+      cacheUser(u); setUser(u); setSocketCompany(id)
+      // Reload everything for the new company (the catalog and symbol sets were loaded for the previous one).
+      setEpoch(n => n + 1)
+    }).catch(() => {})
   }), [user])
 
   if (loading || (user && cacheFor !== user.id)) return <div className="center muted">Loading…</div>
@@ -136,7 +160,7 @@ export default function App() {
     else await purgeCache()
   }
   return (
-    <SessionContext.Provider value={{ user, signOut, companies, switchCompany, refreshCompanies }}>
+    <SessionContext.Provider value={{ user, signOut, companies, switchCompany, refreshCompanies, answerInvitation }}>
     <ForeignNotice />
     {user.is_admin && <BackupAlert />}
     <Routes key={epoch}>

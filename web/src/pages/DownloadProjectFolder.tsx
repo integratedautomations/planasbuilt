@@ -1,5 +1,19 @@
 import { useState } from 'react'
-import { api } from '../api'
+import { api, authFetch } from '../api'
+
+/**
+ * Ask the server whether the zip can be made (headers only; the body is dropped) so a refusal such as 413 "too large"
+ * or 429 "slow down" is shown here instead of replacing the app with a bare JSON error page.
+ */
+export async function probeFolderZip(url: string): Promise<string | null> {
+  const ctl = new AbortController()
+  try {
+    const res = await authFetch(url, { signal: ctl.signal })
+    if (res.ok) return null
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    return body.error || (res.status === 429 ? 'Too many downloads right now. Try again in a minute.' : `The download failed (${res.status})`)
+  } catch (e) { return (e as Error).name === 'AbortError' ? null : 'Could not reach the server' } finally { ctl.abort() }
+}
 
 /**
  * Downloads the project as a zip in the same folder layout as on the file share (plans, photos, report logo and a device list).
@@ -12,9 +26,12 @@ export function DownloadProjectFolder({ projectId, disabled }: { projectId: stri
   async function download() {
     setBusy(true); setErr('')
     try {
+      const base = `/api/projects/${encodeURIComponent(projectId)}/folder.zip`
+      const refused = await probeFolderZip(base)
+      if (refused) { setErr(refused); return }
       const { ft } = await api<{ ft: string }>('/file-token', { method: 'POST' })
       const a = document.createElement('a')
-      a.href = `/api/projects/${encodeURIComponent(projectId)}/folder.zip?ft=${encodeURIComponent(ft)}`
+      a.href = `${base}?ft=${encodeURIComponent(ft)}`
       a.rel = 'noopener'
       document.body.appendChild(a); a.click(); a.remove()
     } catch (e) { setErr((e as Error).message) } finally { setTimeout(() => setBusy(false), 1500) }

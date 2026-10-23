@@ -123,7 +123,7 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
                 {invite.email_error && <div className="error">Email failed: {invite.email_error}</div>}
                 {invite.link
                   ? <CopyLink link={invite.link} note={`Send this to ${invite.email}. Valid until ${invite.expires_at ? new Date(invite.expires_at).toLocaleDateString() : 'used'}.`} />
-                  : <p className="muted small" role="status">{invite.added_to_company ? `${invite.email} already has an account: added to the project and the company.` : 'Added.'}</p>}
+                  : <p className="muted small" role="status">{invite.emailed ? 'Invitation sent.' : `Invitation created for ${invite.email}. If they don't get an email, a company admin can resend it from Company members.`}</p>}
               </>
             )}
           </form>

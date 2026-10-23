@@ -60,7 +60,17 @@ export interface OutboxItem {
 /** Small key/value table: doc metadata (`docmeta:<id>`), cache bookkeeping (`cache:<docId>`), etc. */
 export interface KvRow { key: string; value: any }
 
-class OfflineDb extends Dexie {
+/** The company this device last worked in: the remembered active one, else the cached user's. */
+export function lastKnownCompany(): string | null {
+  try {
+    const active = localStorage.getItem('planmark.activeCompany')
+    if (active) return active
+    const u = JSON.parse(localStorage.getItem('planmark.user') ?? 'null')
+    return u?.company?.id ?? null
+  } catch { return null }
+}
+
+export class OfflineDb extends Dexie {
   projects!: Table<Project, string>
   documents!: Table<DocumentRow, string>
   pdfs!: Table<PdfRow, string>
@@ -100,6 +110,15 @@ class OfflineDb extends Dexie {
     this.version(4).stores({
       projects: 'id, company_id', symbolSets: 'id, company_id', deviceTypes: 'id, symbol_set_id, company_id',
       products: 'id, device_type_id, company_id', cableTypes: 'id, company_id',
+    })
+    // Rows cached before company scoping have no company_id and would never be shown (an offline first start after
+    // upgrading would be empty). Stamp them with the company this device last worked in.
+    this.version(5).stores({}).upgrade(async tx => {
+      const company = lastKnownCompany()
+      if (!company) return
+      for (const name of ['projects', 'symbolSets', 'deviceTypes', 'products', 'cableTypes']) {
+        await tx.table(name).toCollection().modify((r: { company_id?: string }) => { if (!r.company_id) r.company_id = company })
+      }
     })
   }
 }

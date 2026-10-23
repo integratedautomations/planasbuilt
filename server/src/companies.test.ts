@@ -46,6 +46,12 @@ const upload = (url: string, token: string, file: Buffer, headers: Record<string
 let root = '', rootId = '', alice = '', bob = '', carol = '', dave = '', erin = ''
 let c1 = '', c2 = ''
 const ids: Record<string, string> = {}
+/** Accepts every pending company invitation of a person (existing accounts join a company only by consent). */
+const acceptAll = async (token: string) => {
+  const list = (await api('GET', '/api/company-invitations', token)).json()
+  for (const inv of list) expect((await api('POST', `/api/company-invitations/${inv.id}/accept`, token)).statusCode).toBe(200)
+  return list
+}
 
 const mkUser = async (email: string, company: string, opts: { isAdmin?: boolean; canCreateProjects?: boolean } = {}) => {
   const r = await api('POST', '/api/users', root, { email, name: email.split('@')[0], password: 'password1', ...opts }, cx(company))
@@ -405,7 +411,11 @@ describe('projects and people', () => {
     expect((await api('GET', `/api/projects/${p1}`, dave)).statusCode).toBe(200) // still in c1
     expect((await api('GET', '/api/companies', dave)).json().map((c: any) => c.id)).toEqual([c1])
     // back in as a plain member for the rest
-    expect((await api('PUT', `/api/companies/${c2}/members`, carol, { email: 'dave@x.com', role: 'member' })).statusCode).toBe(201)
+    const again = await api('PUT', `/api/companies/${c2}/members`, carol, { email: 'dave@x.com', role: 'member' })
+    expect(again.statusCode).toBe(202) // a company admin only invites: dave joins when he accepts
+    expect((await api('GET', '/api/companies', dave)).json().map((c: any) => c.id)).toEqual([c1])
+    expect((await acceptAll(dave)).length).toBe(1)
+    expect((await api('GET', '/api/companies', dave)).json().map((c: any) => c.id).sort()).toEqual([c1, c2].sort())
   })
 
   it('an archived company is closed to its members but still open to platform admins', async () => {
@@ -425,7 +435,14 @@ describe('invites across companies', () => {
     const before = (await db.query<{ n: number }>('SELECT count(*)::int AS n FROM users'))[0].n
     const r = await api('POST', '/api/invites', carol, { email: 'alice@x.com', role: 'user' })
     expect(r.statusCode, r.body).toBe(200)
-    expect(r.json()).toMatchObject({ added_to_company: true, link: null, user_id: ids.alice })
+    expect(r.json()).toMatchObject({ pending_consent: true, added_to_company: false, link: null })
+    // no membership until alice accepts
+    expect((await api('GET', '/api/companies', alice)).json().map((c: any) => c.id)).toEqual([c1])
+    expect((await api('GET', '/api/symbol-sets', alice, undefined, cx(c2))).statusCode).toBe(403)
+    const offered = (await api('GET', '/api/company-invitations', alice)).json()
+    expect(offered).toHaveLength(1)
+    expect(offered[0]).toMatchObject({ company: { id: c2 }, role: 'member' })
+    await acceptAll(alice)
     expect((await db.query<{ n: number }>('SELECT count(*)::int AS n FROM users'))[0].n).toBe(before)
     expect((await db.query<{ n: number }>("SELECT count(*)::int AS n FROM users WHERE email = 'alice@x.com'"))[0].n).toBe(1)
     expect((await api('GET', '/api/companies', alice)).json().map((c: any) => c.id).sort()).toEqual([c1, c2].sort())
@@ -435,7 +452,11 @@ describe('invites across companies', () => {
     // a project in the invite is added too, and must belong to the inviting company
     const p = (await api('POST', '/api/projects', carol, { name: 'Invite me' })).json().id
     const withP = await api('POST', '/api/invites', carol, { email: 'bob@x.com', projects: [{ id: p, role: 'editor' }] })
-    expect(withP.json().added_to_company).toBe(true)
+    expect(withP.json().pending_consent).toBe(true)
+    expect((await api('GET', `/api/projects/${p}`, bob)).statusCode).toBe(404)
+    const bobInv = (await api('GET', '/api/company-invitations', bob)).json()[0]
+    expect((await api('POST', `/api/company-invitations/${bobInv.id}/accept`, alice)).statusCode).toBe(404) // not alice's to accept
+    expect((await api('POST', `/api/company-invitations/${bobInv.id}/accept`, bob)).statusCode).toBe(200)
     expect((await api('GET', `/api/projects/${p}`, bob, undefined, cx(c2))).json()).toMatchObject({ role: 'editor' })
     const foreign = await api('POST', '/api/invites', carol, { email: 'new1@x.com', projects: [{ id: (await api('GET', '/api/projects', alice, undefined, cx(c1))).json()[0].id, role: 'editor' }] })
     expect(foreign.statusCode).toBe(400)
@@ -446,24 +467,29 @@ describe('invites across companies', () => {
     expect(inv.link).toMatch(/^https:\/\/pm\.example\.com\/invite\//)
     const token = inv.link.split('/').pop()
     expect((await app.inject(`/api/invites/${token}`)).json()).toMatchObject({ company: expect.stringContaining('Acme') })
-    // company 2's admin invites the same (still pending) email: added to c2, but cannot take over the pending account
+    // another company's admin invites the same (still pending) email: refused, with no side effects (not added, no link)
     const second = await api('POST', '/api/invites', carol, { email: 'newbie@x.com' })
     expect(second.statusCode).toBe(409)
+    expect(second.json().link).toBeUndefined()
+    expect((await db.query('SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2', [c2, inv.user_id])).length).toBe(0)
     expect((await app.inject(`/api/invites/${token}`)).statusCode).toBe(200) // the first link still works
     const accepted = await app.inject({ method: 'POST', url: `/api/invites/${token}/accept`, payload: { password: 'password1', name: 'Newbie N' } })
     expect(accepted.statusCode, accepted.body).toBe(200)
     const nb = accepted.json().token
+    expect((await api('GET', '/api/companies', nb)).json().map((c: any) => c.id)).toEqual([c1])
+    // once active, the other company can invite them like anyone with an account: an invitation to accept
+    expect((await api('POST', '/api/invites', carol, { email: 'newbie@x.com' })).json()).toMatchObject({ pending_consent: true })
+    await acceptAll(nb)
     expect((await api('GET', '/api/companies', nb)).json().map((c: any) => c.id).sort()).toEqual([c1, c2].sort())
     expect((await db.query<{ n: number }>("SELECT count(*)::int AS n FROM users WHERE email = 'newbie@x.com'"))[0].n).toBe(1)
   })
 
-  it('revoking a pending invite only removes the person from that company when another still has them', async () => {
+  it('revoking a pending invite removes the pending account; another company can neither resend nor revoke it', async () => {
     const inv = (await api('POST', '/api/invites', alice, { email: 'pending2@x.com' }, cx(c1))).json()
-    await api('POST', '/api/invites', carol, { email: 'pending2@x.com' }) // 409, but added to c2
+    expect((await api('POST', '/api/invites', carol, { email: 'pending2@x.com' })).statusCode).toBe(409)
+    expect((await api('POST', `/api/users/${inv.user_id}/invite`, carol)).statusCode).toBe(404)
+    expect((await api('DELETE', `/api/users/${inv.user_id}/invite`, carol)).statusCode).toBe(404)
     expect((await api('DELETE', `/api/users/${inv.user_id}/invite`, alice, undefined, cx(c1))).json()).toEqual({ ok: true })
-    expect((await db.query('SELECT 1 FROM users WHERE id = $1', [inv.user_id])).length).toBe(1) // c2 still has them
-    expect((await db.query<any>('SELECT company_id FROM company_members WHERE user_id = $1', [inv.user_id])).map(r => r.company_id)).toEqual([c2])
-    expect((await api('DELETE', `/api/users/${inv.user_id}/invite`, carol)).json()).toEqual({ ok: true })
     expect((await db.query('SELECT 1 FROM users WHERE id = $1', [inv.user_id])).length).toBe(0)
   })
 })

@@ -3,16 +3,19 @@ import { createHash, randomBytes } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Db } from './db.js'
+import { setCompanyName } from './db.js'
 import type { Storage } from './storage.js'
 import { validateS3Config } from './storage.js'
 import type { Realtime } from './realtime.js'
 import { mailerFor, smtpProblem } from './mail.js'
-import { getSection, maskSection, mergeSection, putSection, renderInvite } from './settings.js'
+import { getSecurity, getSection, getTrashDays, maskSection, mergeSection, putSection, putSystem, renderInvite } from './settings.js'
+import { hostOf, internalHostProblem } from './net.js'
 import type { SectionName } from './settings.js'
 
+import { companyFolderOf } from './fileCtx.js'
 import { isRole, normalizeScope, ROLES } from './roles.js'
 import type { Cap, Role, Access } from './roles.js'
-import { isCompanyRole } from './companies.js'
+import { isCompanyRole, roleRank } from './companies.js'
 import type { CompanyCtx, CompanyRole } from './companies.js'
 type Auth = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
 
@@ -24,6 +27,8 @@ export interface AdminContext {
   fileAuth: Auth
   storage: Storage
   forgetUser: (id: string) => void
+  /** Drops every cached membership of a company (renamed, archived). */
+  forgetCompany: (id: string) => void
   requireCap: (req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) => Promise<Access | null>
   /** The request's company, checked against `min` (answers 403 and returns null otherwise). */
   requireCompany: (req: FastifyRequest, reply: FastifyReply, min?: CompanyRole) => Promise<CompanyCtx | null>
@@ -61,7 +66,7 @@ const NO_PASSWORD = '!'
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 export async function registerAdmin(ctx: AdminContext) {
-  const { app, db, auth, fileAuth, storage, forgetUser, requireCap, requireCompany, companyCtx, companyMemberRemoved, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, sessionUser, publicUrl, inviteRateLimitMax, reloadRuntime } = ctx
+  const { app, db, auth, fileAuth, storage, forgetUser, forgetCompany, requireCap, requireCompany, companyCtx, companyMemberRemoved, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, sessionUser, publicUrl, inviteRateLimitMax, reloadRuntime } = ctx
 
   /** Only an owner (or a platform admin) may create, change or remove another owner. */
   const mayTouchOwner = (c: CompanyCtx) => c.role === 'owner' || c.platform
@@ -106,7 +111,7 @@ export async function registerAdmin(ctx: AdminContext) {
     const co = await requireCompany(req, reply)
     if (!co) return
     const c = await getSection(db, co.id, 'company')
-    const stream = c.logo_key ? await storage.open(c.logo_key) : null
+    const stream = c.logo_key ? await storage.open(c.logo_key, co.id) : null
     if (!stream) return reply.code(404).send({ error: 'No logo' })
     reply.header('Content-Type', c.logo_type || 'image/png')
     reply.header('Content-Disposition', `inline; filename="logo.${c.logo_type === 'image/svg+xml' ? 'svg' : 'png'}"`)
@@ -129,10 +134,10 @@ export async function registerAdmin(ctx: AdminContext) {
       ? bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
       : /^\s*(<\?xml|<!--|<!DOCTYPE svg|<svg)/i.test(bytes.subarray(0, 2000).toString('utf8').replace(/^\uFEFF/, ''))
     if (!looksRight) return reply.code(400).send({ error: 'That file is not a valid PNG or SVG' })
-    const key = await storage.save({ kind: 'company-logo', ext, company: company.name }, bytes, company.id)
+    const key = await storage.save({ kind: 'company-logo', ext, company: company.name, companyFolder: await companyFolderOf(db, company.id) }, bytes, company.id)
     const c = await getSection(db, company.id, 'company')
     await putSection(db, company.id, 'company', { ...c, logo_key: key, logo_type: file.mimetype })
-    void storage.remove(c.logo_key)
+    void storage.remove(c.logo_key, { companyId: company.id })
     return companyInfo(company)
   })
 
@@ -141,13 +146,23 @@ export async function registerAdmin(ctx: AdminContext) {
     if (!company) return
     const c = await getSection(db, company.id, 'company')
     await putSection(db, company.id, 'company', { ...c, logo_key: '', logo_type: '' })
-    void storage.remove(c.logo_key)
+    void storage.remove(c.logo_key, { companyId: company.id })
     return companyInfo(company)
   })
 
+  /**
+   * A section as the admin sees it. Sign-in rules and the trash retention are install-wide (system_settings) and only a
+   * platform admin changes them: every company reads the same values.
+   */
+  async function currentSection(companyId: string, k: SectionName): Promise<any> {
+    if (k === 'security') return getSecurity(db)
+    if (k === 'retention') return { ...(await getSection(db, companyId, 'retention')), trash_days: await getTrashDays(db) }
+    return getSection(db, companyId, k)
+  }
+
   async function allSettings(companyId: string) {
     const out: Record<string, unknown> = {}
-    for (const k of SECTIONS) out[k] = maskSection(k, await getSection(db, companyId, k))
+    for (const k of SECTIONS) out[k] = maskSection(k, await currentSection(companyId, k))
     const company = out.company as any
     out.company = { ...company, has_logo: !!company.logo_key, logo_key: undefined }
     return out
@@ -162,26 +177,50 @@ export async function registerAdmin(ctx: AdminContext) {
   app.put('/api/settings', { preHandler: auth }, async (req, reply) => {
     const company = await requireCompany(req, reply, 'admin')
     if (!company) return
+    const platform = !!req.user.isAdmin
     const body = (req.body ?? {}) as Record<string, unknown>
-    const next: [SectionName, unknown][] = []
+    const next: [SectionName, any][] = []
     for (const k of SECTIONS) {
       if (!(k in body)) continue
-      const merged = mergeSection(k, await getSection(db, company.id, k), body[k])
+      const current = await currentSection(company.id, k)
+      const merged = mergeSection(k, current, body[k])
       if ('error' in merged) return reply.code(400).send({ error: merged.error })
+      // Sign-in rules and the trash retention affect every company: platform admins only (an unchanged value is accepted).
+      if (!platform && k === 'security' && JSON.stringify(merged.value) !== JSON.stringify(current))
+        return reply.code(403).send({ error: 'Only a platform admin can change the sign-in rules (session length and lockout)' })
+      if (!platform && k === 'retention' && merged.value.trash_days !== current.trash_days)
+        return reply.code(403).send({ error: 'Only a platform admin can change how long deleted files are kept' })
       if (k === 'storage' && merged.value.backend === 's3') {
         const problem = validateS3Config(merged.value.s3)
         if (problem) return reply.code(400).send({ error: problem })
+        if (!platform && merged.value.s3.endpoint) {
+          const bad = await internalHostProblem(hostOf(merged.value.s3.endpoint))
+          if (bad) return reply.code(400).send({ error: bad })
+        }
       }
       if (k === 'smtp' && merged.value.host) {
         const problem = smtpProblem(merged.value)
         if (problem) return reply.code(400).send({ error: problem })
+        if (!platform) {
+          const bad = await internalHostProblem(String(merged.value.host))
+          if (bad) return reply.code(400).send({ error: bad })
+        }
       }
       next.push([k, merged.value])
     }
-    for (const [k, v] of next) await putSection(db, company.id, k, v)
-    // The company's name is kept in step with its branding name.
+    for (const [k, v] of next) {
+      if (k === 'security') { if (platform) await putSystem(db, 'security', v) }
+      else if (k === 'retention') {
+        await putSection(db, company.id, k, v)
+        if (platform) await putSystem(db, 'trash_days', { days: v.trash_days })
+      } else await putSection(db, company.id, k, v)
+    }
+    // The company's name is kept in step with its branding name (its folder follows only if the new name's folder is free).
     const named = next.find(([k]) => k === 'company')?.[1] as any
-    if (named?.name) await db.query('UPDATE companies SET name = $2 WHERE id = $1', [company.id, named.name])
+    if (named?.name) {
+      await setCompanyName(db.query, company.id, named.name)
+      forgetCompany(company.id)
+    }
     await reloadRuntime()
     return allSettings(company.id)
   })
@@ -191,10 +230,18 @@ export async function registerAdmin(ctx: AdminContext) {
     if (!company) return
     const to = String((req.body as any)?.to ?? '')
     if (!EMAIL_RE.test(to)) return reply.code(400).send({ error: 'Enter an email address to send the test to' })
-    const mailer = mailerFor(await getSection(db, company.id, 'smtp'))
+    const smtp = await getSection(db, company.id, 'smtp')
+    const mailer = mailerFor(smtp)
     if (!mailer) return reply.code(400).send({ error: 'Email is not configured. Fill in the SMTP settings and save first.' })
+    if (!req.user.isAdmin) {
+      const bad = await internalHostProblem(String(smtp.host))
+      if (bad) return reply.code(400).send({ error: bad })
+    }
     try { await mailer.send({ to, subject: 'PlanAsBuilt test email', text: 'Email sending is working.' }) }
-    catch (e) { return reply.code(400).send({ error: `Could not send: ${(e as Error).message}` }) }
+    catch (e) {
+      // Only a platform admin sees what the mail server answered (an error text can leak what is on an internal network).
+      return reply.code(400).send({ error: req.user.isAdmin ? `Could not send: ${(e as Error).message}` : 'Could not send the test email. Check the SMTP settings.' })
+    }
     return { ok: true }
   })
 
@@ -206,8 +253,16 @@ export async function registerAdmin(ctx: AdminContext) {
     // Test what is on screen (unsaved), falling back to the saved secret when the form left it blank.
     const merged = mergeSection('storage', stored, { backend: 's3', s3: (req.body as any)?.s3 ?? {} })
     if ('error' in merged) return reply.code(400).send({ error: merged.error })
+    if (!req.user.isAdmin && merged.value.s3?.endpoint) {
+      const bad = await internalHostProblem(hostOf(merged.value.s3.endpoint))
+      if (bad) return reply.code(400).send({ error: bad })
+    }
     try { await storage.testS3(merged.value.s3) }
-    catch (e) { return reply.code(400).send({ error: (e as Error).message }) }
+    catch (e) {
+      const msg = (e as Error).message
+      // Settings problems are safe to show; what the endpoint answered is only for platform admins.
+      return reply.code(400).send({ error: req.user.isAdmin || validateS3Config(merged.value.s3) ? msg : 'Could not reach the storage with those settings. Check the endpoint, bucket and keys.' })
+    }
     return { ok: true }
   })
 
@@ -230,7 +285,7 @@ export async function registerAdmin(ctx: AdminContext) {
     const sizes = async (keys: string[]) => {
       const todo = [...new Set(keys)].filter(k => !sizeCache.has(k))
       for (let i = 0; i < todo.length; i += 8)
-        await Promise.all(todo.slice(i, i + 8).map(async k => { sizeCache.set(k, (await storage.size(k).catch(() => null)) ?? 0) }))
+        await Promise.all(todo.slice(i, i + 8).map(async k => { sizeCache.set(k, (await storage.size(k, co.id).catch(() => null)) ?? 0) }))
     }
     await sizes([...plans, ...photos].map(r => r.file_key))
     const company = await getSection(db, co.id, 'company')
@@ -284,7 +339,7 @@ export async function registerAdmin(ctx: AdminContext) {
     for (const r of rows) {
       const shared = keptKeys.has(r.file_key)
       let bytes = 0
-      if (!shared && !counted.has(r.file_key)) { counted.add(r.file_key); bytes = (await storage.size(r.file_key).catch(() => null)) ?? 0 }
+      if (!shared && !counted.has(r.file_key)) { counted.add(r.file_key); bytes = (await storage.size(r.file_key, companyId).catch(() => null)) ?? 0 }
       reclaim += bytes
       candidates.push({
         id: r.id, project: r.project_name, document: r.document_name, revision: r.revision, label: r.label,
@@ -318,8 +373,8 @@ export async function registerAdmin(ctx: AdminContext) {
     let freed = 0
     for (const key of new Set(doomed.map(r => r.file_key as string))) {
       if (keptKeys.has(key) || stillUsed.has(key)) continue
-      freed += (await storage.size(key).catch(() => null)) ?? 0
-      await storage.remove(key)
+      freed += (await storage.size(key, company.id).catch(() => null)) ?? 0
+      await storage.remove(key, { companyId: company.id })
     }
     return { removed: doomed.length, freed_bytes: freed }
   })
@@ -539,14 +594,57 @@ export async function registerAdmin(ctx: AdminContext) {
     try {
       await mailer.send({ to, subject: purpose === 'invite' ? fill.subject : 'Reset your PlanAsBuilt password', text })
       return { emailed: true as const }
-    } catch (e) { return { emailed: false as const, email_error: (e as Error).message } }
+    } catch { return { emailed: false as const, email_error: 'The email could not be sent. Copy the link and send it yourself.' } }
   }
 
-  interface InviteInput { email: string; name?: string; isAdmin: boolean; role?: unknown; projects: { id: string; role: Role }[] }
+  interface InviteInput {
+    email: string; name?: string; isAdmin: boolean; role?: unknown; projects: { id: string; role: Role }[]
+    /** The highest company role this invite may give (a project invite: guest). */
+    maxRole?: CompanyRole
+    /** Answer the same whether or not the email has an account (project invites, which project admins send). */
+    opaque?: boolean
+  }
+
+  /** The company whose invite is waiting for this person (the pending invite token's company), or null. */
+  async function inviteOwner(userId: string): Promise<string | null> {
+    const [t] = await db.query<{ company_id: string | null }>(
+      `SELECT company_id FROM user_tokens WHERE user_id = $1 AND purpose = 'invite' AND used_at IS NULL ORDER BY created_at DESC LIMIT 1`, [userId])
+    if (t?.company_id) return t.company_id
+    const [m] = await db.query<{ company_id: string }>('SELECT company_id FROM company_members WHERE user_id = $1 ORDER BY created_at LIMIT 1', [userId])
+    return m?.company_id ?? null
+  }
 
   /**
-   * Invites someone into the company. A new email gets an account and a link. Someone who already has an account (here or in
-   * another company) is added to the company straight away, with no second account and no link.
+   * Only the company that invited a pending person (or a platform admin) may issue them a new invite link: whoever holds the link
+   * can set the password and become that person. Never for someone who belongs to another company as well.
+   */
+  async function mayIssueInvite(req: FastifyRequest, company: CompanyCtx, userId: string): Promise<boolean> {
+    if (req.user.isAdmin) return true
+    if ((await inviteOwner(userId)) !== company.id) return false
+    return !(await inOtherCompanies(userId, company.id))
+  }
+
+  /** Tells an existing account that a company wants it as a member; nothing changes until they accept (see /api/company-invitations). */
+  async function offerMembership(req: FastifyRequest, company: CompanyCtx, userId: string, email: string, role: CompanyRole, projects: { id: string; role: Role }[]) {
+    await db.query(
+      `INSERT INTO company_invitations (company_id, user_id, role, projects, invited_by) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (company_id, user_id) DO UPDATE SET role = EXCLUDED.role, projects = EXCLUDED.projects, invited_by = EXCLUDED.invited_by, created_at = now()`,
+      [company.id, userId, role, JSON.stringify(projects), req.user.id])
+    const mailer = mailerFor(await getSection(db, company.id, 'smtp'))
+    if (!mailer) return false
+    const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
+    const name = (await getSection(db, company.id, 'company')).name || company.name
+    try {
+      await mailer.send({ to: email, subject: `${name} invited you on PlanAsBuilt`,
+        text: `${me?.name ?? 'An admin'} invited you to join ${name} on PlanAsBuilt.\n\nSign in and accept the invitation:\n${linkBase(req)}\n` })
+      return true
+    } catch { return false }
+  }
+
+  /**
+   * Invites someone into the company. A new email gets an account and a link. Someone who already has an account does not join
+   * until they accept an invitation (a platform admin adds them at once). A person with another company's pending invite is left
+   * alone: nobody but the inviting company (or a platform admin) can issue them a link.
    */
   async function createInvite(req: FastifyRequest, reply: FastifyReply, company: CompanyCtx, input: InviteInput) {
     const email = input.email.trim().toLowerCase()
@@ -555,14 +653,17 @@ export async function registerAdmin(ctx: AdminContext) {
       if (!UUID_RE.test(String(p.id)) || !ROLES.includes(p.role)) return reply.code(400).send({ error: 'Bad project or role' })
       if (!(await db.query('SELECT 1 FROM projects WHERE id = $1 AND company_id = $2', [p.id, company.id])).length) return reply.code(400).send({ error: 'Unknown project' })
     }
-    // Only a company admin picks the company role; a project admin's invite is always a plain member.
-    const wanted: CompanyRole = company.isAdmin && isCompanyRole(input.role) && (input.role !== 'owner' || mayTouchOwner(company))
+    // Only a company admin picks the company role; a project admin's invite is always a plain member (at most a guest, see maxRole).
+    let wanted: CompanyRole = company.isAdmin && isCompanyRole(input.role) && (input.role !== 'owner' || mayTouchOwner(company))
       ? input.role : company.isAdmin && input.isAdmin ? 'admin' : 'member'
+    if (input.maxRole && roleRank[wanted] > roleRank[input.maxRole]) wanted = input.maxRole
+    // The same answer whether or not the email has an account.
+    const quiet = () => ({ ok: true, email, invited: true })
+    const refuse = (status: number, error: string) => (input.opaque ? quiet() : reply.code(status).send({ error }))
     const [existing] = await db.query('SELECT id, status, name, invited_by FROM users WHERE email = $1', [email])
     if (existing?.status === 'deactivated')
-      return reply.code(409).send({ error: 'That person has a deactivated account. A platform admin can reactivate them.' })
+      return refuse(409, 'That person has a deactivated account. A platform admin can reactivate them.')
     const [member] = existing ? await db.query('SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2', [company.id, existing.id]) : []
-    if (existing?.status === 'active' && member) return reply.code(409).send({ error: 'That person already has an account' })
     const name = (input.name ?? '').trim().slice(0, 200)
     const addProjects = async (userId: string) => {
       for (const p of input.projects)
@@ -572,22 +673,27 @@ export async function registerAdmin(ctx: AdminContext) {
       `INSERT INTO company_members (company_id, user_id, role) VALUES ($1,$2,$3)
        ON CONFLICT (company_id, user_id) DO UPDATE SET role = CASE WHEN company_members.role = 'owner' THEN 'owner' ELSE EXCLUDED.role END`, [company.id, userId, role])
     if (existing?.status === 'active') {
-      await join(existing.id, wanted)
-      await addProjects(existing.id)
-      forgetUser(existing.id)
-      return { user_id: existing.id, email, added_to_company: true, link: null, expires_at: null, emailed: false }
+      if (member) {
+        if (!input.opaque) return reply.code(409).send({ error: 'That person already has an account' })
+        await addProjects(existing.id); forgetUser(existing.id)
+        return quiet()
+      }
+      if (req.user.isAdmin) { // a platform admin may add anyone
+        await join(existing.id, wanted)
+        await addProjects(existing.id)
+        forgetUser(existing.id)
+        return input.opaque ? quiet() : { user_id: existing.id, email, added_to_company: true, link: null, expires_at: null, emailed: false }
+      }
+      const emailed = await offerMembership(req, company, existing.id, email, wanted, input.projects)
+      return input.opaque ? quiet() : { email, pending_consent: true, added_to_company: false, link: null, expires_at: null, emailed }
     }
     let userId: string
-    if (existing) {
+    if (existing) { // status 'invited'
+      // Someone else's pending invite is not ours to touch: no side effects at all (not even joining), and no link.
+      if (!(await mayIssueInvite(req, company, existing.id)) || (!req.user.isAdmin && !(company.isAdmin || existing.invited_by === req.user.id)))
+        return refuse(409, 'That person already has a pending invite from another company. Once they have accepted it, invite them again.')
       userId = existing.id
-      // Someone else's pending invite: a project admin, or an admin of another company, may add them to their own company and
-      // projects but cannot touch the account or regenerate the link (that would let them set the password and take it over).
-      const takeOver = req.user.isAdmin || existing.invited_by === req.user.id || (company.isAdmin && !!member)
-      await join(userId, takeOver ? wanted : member ? member.role : 'member')
-      if (!takeOver) {
-        await addProjects(userId)
-        return reply.code(409).send({ error: 'That person is already invited. They were added to this company; ask an admin to resend the invite.' })
-      }
+      await join(userId, company.isAdmin || req.user.isAdmin ? wanted : member ? member.role : wanted)
       await db.query('UPDATE users SET name = $1, invited_by = $2 WHERE id = $3', [name || existing.name, req.user.id, userId])
     } else {
       const [u] = await db.query(
@@ -601,6 +707,8 @@ export async function registerAdmin(ctx: AdminContext) {
     const link = linkFor(linkBase(req), 'invite', t.raw)
     const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
     const mail = await maybeEmail(company.id, email, 'invite', link, me?.name ?? 'An admin', name || email.split('@')[0])
+    // A project invite never hands the link to a project admin (they cannot tell new accounts from existing ones); it is emailed, and a company admin can resend it from the Users page.
+    if (input.opaque) return quiet()
     return { user_id: userId, email, link, expires_at: t.expires_at, ...mail }
   }
 
@@ -628,6 +736,7 @@ export async function registerAdmin(ctx: AdminContext) {
     const b = (req.body ?? {}) as any
     return createInvite(req, reply, company, {
       email: String(b.email ?? ''), name: b.name, isAdmin: false, projects: [{ id, role: ROLES.includes(b.role) ? b.role : 'editor' }],
+      maxRole: 'guest', opaque: true,
     })
   })
 
@@ -638,7 +747,7 @@ export async function registerAdmin(ctx: AdminContext) {
     const [u] = UUID_RE.test(id)
       ? await db.query(
         `SELECT u.id, u.email, u.name, u.status FROM users u JOIN company_members m ON m.user_id = u.id AND m.company_id = $2 WHERE u.id = $1`, [id, company.id]) : []
-    if (!u || u.status !== 'invited') return reply.code(404).send({ error: 'No pending invite for that user' })
+    if (!u || u.status !== 'invited' || !(await mayIssueInvite(req, company, u.id))) return reply.code(404).send({ error: 'No pending invite for that user' })
     const t = await makeToken(u.id, 'invite', req.user.id, company.id)
     const link = linkFor(linkBase(req), 'invite', t.raw)
     const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
@@ -654,7 +763,7 @@ export async function registerAdmin(ctx: AdminContext) {
     const [u] = UUID_RE.test(id)
       ? await db.query(
         `SELECT u.id, u.status FROM users u JOIN company_members m ON m.user_id = u.id AND m.company_id = $2 WHERE u.id = $1`, [id, company.id]) : []
-    if (!u || u.status !== 'invited') return reply.code(404).send({ error: 'No pending invite for that user' })
+    if (!u || u.status !== 'invited' || !(req.user.isAdmin || (await inviteOwner(id)) === company.id)) return reply.code(404).send({ error: 'No pending invite for that user' })
     if (await inOtherCompanies(id, company.id)) {
       await db.transaction(async q => {
         await q('DELETE FROM project_members WHERE user_id = $2 AND project_id IN (SELECT id FROM projects WHERE company_id = $1)', [company.id, id])

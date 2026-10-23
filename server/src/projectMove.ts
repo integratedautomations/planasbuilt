@@ -101,7 +101,7 @@ export async function moveProject(db: Db, projectId: string, targetId: string):
 
       const mapCable = async (src: string): Promise<string | null> => {
         if (cables.has(src)) return cables.get(src)!
-        const [c] = await q<any>('SELECT * FROM cable_types WHERE id = $1', [src])
+        const [c] = await q<any>('SELECT * FROM cable_types WHERE id = $1 AND company_id = $2', [src, p.company_id])
         if (!c) return null
         const [hit] = await q<any>(
           'SELECT id FROM cable_types WHERE company_id = $1 AND lower(btrim(name)) = $2 ORDER BY archived, sort, created_at LIMIT 1', [targetId, norm(c.name)])

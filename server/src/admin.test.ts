@@ -171,9 +171,10 @@ describe('invites and resets', () => {
   it('invites straight into a project and emails when SMTP is set', async () => {
     setTransportFactory(() => ({ sendMail: async o => { sent.push(o) } }))
     const res = await app.inject({ method: 'POST', url: `/api/projects/${projectId}/invites`, headers: H(), payload: { email: 'mail@x.com', role: 'viewer' } })
-    expect(res.json().emailed).toBe(true)
+    // a project invite answers the same for every address and never hands the link to the project admin: it is emailed
+    expect(res.json()).toEqual({ ok: true, email: 'mail@x.com', invited: true })
     expect(sent[0].to).toBe('mail@x.com')
-    expect(sent[0].text).toContain(res.json().link)
+    expect(sent[0].text).toMatch(/https:\/\/pm\.example\.com\/invite\/[A-Za-z0-9_-]{43}/)
     const members = (await app.inject({ url: `/api/projects/${projectId}/members`, headers: H() })).json()
     expect(members.find((m: any) => m.email === 'mail@x.com')).toMatchObject({ role: 'viewer', status: 'invited' })
   })

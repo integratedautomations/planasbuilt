@@ -160,3 +160,15 @@ export function maskSection(key: SectionName, v: any) {
 }
 
 export const storageConfigOf = (s: StorageSettings): StorageConfig => ({ backend: s.backend, s3: s.backend === 's3' ? s.s3 : null })
+
+/** Sign-in rules (session length, lockout): install-wide, changed by platform admins only (system_settings 'security'). */
+export async function getSecurity(db: Pick<Db, 'query'>): Promise<SecuritySettings> {
+  return { ...DEFAULTS.security, ...(await getSystem<Partial<SecuritySettings>>(db, 'security', {})) }
+}
+
+/** Days removed files wait in _trash: install-wide, platform admins only (system_settings 'trash_days'). */
+export async function getTrashDays(db: Pick<Db, 'query'>): Promise<number> {
+  const v = await getSystem<{ days?: number } | null>(db, 'trash_days', null)
+  const n = Number(v?.days)
+  return v && Number.isFinite(n) ? Math.max(0, n) : DEFAULTS.retention.trash_days
+}

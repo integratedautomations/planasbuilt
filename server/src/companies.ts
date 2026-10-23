@@ -7,14 +7,13 @@
 //
 // users.is_admin means "platform admin": may create companies and enter any of them.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import { createCompanyRow, seedStarterCatalog } from './db.js'
+import { createCompanyRow, seedStarterCatalog, setCompanyName } from './db.js'
 import type { Db } from './db.js'
 import type { Realtime } from './realtime.js'
 import { getSection, maskSection } from './settings.js'
 import type { SectionName } from './settings.js'
 import { moveProject } from './projectMove.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
-import { companyFolder } from './fileLayout.js'
 
 export const COMPANY_ROLES = ['owner', 'admin', 'member', 'guest'] as const
 export type CompanyRole = (typeof COMPANY_ROLES)[number]
@@ -71,7 +70,7 @@ export async function registerCompanies(ctx: CompaniesContext) {
   const { app, db, auth, requireCompany, companyCtx, resolveCompany, forgetUser, forgetCompany, companyMemberRemoved, reloadRuntime, realtime } = ctx
 
   const view = (c: any, active: string | null) => ({
-    id: c.id, name: c.name, slug: c.slug, archived: !!c.archived, created_at: c.created_at,
+    id: c.id, name: c.name, slug: c.slug, folder: c.folder, archived: !!c.archived, created_at: c.created_at,
     role: (c.role ?? 'owner') as CompanyRole, member: !!c.role, can_create_projects: !!c.role ? !!c.can_create_projects || c.role === 'owner' || c.role === 'admin' : true,
     active: c.id === active,
     ...(c.member_count !== undefined ? { member_count: c.member_count } : {}),
@@ -87,7 +86,7 @@ export async function registerCompanies(ctx: CompaniesContext) {
 
   const listOne = async (userId: string, companyId: string, active: string | null) => {
     const [c] = await db.query(
-      `SELECT c.id, c.name, c.slug, c.archived, c.created_at, m.role, m.can_create_projects,
+      `SELECT c.id, c.name, c.slug, c.folder, c.archived, c.created_at, m.role, m.can_create_projects,
          (SELECT count(*)::int FROM company_members x WHERE x.company_id = c.id) AS member_count
        FROM companies c LEFT JOIN company_members m ON m.company_id = c.id AND m.user_id = $2 WHERE c.id = $1`, [companyId, userId])
     return view(c, active)
@@ -100,7 +99,7 @@ export async function registerCompanies(ctx: CompaniesContext) {
     const everything = req.user.isAdmin && q.mine !== '1' && q.mine !== 'true'
     const archived = q.include_archived === '1' || q.include_archived === 'true'
     const rows = await db.query(
-      `SELECT c.id, c.name, c.slug, c.archived, c.created_at, m.role, m.can_create_projects,
+      `SELECT c.id, c.name, c.slug, c.folder, c.archived, c.created_at, m.role, m.can_create_projects,
          CASE WHEN $2::boolean OR m.role IN ('owner','admin') THEN (SELECT count(*)::int FROM company_members x WHERE x.company_id = c.id) END AS member_count
        FROM companies c LEFT JOIN company_members m ON m.company_id = c.id AND m.user_id = $1
        WHERE ($2::boolean OR m.user_id IS NOT NULL) AND ($3::boolean OR NOT c.archived) ORDER BY c.created_at, c.id`,
@@ -142,26 +141,27 @@ export async function registerCompanies(ctx: CompaniesContext) {
     return listOne(req.user.id, id, null)
   })
 
-  // Rename and/or archive (owner or admin of the company, or a platform admin). The name is also the company's branding name.
+  // Rename and/or archive. Renaming (owner or admin of the company, or a platform admin) also changes the branding name. The company's
+  // folder on the file share follows only when the new name's folder is free (folders are stored, unique without case, and never
+  // shared); otherwise the old folder is kept. "keep_folder": true never moves it. Archiving is for platform admins only.
   app.patch('/api/companies/:id', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
     const c = await adminOf(req, reply, id)
     if (!c) return
     const b = (req.body ?? {}) as any
+    if ('archived' in b && !req.user.isAdmin) return reply.code(403).send({ error: 'Only a platform admin can archive or restore a company' })
+    if ('archived' in b && typeof b.archived !== 'boolean') return reply.code(400).send({ error: 'archived must be true or false' })
     if ('name' in b) {
       const name = String(b.name ?? '').trim().slice(0, 200)
       if (!name) return reply.code(400).send({ error: 'Company name is required' })
       await db.transaction(async q => {
-        await q('UPDATE companies SET name = $2 WHERE id = $1', [id, name])
+        await setCompanyName(q, id, name, b.keep_folder !== true)
         await q(
           `INSERT INTO settings (company_id, key, value) VALUES ($1,'company',$2) ON CONFLICT (company_id, key)
            DO UPDATE SET value = jsonb_set(settings.value, '{name}', to_jsonb($3::text))`, [id, JSON.stringify({ name }), name])
       })
     }
-    if ('archived' in b) {
-      if (typeof b.archived !== 'boolean') return reply.code(400).send({ error: 'archived must be true or false' })
-      await db.query('UPDATE companies SET archived = $2 WHERE id = $1', [id, b.archived])
-    }
+    if ('archived' in b) await db.query('UPDATE companies SET archived = $2 WHERE id = $1', [id, b.archived])
     forgetCompany(id)
     return listOne(req.user.id, id, null)
   })
@@ -196,15 +196,25 @@ export async function registerCompanies(ctx: CompaniesContext) {
     if (!isCompanyRole(role)) return reply.code(400).send({ error: 'Bad role' })
     if (role === 'owner' && !mayTouchOwner(actor)) return reply.code(403).send({ error: 'Only an owner can make someone an owner' })
     const [user] = b.user_id && UUID_RE.test(String(b.user_id))
-      ? await db.query("SELECT id, status FROM users WHERE id = $1 AND status <> 'deactivated'", [b.user_id])
-      : await db.query("SELECT id, status FROM users WHERE email = $1 AND status <> 'deactivated'", [String(b.email ?? '').trim().toLowerCase()])
+      ? await db.query("SELECT id, status, email FROM users WHERE id = $1 AND status <> 'deactivated'", [b.user_id])
+      : await db.query("SELECT id, status, email FROM users WHERE email = $1 AND status <> 'deactivated'", [String(b.email ?? '').trim().toLowerCase()])
     if (!user) return reply.code(404).send({ error: 'No active user with that email' })
+    // A pending invite belongs to the company that sent it: nobody else can attach themselves to it (that would let them mint a link).
+    if (user.status === 'invited') return reply.code(409).send({ error: 'That person has not accepted their invite yet.' })
     const [cur] = await db.query('SELECT role, can_create_projects FROM company_members WHERE company_id = $1 AND user_id = $2', [id, user.id])
     if (cur?.role === 'owner' && role !== 'owner') {
       if (!mayTouchOwner(actor)) return reply.code(403).send({ error: 'Only an owner can change an owner' })
       if ((await owners(id, user.id)) === 0) return reply.code(400).send({ error: 'A company needs at least one owner' })
     }
     const canCreate = 'can_create_projects' in b ? !!b.can_create_projects : !!cur?.can_create_projects
+    if (!cur && !req.user.isAdmin) {
+      // Adding an existing account to a company needs its consent: it gets an invitation to accept (or decline).
+      await db.query(
+        `INSERT INTO company_invitations (company_id, user_id, role, can_create_projects, invited_by) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (company_id, user_id) DO UPDATE SET role = EXCLUDED.role, can_create_projects = EXCLUDED.can_create_projects, invited_by = EXCLUDED.invited_by, created_at = now()`,
+        [id, user.id, role, canCreate, req.user.id])
+      return reply.code(202).send({ pending: true, user_id: user.id, email: user.email, role })
+    }
     await db.query(
       `INSERT INTO company_members (company_id, user_id, role, can_create_projects) VALUES ($1,$2,$3,$4)
        ON CONFLICT (company_id, user_id) DO UPDATE SET role = EXCLUDED.role, can_create_projects = EXCLUDED.can_create_projects`,
@@ -259,6 +269,52 @@ export async function registerCompanies(ctx: CompaniesContext) {
     return { ok: true }
   })
 
+  // ---- Invitations to join a company (an existing account must accept) ----
+  const invitationView = (r: any) => ({
+    id: r.id, company: { id: r.company_id, name: r.company_name }, role: r.role, projects: Array.isArray(r.projects) ? r.projects.length : 0,
+    invited_by: r.invited_by_name ?? null, created_at: r.created_at,
+  })
+
+  app.get('/api/company-invitations', { preHandler: auth }, async (req) => {
+    const rows = await db.query(
+      `SELECT i.id, i.company_id, c.name AS company_name, i.role, i.projects, i.created_at, u.name AS invited_by_name
+       FROM company_invitations i JOIN companies c ON c.id = i.company_id AND NOT c.archived LEFT JOIN users u ON u.id = i.invited_by
+       WHERE i.user_id = $1 ORDER BY i.created_at`, [req.user.id])
+    return rows.map(invitationView)
+  })
+
+  app.post('/api/company-invitations/:id/accept', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    const joined = await db.transaction(async q => {
+      const [inv] = await q('SELECT * FROM company_invitations WHERE id = $1 AND user_id = $2 FOR UPDATE', [id, req.user.id])
+      if (!inv) return null
+      const [co] = await q('SELECT id FROM companies WHERE id = $1 AND NOT archived', [inv.company_id])
+      if (!co) return null
+      await q(
+        `INSERT INTO company_members (company_id, user_id, role, can_create_projects) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (company_id, user_id) DO UPDATE SET role = CASE WHEN company_members.role = 'owner' THEN 'owner' ELSE EXCLUDED.role END`,
+        [inv.company_id, req.user.id, inv.role, inv.can_create_projects])
+      for (const p of Array.isArray(inv.projects) ? inv.projects : []) {
+        if (!UUID_RE.test(String(p?.id))) continue
+        await q(
+          `INSERT INTO project_members (project_id, user_id, role) SELECT p.id, $2, $3 FROM projects p WHERE p.id = $1 AND p.company_id = $4
+           ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`, [p.id, req.user.id, p.role, inv.company_id])
+      }
+      await q('DELETE FROM company_invitations WHERE id = $1', [id])
+      return inv.company_id as string
+    })
+    if (!joined) return reply.code(404).send({ error: 'Not found' })
+    forgetUser(req.user.id)
+    return listOne(req.user.id, joined, null)
+  })
+
+  app.post('/api/company-invitations/:id/decline', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    const gone = await db.query('DELETE FROM company_invitations WHERE id = $1 AND user_id = $2 RETURNING id', [id, req.user.id])
+    if (!gone.length) return reply.code(404).send({ error: 'Not found' })
+    return { ok: true }
+  })
+
   // ---- Moving a project to another company (platform admins) ----
   // Symbol sets, device types, products and cable types its devices use are matched by name in the target company, or copied
   // over when missing. Project members who are not in the target company join it as guests so nobody loses access.
@@ -283,6 +339,18 @@ export async function registerCompanies(ctx: CompaniesContext) {
     return auth(req, reply)
   }
   const internalExport = new WeakSet<FastifyRequest>()
+  // backup.sh pauses the file-moving worker while it dumps the database and tars the files, so the pair is consistent.
+  app.post('/api/internal/relayout/pause', async (req, reply) => {
+    if (!backupTokenOk(req)) return reply.code(401).send({ error: 'Not allowed' })
+    await app.relayout.pause()
+    return { ok: true }
+  })
+  app.post('/api/internal/relayout/resume', async (req, reply) => {
+    if (!backupTokenOk(req)) return reply.code(401).send({ error: 'Not allowed' })
+    app.relayout.resume()
+    return { ok: true }
+  })
+
   app.get('/api/admin/companies/:id/export', { preHandler: exportAuth }, async (req, reply) => {
     const { id } = req.params as any
     if (!internalExport.has(req) && !(await adminOf(req, reply, id))) return
@@ -293,7 +361,9 @@ export async function registerCompanies(ctx: CompaniesContext) {
     for (const k of SECTIONS_FOR_EXPORT) settings[k] = maskSection(k, await getSection(db, id, k))
     return {
       exported_at: new Date().toISOString(),
-      company: await rows('SELECT id, name, slug, archived, created_at FROM companies WHERE id = $1').then(r => r[0] && { ...r[0], folder: companyFolder(r[0].name) }),
+      company: await rows('SELECT id, name, slug, folder, archived, created_at FROM companies WHERE id = $1').then(r => r[0]),
+      // File moves still queued for this company: backup.sh skips the folder copy until they are done (a half-moved tree would delete files remotely).
+      relayout_pending: await app.relayout.pendingFor(id),
       members: await rows('SELECT m.user_id, u.email, u.name, m.role, m.can_create_projects FROM company_members m JOIN users u ON u.id = m.user_id WHERE m.company_id = $1'),
       settings,
       symbol_sets: await rows('SELECT * FROM symbol_sets WHERE company_id = $1'),

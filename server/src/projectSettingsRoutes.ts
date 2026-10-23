@@ -17,7 +17,7 @@ interface Ctx {
   requireCap: (req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) => Promise<Access | null>
   requireCompany: (req: FastifyRequest, reply: FastifyReply, min?: CompanyRole) => Promise<CompanyCtx | null>
   /** Deletes a stored file once nothing references it any more. */
-  releaseFile: (key: string | null | undefined) => void
+  releaseFile: (key: string | null | undefined, companyId?: string | null) => void
 }
 
 const LOGO_MAX = 2 * 1024 * 1024
@@ -64,7 +64,7 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
     const org = own.logo_key ? null : await getSection(db, access.companyId!, 'company')
     const key = own.logo_key || org?.logo_key || ''
     const type = own.logo_key ? own.logo_type : org?.logo_type ?? ''
-    const stream = key ? await storage.open(key) : null
+    const stream = key ? await storage.open(key, access.companyId) : null
     if (!stream) return reply.code(404).send({ error: 'No logo' })
     reply.header('Content-Type', type || 'image/png')
     reply.header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'")
@@ -87,17 +87,18 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
     const s = await load(id)
     const old = s.report.logo_key
     await save(id, { ...s, report: { ...s.report, logo_key: key, logo_type: kind.type } })
-    releaseFile(old)
+    releaseFile(old, access.companyId)
     return publicProjectSettings(await load(id))
   })
 
   app.delete('/api/projects/:id/logo', { preHandler: auth }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any
-    if (!(await requireCap(req, reply, id, 'members.manage'))) return
+    const access = await requireCap(req, reply, id, 'members.manage')
+    if (!access) return
     const s = await load(id)
     const old = s.report.logo_key
     await save(id, { ...s, report: { ...s.report, logo_key: '', logo_type: '' } })
-    releaseFile(old)
+    releaseFile(old, access.companyId)
     return publicProjectSettings(await load(id))
   })
 }

@@ -58,6 +58,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let lastMsgAt = 0
 let docId: string | null = null
+/** A company switch that could not be sent yet (socket connecting or down). */
+let pendingCompany: string | null = null
 let peers: Peer[] = []
 let lastPresence: PresenceOut | null = null
 let chain: Promise<unknown> = Promise.resolve()
@@ -104,13 +106,15 @@ function url(token: string) {
 }
 
 function companyQuery() {
-  const id = getActiveCompanyId()
+  const id = pendingCompany ?? getActiveCompanyId()
   return id ? `&company=${encodeURIComponent(id)}` : ''
 }
 
 /** Tell the server which company's live events this connection wants (after the user switches company). */
 export function setSocketCompany(companyId: string | null) {
-  if (companyId) rawSend({ type: 'company', companyId })
+  if (!companyId) return
+  // Not connected (yet): remember it and send it as soon as the socket opens; a connect in the meantime uses it in the URL.
+  pendingCompany = rawSend({ type: 'company', companyId }) ? null : companyId
 }
 
 function rawSend(obj: unknown): boolean {
@@ -142,6 +146,7 @@ export function connect() {
     lastMsgAt = Date.now()
     setStatus('live')
     throttle.reset()
+    if (pendingCompany) { rawSend({ type: 'company', companyId: pendingCompany }); pendingCompany = null }
     startPing()
     if (docId) enterDocument(docId, myGen)
   }
@@ -279,7 +284,7 @@ export function disconnect() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
   const s = ws
   ws = null; stopPing(); generation++
-  docId = null; lastPresence = null; throttle.cancel(); throttle.reset()
+  docId = null; pendingCompany = null; lastPresence = null; throttle.cancel(); throttle.reset()
   try { s?.close(1000) } catch { /* ignore */ }
   setPeers(peers.length ? [] : peers)
   setStatus('idle')
@@ -303,7 +308,7 @@ export function configureSocket(opts: Partial<Hooks>) {
 export function resetSocketForTests() {
   if (reconnectTimer) clearTimeout(reconnectTimer)
   stopPing()
-  ws = null; reconnectTimer = null; status = 'idle'; attempt = 0; docId = null; peers = []; lastPresence = null
+  ws = null; reconnectTimer = null; status = 'idle'; attempt = 0; docId = null; pendingCompany = null; peers = []; lastPresence = null
   chain = Promise.resolve(); generation = 0; wired = false
   listeners.clear()
   throttle.cancel()

@@ -83,10 +83,18 @@ export class Storage {
     /** Backend choice of a company (undefined = the install's first company); read on every write so a settings change applies at once. */
     private getConfig: (companyId?: string | null) => Promise<StorageConfig> = async () => LOCAL_CONFIG,
     private factory: S3Factory = defaultFactory,
-    /** S3 settings of every company, used to read files that live in a bucket even when the active backend is local again. */
-    private getS3: () => Promise<S3Config | S3Config[] | null> = async () => null,
+    /**
+     * The S3 settings of ONE company (null/undefined = the install's first company), used to read files that live in a bucket even
+     * when the active backend is local again. A key is always resolved with its owner's settings, never by matching a bucket name
+     * across companies (two companies may use the same bucket name with different credentials).
+     */
+    private getS3: (companyId?: string | null) => Promise<S3Config | S3Config[] | null> = async () => null,
     /** Days a removed file waits in _trash before it is purged; 0 (the default here) deletes at once. */
     private getTrashDays: () => Promise<number> = async () => 0,
+    /** The company that owns a stored key (from the row that references it); used when the caller does not know it. */
+    private ownerOf: (key: string) => Promise<string | null> = async () => null,
+    /** Every company's S3 settings, for purging the trash of every bucket. Defaults to getS3(). */
+    private getAllS3?: () => Promise<S3Config[]>,
   ) {
     mkdirSync(filesDir, { recursive: true })
     this.root = path.resolve(filesDir)
@@ -101,26 +109,26 @@ export class Storage {
 
   private s3Key(c: S3Config, name: string) { return (c.prefix ? c.prefix.replace(/\/+$/, '') + '/' : '') + name }
 
-  /** Where a stored s3: key lives: the bucket and object key recorded in it, or the current settings for legacy keys. */
-  private async locate(key: string): Promise<{ c: S3Config; bucket: string; objectKey: string }> {
+  /** Where a stored s3: key lives: the bucket and object key recorded in it (credentials: the owning company's), or that company's settings for legacy keys. */
+  private async locate(key: string, companyId?: string | null): Promise<{ c: S3Config; bucket: string; objectKey: string }> {
     const rest = key.slice(S3_PREFIX.length)
     const slash = rest.indexOf('/')
-    // Credentials come from whichever company's S3 settings name the bucket recorded in the key.
-    const c = await this.s3For(slash > 0 ? rest.slice(0, slash) : null)
+    const owner = companyId ?? (await this.ownerOf(key).catch(() => null))
+    const c = await this.s3For(owner)
     if (slash > 0) return { c, bucket: rest.slice(0, slash), objectKey: rest.slice(slash + 1) }
     return { c, bucket: c.bucket, objectKey: this.s3Key(c, rest) }
   }
 
-  private async s3List(): Promise<S3Config[]> {
-    const got = await this.getS3()
+  /** The valid S3 settings of one company (falling back to its storage backend settings). */
+  private async s3List(companyId?: string | null): Promise<S3Config[]> {
+    const got = await this.getS3(companyId ?? null)
     let list = (Array.isArray(got) ? got : got ? [got] : []).filter(c => !validateS3Config(c))
-    if (!list.length) { const s3 = (await this.getConfig()).s3; list = s3 && !validateS3Config(s3) ? [s3] : [] }
+    if (!list.length) { const s3 = (await this.getConfig(companyId)).s3; list = s3 && !validateS3Config(s3) ? [s3] : [] }
     return list
   }
 
-  private async s3For(bucket: string | null): Promise<S3Config> {
-    const list = await this.s3List()
-    const c = (bucket && list.find(x => x.bucket === bucket)) || list[0]
+  private async s3For(companyId: string | null | undefined): Promise<S3Config> {
+    const c = (await this.s3List(companyId))[0]
     if (!c) throw new Error(`S3 storage is not configured: ${validateS3Config(null)}`)
     return c
   }
@@ -134,22 +142,26 @@ export class Storage {
   }
 
   /** The path of a key below the files root / bucket prefix, whichever backend it is on (what fileLayout produces). */
-  async pathOf(key: string): Promise<string> {
+  async pathOf(key: string, companyId?: string | null): Promise<string> {
     if (!key.startsWith(S3_PREFIX)) return key
-    const { c, objectKey } = await this.locate(key)
+    const { c, objectKey } = await this.locate(key, companyId)
     const pre = c.prefix ? c.prefix.replace(/\/+$/, '') + '/' : ''
     return pre && objectKey.startsWith(pre) ? objectKey.slice(pre.length) : objectKey
   }
 
-  /** Picks `rel` or `rel (2)`, `rel (3)`... that does not exist yet (names compared without case: SMB shares are case-insensitive). */
-  private async freeLocal(rel: string, claim: boolean): Promise<string> {
+  /**
+   * Picks `rel` or `rel (2)`, `rel (3)`... that does not exist yet (names compared without case: SMB shares are case-insensitive).
+   * `self` is the file being moved: it does not occupy its own name (a case-only rename must not become "name (2)").
+   */
+  private async freeLocal(rel: string, claim: boolean, self?: string): Promise<string> {
     for (let n = 1, enoent = 0; n < 10_000; n++) {
       const cand = withSuffix(rel, n)
       const abs = this.localPath(cand)
       try {
         await mkdir(path.dirname(abs), { recursive: true })
         const lower = path.basename(abs).toLowerCase()
-        if ((await readdir(path.dirname(abs))).some(f => f.toLowerCase() === lower)) continue
+        const selfAbs = self ? path.resolve(self) : null
+        if ((await readdir(path.dirname(abs))).some(f => f.toLowerCase() === lower && !(selfAbs && path.join(path.dirname(abs), f) === selfAbs))) continue
         if (claim) await (await openFile(abs, 'wx')).close()
         return cand
       } catch (e: any) {
@@ -205,13 +217,13 @@ export class Storage {
     } finally { if (tmp) unlink(tmp).catch(() => {}) }
   }
 
-  async exists(key: string): Promise<boolean> { return (await this.size(key)) !== null }
+  async exists(key: string, companyId?: string | null): Promise<boolean> { return (await this.size(key, companyId)) !== null }
 
   /** Size in bytes, or null when the file is missing (or the key is not valid). */
-  async size(key: string): Promise<number | null> {
+  async size(key: string, companyId?: string | null): Promise<number | null> {
     if (key.startsWith(S3_PREFIX)) {
       try {
-        const { c, bucket, objectKey } = await this.locate(key)
+        const { c, bucket, objectKey } = await this.locate(key, companyId)
         const r = await this.client(c).send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey }))
         return Number(r?.ContentLength ?? 0)
       } catch (e) { if (isNotFound(e)) return null; throw e }
@@ -220,10 +232,10 @@ export class Storage {
   }
 
   /** A readable stream of the file, or null when missing. */
-  async open(key: string): Promise<Readable | null> {
+  async open(key: string, companyId?: string | null): Promise<Readable | null> {
     if (key.startsWith(S3_PREFIX)) {
       try {
-        const { c, bucket, objectKey } = await this.locate(key)
+        const { c, bucket, objectKey } = await this.locate(key, companyId)
         const r = await this.client(c).send(new GetObjectCommand({ Bucket: bucket, Key: objectKey }))
         const b = r?.Body
         if (!b) return null
@@ -235,8 +247,8 @@ export class Storage {
     return existsSync(p) ? createReadStream(p) : null
   }
 
-  async read(key: string): Promise<Buffer | null> {
-    const s = await this.open(key)
+  async read(key: string, companyId?: string | null): Promise<Buffer | null> {
+    const s = await this.open(key, companyId)
     if (!s) return null
     const chunks: Buffer[] = []
     for await (const c of s) chunks.push(Buffer.from(c))
@@ -258,9 +270,9 @@ export class Storage {
    * Only after `commit` succeeds is the original deleted, so a crash never leaves a database key pointing at nothing.
    * Idempotent: moving a file to the place it already has returns its key.
    */
-  async relocate(key: string, newPath: string, commit?: (newKey: string) => Promise<void>): Promise<string> {
+  async relocate(key: string, newPath: string, commit?: (newKey: string) => Promise<void>, companyId?: string | null): Promise<string> {
     if (!isSafeRelPath(newPath)) throw new Error('Invalid target path')
-    if (key.startsWith(S3_PREFIX)) return this.relocateS3(key, newPath, commit)
+    if (key.startsWith(S3_PREFIX)) return this.relocateS3(key, newPath, commit, companyId)
     const src = this.localPath(key)
     if (!existsSync(src)) throw new Error('File missing')
     if (key === newPath) return key
@@ -279,7 +291,7 @@ export class Storage {
     }
     let rel = '', dest = ''
     for (let n = 1; n < 10_000; n++) {
-      rel = await this.freeLocal(newPath, false)
+      rel = await this.freeLocal(newPath, false, src)
       dest = this.localPath(rel)
       try { await link(src, dest) } catch (e: any) {
         if (e?.code === 'EEXIST' || e?.code === 'ENOENT' && existsSync(src)) continue // taken meanwhile / folder pruned meanwhile
@@ -293,8 +305,8 @@ export class Storage {
     return rel
   }
 
-  private async relocateS3(key: string, newPath: string, commit?: (newKey: string) => Promise<void>): Promise<string> {
-    const { c, bucket, objectKey } = await this.locate(key)
+  private async relocateS3(key: string, newPath: string, commit?: (newKey: string) => Promise<void>, companyId?: string | null): Promise<string> {
+    const { c, bucket, objectKey } = await this.locate(key, companyId)
     const cl = this.client(c)
     const target = this.s3Key(c, newPath)
     if (target === objectKey) return key
@@ -314,14 +326,14 @@ export class Storage {
    * the retention period). With `hard`, or when the retention is 0 days, it is deleted at once. Best effort: a file that is
    * already gone is not an error.
    */
-  async remove(key: string | null | undefined, opts: { hard?: boolean } = {}): Promise<void> {
+  async remove(key: string | null | undefined, opts: { hard?: boolean; companyId?: string | null } = {}): Promise<void> {
     if (!key) return
     try {
       const keep = opts.hard ? 0 : await this.getTrashDays().catch(() => 0)
       if (key.startsWith(S3_PREFIX)) {
-        const { c, bucket, objectKey } = await this.locate(key)
+        const { c, bucket, objectKey } = await this.locate(key, opts.companyId)
         const cl = this.client(c)
-        const rel = await this.pathOf(key)
+        const rel = await this.pathOf(key, opts.companyId)
         if (keep > 0 && !rel.startsWith(`${TRASH_DIR}/`)) {
           const free = await this.freeS3(cl, bucket, c, `${TRASH_DIR}/${stampOf()}/${rel}`)
           await cl.send(new CopyObjectCommand({ Bucket: bucket, Key: free.objectKey, CopySource: encodeCopySource(bucket, objectKey) }))
@@ -351,7 +363,7 @@ export class Storage {
       }
     } catch { /* no trash yet */ }
     const seen = new Set<string>()
-    for (const c of await this.s3List().catch(() => [] as S3Config[])) {
+    for (const c of await (this.getAllS3 ? this.getAllS3() : this.s3List()).catch(() => [] as S3Config[])) {
       const sig = `${c.bucket}/${c.prefix}`
       if (seen.has(sig)) continue
       seen.add(sig)
