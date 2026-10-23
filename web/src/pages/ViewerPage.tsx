@@ -10,6 +10,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from '../pdf'
 import { Thumbnails } from '../viewer/Thumbnails'
 import type { PageAction } from '../viewer/Thumbnails'
 import { usePanZoom } from '../viewer/usePanZoom'
+import { loadLastView, saveLastView } from '../viewer/lastView'
 import type { View } from '../viewer/usePanZoom'
 import { clampDeviceScale, scaleDevice, scaleDevices, unscaleChange } from '../markups/deviceScale'
 import { cableSettings } from '../markups/cables'
@@ -64,7 +65,8 @@ import { foreignNotice } from '../offline/owner'
 import { discardForeign, flushWrites, queueScaleDelete, queueScalePut, retryAllFailed } from '../offline/sync'
 import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Status } from '../markups/types'
-import { defaultProductId, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
+import { defaultProductId, fieldDefsFor, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
+import { describeBlocked, gateStatus, lockedFor } from '../projectSettings'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import { RoleContext } from '../roleContext'
 import { can, isFieldOnly } from '../roles'
@@ -138,7 +140,7 @@ function useShowAreas(projectId: string) {
 /** Per-viewer toggle for device coverage cones (default on), remembered per project in this browser. */
 function useShowCones(projectId: string) {
   const key = `planmark.cones.show.${projectId}`
-  const [show, setShow] = useState(() => { try { return localStorage.getItem(key) !== '0' } catch { return true } })
+  const [show, setShow] = useState(() => { try { const v = localStorage.getItem(key); return v === null ? getPrefs().general.coverageDefault : v !== '0' } catch { return true } })
   const set = (v: boolean) => { setShow(v); try { localStorage.setItem(key, v ? '1' : '0') } catch { /* ignore */ } }
   return [show, set] as const
 }
@@ -395,8 +397,10 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   // handles) but keep editing device fields, status, notes and photos through `fieldsOnly`. While the project loads nothing is locked.
   const role = project?.role
   const canEditRole = can(role, 'plans.edit')
-  const fieldsOnly = isFieldOnly(role) && !viewingOld
-  const readOnly = (!!role && !can(role, 'markup.geometry')) || viewingOld
+  // A locked project can only be changed by its admins (the server enforces it too).
+  const projectLocked = lockedFor(role, { locked: project?.settings?.locked === true })
+  const fieldsOnly = isFieldOnly(role) && !viewingOld && !projectLocked
+  const readOnly = (!!role && !can(role, 'markup.geometry')) || viewingOld || projectLocked
   const activeTool: Tool = spaceHeld ? 'pan' : tool
 
   const syncStage = useCallback((v: View) => {
@@ -413,13 +417,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     stage.batchDraw()
   }, [])
 
+  const lastViewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const rememberView = (v: View) => {
+    clearTimeout(lastViewTimer.current)
+    const doc = documentId, pg = pageNum
+    lastViewTimer.current = setTimeout(() => saveLastView(doc, pg, v), 400)
+  }
   const pageSize = page ? page.getViewport({ scale: 1 }) : null
   const { zoom, settledZoom, fit, zoomBy, centerOn, view, setView } = usePanZoom(viewportRef, stageRef,
     pageSize ? { width: pageSize.width, height: pageSize.height } : null, {
       shouldPan: () => { const owned = consumedRef.current; consumedRef.current = false; return !owned },
       onPinchStart: () => markupRef.current?.cancelGesture(),
       holdPan: () => !!markupRef.current?.isPlacing(),
-      onView: syncStage,
+      initialView: () => (getPrefs().general.openAt === 'last' ? loadLastView(documentId, pageNum) : null),
+      onView: v => { syncStage(v); rememberView(v) },
     })
   useEffect(() => { syncStage(view.current) })
 
@@ -757,6 +768,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const deleteSelected = useCallback(() => {
     if (readOnly) return
     if (!selected.length) return
+    if (selected.length > 1 && getPrefs().general.confirmMultiDelete && !confirm(`Delete ${selected.length} markups?`)) return
     const next = selectAfterDelete({ history: selHistory.current, deleted: selected, remaining: store.markups.values() })
     store.commit(selected.map(m => ({ before: m, after: null })))
     setSelectedIds(next)
@@ -796,8 +808,21 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     if (readOnly && !fieldsOnly) return
     // Field and sub users may only change fields and status, whatever the panel sends.
     const apply = fieldsOnly ? (m: Markup) => { const n = patch(m); return { ...m, fields: n.fields, status: n.status } } : patch
-    store.commit(selected.map(m => ({ before: m, after: apply(m) })), `${mergeKey}:${selectedIds.join(',')}`)
-  }, [readOnly, fieldsOnly, selected, selectedIds, store])
+    let changes = selected.map(m => ({ before: m, after: apply(m) }))
+    // Required fields per status (Settings > Project): devices missing something keep their status and the user is told what is needed.
+    const moving = changes.filter(c => (c.after.status ?? '') !== (c.before.status ?? ''))
+    if (moving.length) {
+      const status = moving[0].after.status ?? ''
+      const defsOf = (m: Markup) => fieldDefsFor(m.symbol_set_id ? symbolSets.get(m.symbol_set_id) : undefined, m.device_type_id ? catalog.types.get(m.device_type_id) : undefined)
+      const { blocked } = gateStatus(moving.map(c => ({ ...c.before, fields: c.after.fields, tag: c.after.tag })), status, defsOf)
+      if (blocked.length) {
+        const stop = new Set(blocked.map(b => b.markup.id))
+        changes = changes.filter(c => !stop.has(c.before.id))
+        setToast(describeBlocked(status, blocked))
+      }
+    }
+    if (changes.length) store.commit(changes, `${mergeKey}:${selectedIds.join(',')}`)
+  }, [readOnly, fieldsOnly, selected, selectedIds, store, symbolSets, catalog])
 
   const [replacing, setReplacing] = useState(false)
   /** Tool chest entry whose hotkey is being recorded. */
@@ -1170,6 +1195,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   /** Every notice, collapsed into the status chip (see viewer/banners). */
   const banners: Banner[] = []
   if (sync.foreign) banners.push({ id: 'foreign', level: 'bad', text: foreignNotice(sync.foreign), action: { label: 'Discard', danger: true, run: () => { const f = sync.foreign!; if (confirm(`Discard ${f.count} unsent change${f.count === 1 ? '' : 's'} from ${f.name}? This cannot be undone.`)) void discardForeign() } } })
+  if (projectLocked) banners.push({ id: 'locked', level: 'warn', text: 'This project is locked. Only admins can make changes.' })
   if (sync.authRequired) banners.push({ id: 'authRequired', level: 'bad', text: 'Your session expired. Sign in again; queued changes are kept on this device.' })
   if (sync.failed > 0) banners.push({ id: 'failed', level: 'bad', text: `${sync.failed} change${sync.failed === 1 ? '' : 's'} could not be saved.`, action: { label: 'Retry all', run: () => { void retryAllFailed() } } })
   if (notCached) banners.push({ id: 'notCached', level: 'warn', text: "You're offline and this plan isn't saved on this device. Open it once online, or use \"Make available offline\" on the project page." })
@@ -1286,6 +1312,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             if (m.type === 'legend') { openPanel('props'); setTool('select'); setSelectedIds([m.id]); return }
             if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
             if (m.type === 'text') { openPanel('props'); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
+            if (m.type === 'device' && getPrefs().general.afterPlace === 'select') setTool('select')
           }} />
       )}
     </div>
@@ -1478,6 +1505,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <MenuSep />
           <MenuItemBtn icon="keyboard" label="Hotkeys…" onClick={() => setShowHotkeys(true)} />
           <Link to={`/projects/${projectId}/devices`} role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="list" size={16} /></span><span className="vmenu-label">Devices (whole project)</span></Link>
+          <Link to="/preferences" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Preferences</span></Link>
           <Link to="/settings" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Settings</span></Link>
         </MoreMenu>
       </header>

@@ -5,6 +5,7 @@ import { effectivePrefs, EMPTY_STORED, mergePrefs, sanitizeStored } from './pref
 import type { PrefKey, Prefs, StoredPrefs } from './prefs'
 import { applyDensity } from './density'
 import type { DensityPref } from './density'
+import { setUnits } from '../units'
 
 const KEY = 'planmark.prefs'
 const SAVE_DELAY = 800
@@ -33,6 +34,7 @@ function writeLocal() {
 function publish() {
   snapshot = effectivePrefs(stored)
   applyDensity(snapshot.density)
+  setUnits(snapshot.units)
   listeners.forEach(l => l())
 }
 

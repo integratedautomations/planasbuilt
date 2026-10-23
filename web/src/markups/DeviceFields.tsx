@@ -1,7 +1,11 @@
 import { HARDWARE_FIELDS, STATUSES } from './types'
 import { defaultProductId, fieldDefsFor, productOptionLabel, productsFor, refillFields, tagPrefixFor } from '../catalog/catalog'
 import { useCatalogContext } from '../catalog/useCatalog'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { loadAttachments } from '../offline/cache'
+import { useSyncStatus } from '../offline/hooks'
+import { on as onSocket } from '../realtime/socket'
+import { activeSettings, describeBlocked, describeMissing, gateStatus, missingForStatus } from '../projectSettings'
 import { useProjectRole } from '../roleContext'
 import { can } from '../roles'
 import { Attribution, HistorySection } from './MarkupInfo'
@@ -36,7 +40,28 @@ interface Props {
 export function DeviceFields({ devices, set, readOnly, limited = false, onUpdate, areaPath, heading, scale = null }: Props) {
   const d = devices[0]
   const single = devices.length === 1
-  const setStatus = (status: Status) => onUpdate(m => ({ ...m, status }), 'status')
+  // Required fields per status (project settings): a device missing one keeps its status and the message says what to fill in.
+  const [statusMsg, setStatusMsg] = useState('')
+  const [photoCounts, setPhotoCounts] = useState<Map<string, number>>(new Map())
+  const [photoTick, setPhotoTick] = useState(0)
+  const needsPhoto = Object.values(activeSettings().required).some(l => l.includes('photo'))
+  const { pending } = useSyncStatus()
+  const idsKey = devices.map(m => m.id).join(',')
+  useEffect(() => setStatusMsg(''), [idsKey])
+  useEffect(() => onSocket('attachments', msg => { if (msg.markupId === d.id || msg.markupId === '*') setPhotoTick(n => n + 1) }), [d.id])
+  useEffect(() => {
+    if (!needsPhoto || readOnly || devices.length !== 1) return
+    let cancel = false
+    loadAttachments(d.id).then(r => { if (!cancel) setPhotoCounts(new Map([[d.id, r.data.length]])) }).catch(() => {})
+    return () => { cancel = true }
+  }, [d.id, devices.length, needsPhoto, readOnly, pending, photoTick])
+  const setStatus = (status: Status) => {
+    const { allowed, blocked } = gateStatus(devices, status, () => defs, devices.length === 1 ? photoCounts : undefined)
+    setStatusMsg(describeBlocked(status, blocked))
+    if (!allowed.length) return
+    const ok = new Set(allowed.map(m => m.id))
+    onUpdate(m => (ok.has(m.id) ? { ...m, status } : m), 'status')
+  }
   const setField = (key: string, value: string | number | boolean) =>
     onUpdate(m => ({ ...m, fields: { ...m.fields, [key]: value } }), `field.${key}.${single ? d.id : 'all'}`)
   /** Multi-device: the shared value when every device agrees, otherwise empty + "Mixed". */
@@ -134,13 +159,23 @@ export function DeviceFields({ devices, set, readOnly, limited = false, onUpdate
       </label>
       <div className="field">Status
         <div className="status-buttons">
-          {STATUSES.map(s => (
-            <button key={s.value} className={devices.every(m => m.status === s.value) ? 'on' : ''}
-              style={{ '--status': s.color } as React.CSSProperties} onClick={() => setStatus(s.value)}>
-              <span className="dot" style={{ background: s.color }} />{s.label}
-            </button>
-          ))}
+          {STATUSES.map(s => {
+            const need = single && d.status !== s.value ? missingForStatus(s.value, d, defs, photoCounts.get(d.id) ?? null) : []
+            return (
+              <button key={s.value} className={(devices.every(m => m.status === s.value) ? 'on' : '') + (need.length ? ' needs' : '')}
+                style={{ '--status': s.color } as React.CSSProperties} onClick={() => setStatus(s.value)}
+                title={need.length ? describeMissing(s.value, need) : undefined}>
+                <span className="dot" style={{ background: s.color }} />{s.label}
+              </button>
+            )
+          })}
         </div>
+        {single && !readOnly && (() => {
+          const hints = STATUSES.filter(s => s.value !== d.status)
+            .map(s => ({ s, need: missingForStatus(s.value, d, defs, photoCounts.get(d.id) ?? null) })).filter(h => h.need.length)
+          return hints.length ? <div className="status-needs muted small">{hints.map(h => <div key={h.s.value}>{describeMissing(h.s.value, h.need)}</div>)}</div> : null
+        })()}
+        {statusMsg && <div className="error small" role="alert">{statusMsg}</div>}
       </div>
 
       {single && (

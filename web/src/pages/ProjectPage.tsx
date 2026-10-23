@@ -16,7 +16,8 @@ import { Brand } from '../Brand'
 import { Icon } from '../ui/Icon'
 import { UserMenu } from '../settings/UserMenu'
 import { MembersPanel } from '../settings/MembersPanel'
-import { CableDefaults } from '../settings/CableDefaults'
+import { ProjectSettingsTab } from '../settings/ProjectSettingsTab'
+import { lockedFor } from '../projectSettings'
 import { cableSettings } from '../markups/cables'
 import { can } from '../roles'
 
@@ -67,7 +68,7 @@ export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
   const [project, setProject] = useState<Project | null>(null)
   const [docs, setDocs] = useState<DocumentSummary[]>([])
-  const [tab, setTab] = useState<'plans' | 'members'>('plans')
+  const [tab, setTab] = useState<'plans' | 'members' | 'settings'>('plans')
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -108,19 +109,11 @@ export function ProjectPage({ user }: { user: User }) {
   }
 
   const allOffline = docs.length > 0 && docs.every(d => offlineState.get(d.id)?.offline)
-  const canEdit = can(project?.role, 'plans.edit')
+  const locked = lockedFor(project?.role, { locked: project?.settings?.locked === true })
+  const canEdit = can(project?.role, 'plans.edit') && !locked
   const isAdmin = can(project?.role, 'members.manage')
   const canDeletePlans = can(project?.role, 'plans.delete')
   const canSeeCosts = project?.can_see_costs !== false
-
-  async function setEditorsSeeCosts(on: boolean) {
-    if (!project) return
-    setError('')
-    try {
-      const p = await api<Project>(`/projects/${project.id}`, { method: 'PATCH', body: JSON.stringify({ editors_see_costs: on }) })
-      setProject({ ...project, editors_see_costs: p.editors_see_costs })
-    } catch (err) { setError((err as Error).message) }
-  }
 
   async function toggleComplete() {
     if (!project) return
@@ -237,17 +230,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
           <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
+          {isAdmin && <button role="tab" aria-selected={tab === 'settings'} className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>Settings</button>}
           <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/devices`} title="Every device in the project, without opening a plan">Devices</Link>
           <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/wiring`} title="Riser diagram built from the cable runs locked to devices">Wiring</Link>
         </div>
-        {tab === 'members' && isAdmin && project && (
-          <label className="check" title="Project managers and admins always see costs">
-            <input type="checkbox" checked={project.editors_see_costs !== false} onChange={e => setEditorsSeeCosts(e.target.checked)} /> Editors see unit costs and labor hours
-          </label>
-        )}
+        {locked && <div className="lock-banner" role="status">This project is locked. Only admins can make changes.</div>}
+        {tab === 'settings' && isAdmin && project && <ProjectSettingsTab project={project} onProject={setProject} />}
         {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
         {tab === 'plans' && <>
-        {project && <CableDefaults project={project} canEdit={canEdit} onSaved={setProject} />}
         <div className="row pp-toolbar">
           <h2>Plans</h2>
           <span className="spacer" />

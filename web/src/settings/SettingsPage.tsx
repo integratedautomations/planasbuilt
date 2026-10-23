@@ -4,6 +4,7 @@ import { Brand } from '../Brand'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { CompanyTab } from './CompanyTab'
 import { MailTab } from './MailTab'
+import { OrganizationTab } from './OrganizationTab'
 import { PersonalTab } from './PersonalTab'
 import { StorageTab } from './StorageTab'
 import { UserMenu } from './UserMenu'
@@ -11,6 +12,7 @@ import { UserMenu } from './UserMenu'
 const TABS = [
   { id: 'personal', label: 'Personal', admin: false },
   { id: 'company', label: 'Company', admin: true },
+  { id: 'organization', label: 'Organization', admin: true },
   { id: 'storage', label: 'Storage', admin: true },
   { id: 'email', label: 'Email', admin: true },
 ]
@@ -39,6 +41,7 @@ export function SettingsPage({ user, onUser }: { user: User; onUser: (u: User) =
         </div>
         {tab === 'personal' && <PersonalTab user={user} onUser={onUser} />}
         {tab === 'company' && <CompanyTab />}
+        {tab === 'organization' && <OrganizationTab />}
         {tab === 'storage' && <StorageTab />}
         {tab === 'email' && <MailTab />}
       </main>

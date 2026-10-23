@@ -474,8 +474,12 @@ function photoForm(fields: Record<string, string>, blob: Blob, name: string) {
 async function defaultExecutor(item: OutboxItem): Promise<unknown> {
   const { kind, docId, targetId: id, payload } = item
   switch (kind) {
-    case 'markup_put':
-      return api<Markup>(`/documents/${docId}/markups/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
+    case 'markup_put': {
+      // Photos taken offline are queued behind this save; tell the server so a "photo required" status is not refused for them.
+      const queuedPhotos = await db.outbox.filter(i => i.kind === 'photo_post' && i.status !== 'failed' && i.payload?.markupId === id).count()
+      const body = queuedPhotos > 0 ? { ...payload, pending_photos: queuedPhotos } : payload
+      return api<Markup>(`/documents/${docId}/markups/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    }
     case 'markup_delete':
       return api(`/documents/${docId}/markups/${id}`, { method: 'DELETE' })
     case 'photo_post': {

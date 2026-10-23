@@ -47,6 +47,8 @@ export interface ReportInput {
   options?: ReportOptions
   /** Project cable defaults, for the lengths on the wiring riser. */
   cableDefaults?: CableSettings
+  /** Logo image (PNG or JPEG) drawn on the title page. */
+  logo?: Uint8Array
   onProgress?: (done: number, total: number, label: string) => void
 }
 
@@ -125,6 +127,16 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
   // ---- title page
   if (opts.titlePage) {
     w.newPage()
+    if (input.logo) {
+      const kind = imageKind(input.logo)
+      try {
+        const img = kind === 'jpg' ? await out.embedJpg(input.logo) : kind === 'png' ? await out.embedPng(input.logo) : null
+        if (img) {
+          const s = Math.min(220 / img.width, 80 / img.height, 1)
+          w.page.drawImage(img, { x: MARGIN, y: H - MARGIN - img.height * s, width: img.width * s, height: img.height * s })
+        }
+      } catch { /* unreadable logo: leave it out */ }
+    }
     w.text('As-Built Report', MARGIN, H - 200, 34, { bold: true })
     w.text(input.projectName, MARGIN, H - 245, 22)
     let ty = H - 275
@@ -187,7 +199,7 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
     const pages = riserPages({
       projectName: input.projectName, date: input.date, markups: input.markups.filter(m => !opts.docIds || opts.docIds.includes(m.document_id)),
       symbolSets: input.symbolSets, catalog: input.catalog ?? EMPTY_CATALOG, docNames: new Map(input.sheets.map(s => [s.documentId, s.name])),
-      scaleFor, defaults: input.cableDefaults ?? DEFAULT_CABLE_SETTINGS,
+      scaleFor, defaults: input.cableDefaults ?? DEFAULT_CABLE_SETTINGS, company: opts.companyName,
     })
     await drawRiserPages(out, pages, input.icons)
   }

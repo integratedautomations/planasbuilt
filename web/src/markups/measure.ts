@@ -1,4 +1,5 @@
 import type { Markup, PathGeometry } from './types'
+import { formatArea, formatLength } from '../units'
 
 /** Sum of segment lengths of [x0,y0,x1,y1,...] points, in the same units. */
 export function polylineLength(points: number[]): number {
@@ -61,21 +62,10 @@ export function polygonCentroid(points: number[]): { x: number; y: number } {
   return { x: cx / (3 * a), y: cy / (3 * a) }
 }
 
-/** `12'-6 1/2"`, rounded to the nearest 1/2". */
-export function formatFeetInches(feet: number): string {
-  const half = Math.round(Math.max(0, feet) * 24) // half-inches
-  const ft = Math.floor(half / 24)
-  const rem = half % 24
-  const whole = Math.floor(rem / 2)
-  const frac = rem % 2 === 1
-  const inches = frac ? (whole > 0 ? `${whole} 1/2` : '1/2') : `${whole}`
-  return `${ft}'-${inches}"`
-}
+/** `12'-6 1/2"` or decimal feet, per the user's units pref (see units.ts). Kept under this name for existing callers. */
+export const formatFeetInches = formatLength
 
-/** `1,234.5 SF` */
-export function formatArea(sqft: number): string {
-  return `${sqft.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} SF`
-}
+export { formatArea }
 
 const NUM = '\\d+(?:\\.\\d+)?'
 const BARE = new RegExp(`^${NUM}$`)

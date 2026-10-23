@@ -26,8 +26,9 @@ import { PLACE_ROTATE_SLOP_PX, angleLabel, faceAngle, faceCoverageOnly, createHo
 import type { HoldGate } from './placeRotate'
 import type { Peer } from '../realtime/presence'
 import { REDLINE } from './canvasFonts'
-import { createTouchArbiter, isDoubleTap, LONG_PRESS_MS } from '../viewer/touchGesture'
+import { createTouchArbiter, isDoubleTap } from '../viewer/touchGesture'
 import { usePrefs } from '../prefs/store'
+import { haptic } from '../prefs/general'
 import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } from './snap'
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
 import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
@@ -176,11 +177,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   // Snapping: settings from the user's prefs, an index of this page's markups, and the PDF line index from the viewer.
   const snapSettings = usePrefs().snap
   const holdPref = usePrefs().holdRotateMs
+  const general = usePrefs().general
   const markupIndex = useMemo(() => (snapSettings.on && (snapSettings.markups || snapSettings.devices) ? buildMarkupIndex(markups) : null),
     [markups, snapSettings.on, snapSettings.markups, snapSettings.devices])
   const snapEnv: SnapEnv = { settings: snapSettings, pdf: pdfLines ?? null, markups: markupIndex, gridStep: gridStepOf(snapSettings, scale) }
   /** Where the pointer snapped to (indicator), in page space. */
   const [snapMark, setSnapMark] = useState<{ x: number; y: number; kind: SnapKind } | null>(null)
+  const snapped = !!snapMark
+  useEffect(() => { if (snapped) haptic(general.haptics, 8) }, [snapped]) // eslint-disable-line react-hooks/exhaustive-deps
   /** A dragged device / box that turned to a line: what to commit on drop. */
   const dragAlignRef = useRef<{ id: string; geometry: BoxGeometry } | null>(null)
   /** Angle of the line a box drag started on (Align to walls): the drawn box takes this rotation. */
@@ -275,6 +279,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     clickPts.current = []
     if (!m) return
     commit([{ before: null, after: m }])
+    if (m.type === 'device') haptic(general.haptics, 15)
     onSelect([m.id])
     onCreated?.(m)
   }
@@ -364,7 +369,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (!pl.gate.ready()) return // released early = plain placement; moving before the hold time does nothing
       pl.moved = true
     }
-    const angle = placeAngle(pl.c, ptr, free)
+    const angle = placeAngle(pl.c, ptr, free, general.rotateStep)
     if (angle === null) return
     // Locked to a wall or corner: only the coverage turns; the device keeps its aligned rotation
     if (pl.aligned && !rotatesCoverage(pl.base)) return
@@ -402,7 +407,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         if (e.evt.shiftKey || multiSelect) {
           onSelect(group.every(i => selectedIds.includes(i)) ? selectedIds.filter(i => !group.includes(i)) : [...selectedIds, ...group.filter(i => !selectedIds.includes(i))])
         } else if (!group.every(i => selectedIds.includes(i))) onSelect(group)
-      } else if ((boxSelect || e.evt.shiftKey || e.evt.pointerType === 'pen') && !tapMode.current) {
+      } else if ((boxSelect || e.evt.shiftKey || (e.evt.pointerType === 'pen' && general.pencil === 'box')) && !tapMode.current) {
         consumedRef.current = true // empty space with Shift / box mode / Apple Pencil: marquee
         const p = pointer()
         marqueeStart.current = { p, add: e.evt.shiftKey || multiSelect }
@@ -672,7 +677,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
         }
         onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt })
-      }, tool === 'device' ? touchHoldMs(holdPref, LONG_PRESS_MS) : LONG_PRESS_MS)
+      }, tool === 'device' ? touchHoldMs(holdPref, general.longPressMs) : general.longPressMs)
     }
     if (!t.unlisten) {
       const mv = (ev: PointerEvent) => {
@@ -1051,7 +1056,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}
         {peers?.map(p => {
-          const boxes = p.selection.map(id => byId.get(id)).filter((x): x is Markup => !!x).map(x => ({ id: x.id, b: markupBounds(x) }))
+          const boxes = (general.showSelections ? p.selection : []).map(id => byId.get(id)).filter((x): x is Markup => !!x).map(x => ({ id: x.id, b: markupBounds(x) }))
           return boxes.map(({ id, b }) => (
             <Rect key={`${p.clientId}:${id}`} x={b.x - 3 / zoom} y={b.y - 3 / zoom} width={b.width + 6 / zoom} height={b.height + 6 / zoom}
               listening={false} stroke={p.color} strokeWidth={2 / zoom} dash={[6 / zoom, 3 / zoom]} cornerRadius={2 / zoom} />
@@ -1079,7 +1084,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
             </Group>
           )
         })}
-        {peers?.map(p => p.viewport && (
+        {peers?.map(p => general.showViewRects && p.viewport && (
           <Group key={`${p.clientId}:vp`} x={p.viewport.x} y={p.viewport.y} listening={false}>
             <Rect width={p.viewport.w} height={p.viewport.h} stroke={p.color} strokeWidth={1.5 / zoom} dash={[8 / zoom, 5 / zoom]} opacity={0.5} />
             <Group scaleX={1 / zoom} scaleY={1 / zoom}>
@@ -1090,7 +1095,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
             </Group>
           </Group>
         ))}
-        {peers?.map(p => p.cursor && (
+        {peers?.map(p => general.showCursors && p.cursor && (
           // Sized in screen pixels: the group is scaled by 1/zoom
           <Group key={p.clientId} x={p.cursor.x} y={p.cursor.y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
             <Line points={[0, 0, 0, 16, 4, 12.5, 7.5, 19, 10.5, 17.5, 7, 11.5, 12, 11]} closed fill={p.color} stroke="#fff" strokeWidth={1} lineJoin="round" />

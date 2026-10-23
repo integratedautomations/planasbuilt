@@ -1,25 +1,14 @@
 import { FormEvent, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, setToken, User } from '../api'
-import type { ReplaceChoice } from '../markups/placeReplace'
-import { HotkeyDialog } from '../prefs/HotkeyDialog'
-import { DENSITY_PREFS } from '../prefs/density'
-import { HoldDelayField } from '../viewer/SnapMenu'
-import type { DensityPref } from '../prefs/density'
-import { setPref, usePrefs } from '../prefs/store'
 import { UserAvatar } from '../ui/UserAvatar'
-import { THEME_PREFS } from '../prefs/theme'
-import type { ThemePref } from '../prefs/theme'
 
-const THEME_LABEL: Record<ThemePref, string> = { auto: 'Match my device', light: 'Light', dark: 'Dark' }
-const DENSITY_LABEL: Record<DensityPref, string> = { auto: 'Automatic (compact on desktop, comfortable on touch)', compact: 'Compact', comfortable: 'Comfortable' }
 
 export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) => void }) {
-  const prefs = usePrefs()
   const [name, setName] = useState(user.name)
   const [nameMsg, setNameMsg] = useState('')
   const [pw, setPw] = useState({ current: '', next: '', again: '' })
   const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [hotkeys, setHotkeys] = useState(false)
   const [picMsg, setPicMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -86,39 +75,10 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
       </section>
 
       <section className="card settings-card">
-        <h3>Appearance</h3>
-        <label className="field">Theme
-          <select value={prefs.theme} onChange={e => setPref('theme', e.target.value as ThemePref)}>
-            {THEME_PREFS.map(t => <option key={t} value={t}>{THEME_LABEL[t]}</option>)}
-          </select>
-        </label>
-        <label className="field">Density
-          <select value={prefs.density} onChange={e => setPref('density', e.target.value as DensityPref)}>
-            {DENSITY_PREFS.map(d => <option key={d} value={d}>{DENSITY_LABEL[d]}</option>)}
-          </select>
-        </label>
-        <HoldDelayField />
-        <p className="muted small">These follow you to every device you sign in on.</p>
+        <h3>Preferences</h3>
+        <p className="muted">Theme, units, placing, touch, snapping and keyboard shortcuts now live on one page.</p>
+        <div><Link to="/preferences">Open Preferences</Link></div>
       </section>
-
-      <section className="card settings-card">
-        <h3>Plan editing</h3>
-        <label className="field">When I place a device on a device of another type
-          <select value={prefs.replaceOnOverlap} onChange={e => setPref('replaceOnOverlap', e.target.value as ReplaceChoice)}>
-            <option value="ask">Ask me</option>
-            <option value="replace">Replace it</option>
-            <option value="both">Place both</option>
-          </select>
-        </label>
-        <div><button onClick={() => setHotkeys(true)}>Keyboard shortcuts…</button></div>
-      </section>
-
-      <section className="card settings-card">
-        <h3>Notifications</h3>
-        <p className="muted">Choose which events notify you, and how (in the app, email or push). Coming in M15.</p>
-      </section>
-
-      {hotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setHotkeys(false)} />}
     </div>
   )
 }

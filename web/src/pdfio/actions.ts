@@ -17,6 +17,7 @@ import type { ReportOptions } from './reportOptions'
 import type { ReportPhoto } from './report'
 import { cableSettings } from '../markups/cables'
 import type { Project } from '../api'
+import { normalizeSettings } from '../projectSettings'
 
 export interface DocExportArgs {
   documentId: string
@@ -76,6 +77,14 @@ export async function exportProjectReport(projectId: string, projectName: string
     }
     return out
   }
-  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress, options, cableDefaults: cableSettings(project) })
+  // Sections the project switched off stay out of the report; the logo is the project's own, else the company's.
+  const sec = normalizeSettings(project?.settings).report.sections
+  const allowed: ReportOptions = {
+    ...options, titlePage: options.titlePage && sec.title, includeSheets: options.includeSheets && sec.sheets,
+    includeDevices: options.includeDevices && sec.devices, photos: sec.photos ? options.photos : 'none',
+    includeLegend: options.includeLegend && sec.legend, includeBom: options.includeBom && sec.bom, includeWiring: options.includeWiring && sec.wiring,
+  }
+  const logo = await authFetch(`/api/projects/${projectId}/logo`).then(async r => (r.ok ? new Uint8Array(await r.arrayBuffer()) : undefined)).catch(() => undefined)
+  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress, options: allowed, cableDefaults: cableSettings(project), logo })
   downloadBytes(bytes, exportFileName(projectName, 'as-built-report'))
 }

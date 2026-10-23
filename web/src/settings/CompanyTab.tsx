@@ -88,7 +88,7 @@ export function CompanyTab() {
             <option value={4}>4 digits (CAM-0001)</option>
           </select>
         </label>
-        <p className="muted small">Applies to tags created from now on; existing tags are not renamed. Status names stay fixed for now.</p>
+        <p className="muted small">Applies to tags created from now on; existing tags are not renamed. Each project can override the format, numbering and prefixes in its Settings tab.</p>
       </section>
 
       <section className="card settings-card">

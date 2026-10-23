@@ -2,12 +2,25 @@
 import type { Db } from './db.js'
 import type { S3Config, StorageConfig } from './storage.js'
 import type { SmtpConfig } from './mail.js'
+import { DEFAULT_PROJECT_SETTINGS, defaultsPart, mergeProjectSettings, readProjectSettings } from './projectSettings.js'
 
 export interface CompanySettings { name: string; address: string; phone: string; prepared_by: string; logo_key: string; logo_type: string }
 export interface TagSettings { padding: 2 | 3 | 4 }
 export interface PhotoSettings { max_dimension: number }
 export interface RetentionSettings { mode: 'all' | 'keep'; keep_latest: number }
 export interface StorageSettings { backend: 'local' | 's3'; s3: S3Config }
+
+/** Sign-in rules. lockout_limit 0 = the built-in default (10 failures). */
+export interface SecuritySettings { session_days: number; lockout_limit: number; lockout_base_min: number; lockout_cap_min: number }
+export interface UploadSettings { max_upload_mb: number }
+/** Invite email text. Placeholders: {name} {inviter} {company} {link} {days}. */
+export interface InviteSettings { sender_name: string; subject: string; body: string }
+export const INVITE_PLACEHOLDERS = ['name', 'inviter', 'company', 'link', 'days'] as const
+export const DEFAULT_INVITE: InviteSettings = {
+  sender_name: '',
+  subject: 'You are invited to {company}',
+  body: '{inviter} invited you to {company} on PlanAsBuilt.\n\nSet your password here (valid for {days} days):\n{link}\n',
+}
 
 export const DEFAULTS = {
   company: { name: '', address: '', phone: '', prepared_by: '', logo_key: '', logo_type: '' } as CompanySettings,
@@ -19,7 +32,18 @@ export const DEFAULTS = {
     s3: { endpoint: '', bucket: '', region: 'auto', accessKeyId: '', secret: '', pathStyle: false, prefix: '' },
   } as StorageSettings,
   smtp: { host: '', port: 587, secure: false, user: '', pass: '', from: '' } as SmtpConfig,
+  security: { session_days: 30, lockout_limit: 0, lockout_base_min: 1, lockout_cap_min: 15 } as SecuritySettings,
+  uploads: { max_upload_mb: 200 } as UploadSettings,
+  invite: DEFAULT_INVITE as InviteSettings,
+  /** Copied into every new project (a ProjectSettings without logo and lock). */
+  project_defaults: defaultsPart(DEFAULT_PROJECT_SETTINGS) as any,
 }
+/** Fills an invite template's {placeholders}; unknown ones stay as typed. The subject is one line. */
+export function renderInvite(t: InviteSettings, v: Record<string, string>) {
+  const fill = (s: string) => s.replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m))
+  return { subject: fill(t.subject).replace(/[\r\n]+/g, ' ').trim(), body: fill(t.body) }
+}
+
 export type SectionName = keyof typeof DEFAULTS
 
 export async function getSection<K extends SectionName>(db: Db, key: K): Promise<(typeof DEFAULTS)[K]> {
@@ -73,6 +97,30 @@ export function mergeSection(key: SectionName, current: any, patch: any): { valu
       // The secret is write-only: blank or the mask means "keep what is stored".
       if (typeof p.secret === 'string' && p.secret.trim() && !/^•+$/.test(p.secret)) s.secret = p.secret.trim()
       return { value: { backend, s3: s } }
+    }
+    case 'security':
+      return { value: {
+        session_days: int(patch.session_days, 1, 365, current.session_days),
+        lockout_limit: patch.lockout_limit === 0 ? 0 : int(patch.lockout_limit, 3, 100, current.lockout_limit),
+        lockout_base_min: int(patch.lockout_base_min, 1, 60, current.lockout_base_min),
+        lockout_cap_min: int(patch.lockout_cap_min, 1, 1440, current.lockout_cap_min),
+      } }
+    case 'uploads':
+      return { value: { max_upload_mb: int(patch.max_upload_mb, 1, 1024, current.max_upload_mb) } }
+    case 'invite': {
+      const i = { ...current }
+      if ('sender_name' in patch) i.sender_name = str(patch.sender_name, 100)
+      if ('subject' in patch) i.subject = str(patch.subject, 200)
+      if ('body' in patch) i.body = String(patch.body ?? '').replace(/\r\n/g, '\n').slice(0, 5000)
+      if (!i.subject.trim()) return { error: 'The invite email needs a subject' }
+      if (!i.body.includes('{link}')) return { error: 'The invite email body must include {link}, or the person cannot set a password' }
+      const bad = [...(i.subject + i.body).matchAll(/\{(\w*)\}/g)].map(m => m[1]).filter(k => !(INVITE_PLACEHOLDERS as readonly string[]).includes(k))
+      if (bad.length) return { error: `Unknown placeholder {${bad[0]}}. Use ${INVITE_PLACEHOLDERS.map(k => `{${k}}`).join(', ')}` }
+      return { value: i }
+    }
+    case 'project_defaults': {
+      const m = mergeProjectSettings(readProjectSettings(current), patch)
+      return 'error' in m ? m : { value: defaultsPart(m.value) }
     }
     case 'smtp': {
       const s = { ...current }

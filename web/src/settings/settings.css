@@ -49,6 +49,18 @@
 .user-menu-pop a:hover, .user-menu-pop button:hover { background: var(--surface-2); }
 .user-menu-who { display: flex; flex-direction: column; padding: 8px 12px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 
+/* ---- Project and organization rules (status workflow, required fields, tags) ---- */
+.rules-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; align-items: start; border: none; padding: 0; margin: 0; min-width: 0; }
+.status-editor { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.status-editor li { align-items: center; flex-wrap: wrap; }
+.status-editor input[type="color"] { width: 36px; height: 32px; padding: 0; }
+.req-table-wrap { overflow-x: auto; }
+.req-table { border-collapse: collapse; font-size: 13px; }
+.req-table th, .req-table td { padding: 4px 8px; text-align: center; border-bottom: 1px solid var(--border); }
+.req-table th[scope="row"], .req-table thead th:first-child { text-align: left; font-weight: 500; }
+.prefix-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.project-settings .settings-actions { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0; }
+
 /* ---- Settings ---- */
 .settings-page { gap: 12px; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); overflow-x: auto; }

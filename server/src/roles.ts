@@ -59,9 +59,15 @@ export function normalizeScope(v: unknown): Scope {
 }
 
 /** Who someone is in one project. */
-export interface Access { role: Role; scope: Scope; editorsSeeCosts: boolean }
+export interface Access { role: Role; scope: Scope; editorsSeeCosts: boolean; /** The project is locked: only admins may change anything. */ locked?: boolean }
 
-export const accessCan = (a: Access | null | undefined, cap: Cap) => !!a && can(a.role, cap, { editorsSeeCosts: a.editorsSeeCosts })
+/** Capabilities that change data; a locked project allows them to admins only. */
+export const WRITE_CAPS: ReadonlySet<Cap> = new Set<Cap>([
+  'markup.fields', 'photos.edit', 'markup.create', 'markup.geometry', 'markup.delete', 'plans.edit', 'plans.delete',
+])
+
+export const accessCan = (a: Access | null | undefined, cap: Cap) =>
+  !!a && can(a.role, cap, { editorsSeeCosts: a.editorsSeeCosts }) && !(a.locked && a.role !== 'admin' && WRITE_CAPS.has(cap))
 
 /** A sub's markup is in scope when its symbol set or its layer is listed. */
 export function inScope(scope: Scope, m: { symbol_set_id?: string | null; layer_id?: string | null }): boolean {

@@ -325,6 +325,9 @@ button { touch-action: manipulation; }
 .device-head { display: flex; gap: 10px; align-items: center; }
 .status-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .status-buttons button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; min-height: 36px; font-size: 13px; }
+.lock-banner { padding: 8px 12px; border: 1px solid var(--border); border-left: 4px solid #f08c00; border-radius: var(--radius); background: var(--surface-2); font-size: 14px; }
+.status-buttons button.needs { opacity: 0.75; border-style: dashed; }
+.status-needs { margin-top: 4px; }
 .status-buttons button.on { border-color: var(--status); background: color-mix(in srgb, var(--status) 18%, transparent); font-weight: 600; }
 .section-label { text-transform: uppercase; letter-spacing: 0.05em; margin-top: 6px; }
 input.invalid { border-color: var(--danger); }

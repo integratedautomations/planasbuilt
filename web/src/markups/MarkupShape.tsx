@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { Arrow, Circle, Ellipse, Group, Image as KImage, Line, Rect, Shape, Text, Wedge } from 'react-konva'
 import type Konva from 'konva'
 import { FONT_MONO, FONT_UI } from './canvasFonts'
+import { usePrefs } from '../prefs/store'
+import { labelVisible } from '../prefs/general'
 import { cloudArcs, deviceCenter } from './geometry'
 import { iconRect, mountShape, resolveMount, wallFacing } from './mount'
 import type { Mount } from './mount'
@@ -138,6 +140,7 @@ function DeviceBody({ m, g, set, iconSrc, typeMount, zoom, stack }: { m: Markup;
   const mixed = distinct.length > 1
   const status = mixed ? undefined : STATUSES.find(s => s.value === distinct[0])
   const fontSize = Math.max(4, r * 0.7)
+  const labelMode = usePrefs().general.labels
   const label = (stack ? stack.label : m.tag) || set?.tag_prefix || '?'
   const labelW = label.length * fontSize * 0.62 + fontSize * 0.4
   const bx = cx + r * 0.75, by = cy - r * 0.75, br = r * 0.3
@@ -168,9 +171,9 @@ function DeviceBody({ m, g, set, iconSrc, typeMount, zoom, stack }: { m: Markup;
         </>
       )}
       {/* Monospace, so the box is only as wide as the tag; a fixed wide box would bloat the selection bounds */}
-      <Text text={label} x={cx - labelW / 2} y={cy + r + r * 0.12} width={labelW} align="center" wrap="none"
+      {labelVisible(labelMode, zoom) && <Text text={label} x={cx - labelW / 2} y={cy + r + r * 0.12} width={labelW} align="center" wrap="none"
         fontSize={fontSize} fontStyle="bold" fill={color} stroke="#fff" strokeWidth={fontSize * 0.18}
-        fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />
+        fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />}
       {stack && (
         <>
           <Rect x={qx - qw / 2} y={qy - qh / 2} width={qw} height={qh} cornerRadius={qh / 2} fill={color}
@@ -251,13 +254,14 @@ function FovCone({ innerRef, center, fov, color, zoom, ppf, editable, onChange }
     if (diff === 0 && fov.angle >= 360) diff = 180
     onChange?.({ ...fov, angle: clampAngle(diff * 2) }, done)
   }
+  const defaultOpacity = usePrefs().general.coverageOpacity
   const ft = rangeFeet(fov, ppf)
   const label = `${ft !== null ? formatRange(ft) : `${Math.round(range)} pt`} · ${Math.round(fov.angle)}°`
   const hr = 7 / zoom, fs = 12 / zoom
   return (
     <Group ref={innerRef} x={center.x} y={center.y} listening={editable}>
       <Wedge radius={range} angle={Math.min(360, fov.angle)} rotation={fov.direction - Math.min(360, fov.angle) / 2}
-        fill={color} opacity={fov.opacity ?? COVERAGE_OPACITY} listening={false} />
+        fill={color} opacity={fov.opacity ?? defaultOpacity ?? COVERAGE_OPACITY} listening={false} />
       <Wedge radius={range} angle={Math.min(360, fov.angle)} rotation={fov.direction - Math.min(360, fov.angle) / 2}
         stroke={color} strokeWidth={1.5 / zoom} listening={false} />
       {editable && (

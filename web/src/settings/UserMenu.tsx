@@ -29,6 +29,7 @@ export function UserMenu() {
       {open && (
         <div className="user-menu-pop" role="menu" onClick={() => setOpen(false)}>
           <div className="user-menu-who"><strong>{user.name}</strong><span className="muted small">{user.email}</span></div>
+          <Link role="menuitem" to="/preferences">Preferences</Link>
           <Link role="menuitem" to="/settings">Settings</Link>
           {user.is_admin && <Link role="menuitem" to="/users">Users</Link>}
           {user.is_admin && <Link role="menuitem" to="/backups">Backups</Link>}

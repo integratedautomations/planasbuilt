@@ -18,6 +18,7 @@ import { DevicesPage } from './devices/DevicesPage'
 import { WiringPage } from './wiring/WiringPage'
 import { SymbolSetsPage } from './pages/SymbolSetsPage'
 import { SettingsPage } from './settings/SettingsPage'
+import { PreferencesPage } from './settings/PreferencesPage'
 import { UsersPage } from './settings/UsersPage'
 import { InvitePage } from './settings/InvitePage'
 import { BackupAlert, BackupsPage } from './settings/BackupsPage'
@@ -93,6 +94,7 @@ export default function App() {
       <Route path="/symbols" element={<SymbolSetsPage user={user} />} />
       <Route path="/catalog" element={<SymbolSetsPage user={user} />} />
       <Route path="/settings" element={<SettingsPage user={user} onUser={u => { cacheUser(u); setUser(u) }} />} />
+      <Route path="/preferences" element={<PreferencesPage />} />
       <Route path="/users" element={user.is_admin ? <UsersPage me={user} /> : <Navigate to="/" replace />} />
       <Route path="/backups" element={user.is_admin ? <BackupsPage /> : <Navigate to="/" replace />} />
       <Route path="/invite/:token" element={<Navigate to="/" replace />} />

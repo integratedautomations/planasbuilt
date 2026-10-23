@@ -14,6 +14,7 @@ import { UserMenu } from '../settings/UserMenu'
 import { NOT_CONNECTED_TEXT, problemText } from './graph'
 import { loadProjectWiring } from './loadWiring'
 import { RiserSvg } from './RiserSvg'
+import { loadCompany } from '../settings/company'
 import { buildRiserPdf, riserFileName, riserPages, wiringOf } from './riserPdf'
 import type { RiserInput } from './riserPdf'
 import '../devices/devices.css'
@@ -78,7 +79,8 @@ export function WiringPage({ user }: { user: User }) {
     setBusy(true); setError('')
     try {
       const icons = await loadIcons(sets, [...catalog.types.values()])
-      downloadBytes(await buildRiserPdf({ ...input, icons, date: new Date() }), riserFileName(input.projectName))
+      const company = (await loadCompany().catch(() => null))?.name
+      downloadBytes(await buildRiserPdf({ ...input, icons, date: new Date(), company }), riserFileName(input.projectName))
     } catch (e) { setError(`Export failed: ${(e as Error).message}`) } finally { setBusy(false) }
   }
 

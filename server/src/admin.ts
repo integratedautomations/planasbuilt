@@ -7,7 +7,7 @@ import type { Storage } from './storage.js'
 import { validateS3Config } from './storage.js'
 import type { Realtime } from './realtime.js'
 import { mailerFor, smtpProblem } from './mail.js'
-import { getSection, maskSection, mergeSection, putSection } from './settings.js'
+import { getSection, maskSection, mergeSection, putSection, renderInvite } from './settings.js'
 import type { SectionName } from './settings.js'
 
 import { isRole, normalizeScope, ROLES } from './roles.js'
@@ -36,6 +36,8 @@ export interface AdminContext {
   publicUrl: string | null
   /** Invite requests allowed per user per hour. */
   inviteRateLimitMax: number
+  /** Re-reads the settings the server keeps in memory (session length, lockout, upload size). */
+  reloadRuntime: () => Promise<void>
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -43,14 +45,14 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 const INVITE_DAYS = 7, RESET_DAYS = 1
 const LOGO_MAX = 1024 * 1024
 const LOGO_TYPES: Record<string, string> = { 'image/png': 'png', 'image/svg+xml': 'svg' }
-const SECTIONS: SectionName[] = ['company', 'tags', 'photos', 'retention', 'storage', 'smtp']
+const SECTIONS: SectionName[] = ['company', 'tags', 'photos', 'retention', 'storage', 'smtp', 'security', 'uploads', 'invite', 'project_defaults']
 /** Marks an invited account that has no password yet; never a valid bcrypt hash, so nobody can log in with it. */
 const NO_PASSWORD = '!'
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 export async function registerAdmin(ctx: AdminContext) {
-  const { app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax } = ctx
+  const { app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax, reloadRuntime } = ctx
 
   const adminOnly = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.user.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return false }
@@ -159,6 +161,7 @@ export async function registerAdmin(ctx: AdminContext) {
       next.push([k, merged.value])
     }
     for (const [k, v] of next) await putSection(db, k, v)
+    await reloadRuntime()
     return allSettings()
   })
 
@@ -442,15 +445,17 @@ export async function registerAdmin(ctx: AdminContext) {
   const linkFor = (origin: string, purpose: 'invite' | 'reset', raw: string) => `${origin}/${purpose === 'invite' ? 'invite' : 'reset'}/${raw}`
 
   /** Emails the link when SMTP is set up. Never throws: the admin can always copy the link instead. */
-  async function maybeEmail(to: string, purpose: 'invite' | 'reset', link: string, inviter: string) {
+  async function maybeEmail(to: string, purpose: 'invite' | 'reset', link: string, inviter: string, name = '') {
     const mailer = mailerFor(await getSection(db, 'smtp'))
     if (!mailer) return { emailed: false as const }
     const company = (await getSection(db, 'company')).name || 'PlanAsBuilt'
+    const tpl = await getSection(db, 'invite')
+    const fill = renderInvite(tpl, { name, inviter: tpl.sender_name.trim() || inviter, company, link, days: String(INVITE_DAYS) })
     const text = purpose === 'invite'
-      ? `${inviter} invited you to ${company} on PlanAsBuilt.\n\nSet your password here (valid for ${INVITE_DAYS} days):\n${link}\n`
+      ? fill.body
       : `An admin reset your PlanAsBuilt password.\n\nChoose a new one here (valid for ${RESET_DAYS * 24} hours):\n${link}\n`
     try {
-      await mailer.send({ to, subject: purpose === 'invite' ? `You are invited to ${company}` : 'Reset your PlanAsBuilt password', text })
+      await mailer.send({ to, subject: purpose === 'invite' ? fill.subject : 'Reset your PlanAsBuilt password', text })
       return { emailed: true as const }
     } catch (e) { return { emailed: false as const, email_error: (e as Error).message } }
   }
@@ -494,7 +499,7 @@ export async function registerAdmin(ctx: AdminContext) {
     const t = await makeToken(userId, 'invite', req.user.id)
     const link = linkFor(linkBase(req), 'invite', t.raw)
     const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
-    const mail = await maybeEmail(email, 'invite', link, me?.name ?? 'An admin')
+    const mail = await maybeEmail(email, 'invite', link, me?.name ?? 'An admin', name || email.split('@')[0])
     return { user_id: userId, email, link, expires_at: t.expires_at, ...mail }
   }
 
@@ -522,12 +527,12 @@ export async function registerAdmin(ctx: AdminContext) {
   app.post('/api/users/:id/invite', { preHandler: auth, ...inviteLimit }, async (req, reply) => {
     if (!(await adminOnly(req, reply))) return
     const { id } = req.params as any
-    const [u] = UUID_RE.test(id) ? await db.query('SELECT id, email, status FROM users WHERE id = $1', [id]) : []
+    const [u] = UUID_RE.test(id) ? await db.query('SELECT id, email, name, status FROM users WHERE id = $1', [id]) : []
     if (!u || u.status !== 'invited') return reply.code(404).send({ error: 'No pending invite for that user' })
     const t = await makeToken(u.id, 'invite', req.user.id)
     const link = linkFor(linkBase(req), 'invite', t.raw)
     const [me] = await db.query('SELECT name FROM users WHERE id = $1', [req.user.id])
-    return { user_id: u.id, email: u.email, link, expires_at: t.expires_at, ...(await maybeEmail(u.email, 'invite', link, me?.name ?? 'An admin')) }
+    return { user_id: u.id, email: u.email, link, expires_at: t.expires_at, ...(await maybeEmail(u.email, 'invite', link, me?.name ?? 'An admin', u.name ?? '')) }
   })
 
   // Revoking removes the pending account and its project memberships; nothing else can reference it yet.

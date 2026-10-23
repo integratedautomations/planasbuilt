@@ -1,13 +1,14 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { downloadBytes } from '../pdfio/download'
 import { sanitizeText, wrapText } from '../pdfio/stream'
+import { formatLength } from '../units'
 import { autoWidths } from '../schedule/rows'
 import type { Cell, Table } from '../schedule/rows'
 import { bomTable, hours, money } from './bom'
 import type { Bom } from './bom'
 import type { CableTotal } from '../markups/cables'
 
-const feetText = (ft: number) => `${(Math.round(ft * 10) / 10).toLocaleString('en-US')} ft`
+const feetText = (ft: number) => formatLength(ft)
 
 /** The Cables sheet: one row per cable type with its runs and total length (slack, drops and run counts included). */
 export function cableWorkbookTable(rows: CableTotal[]): Table {

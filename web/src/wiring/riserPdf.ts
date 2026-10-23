@@ -25,6 +25,8 @@ export interface RiserInput {
   defaults: CableSettings
   /** PNG icons keyed by set id and `type:<id>` (see pdfio/icons.loadIcons). */
   icons?: Map<string, Uint8Array>
+  /** Company name (organization branding), shown in the drawing title. */
+  company?: string
 }
 
 export function wiringOf(i: RiserInput): Wiring {
@@ -35,7 +37,7 @@ export function wiringOf(i: RiserInput): Wiring {
 
 /** Pages of the riser for a project (no PDF yet): what the PDF and the on-screen view both draw. */
 export function riserPages(i: RiserInput, qa = true): RiserPage[] {
-  return layoutRiser(wiringOf(i), { pageW: TABLOID.w, pageH: TABLOID.h, title: `${i.projectName} - Wiring riser`, qa })
+  return layoutRiser(wiringOf(i), { pageW: TABLOID.w, pageH: TABLOID.h, title: `${i.projectName} - Wiring riser${i.company?.trim() ? ` - ${i.company.trim()}` : ''}`, qa })
 }
 
 const col = (hex: string | undefined, fallback = rgb(0.3, 0.3, 0.3)) => {

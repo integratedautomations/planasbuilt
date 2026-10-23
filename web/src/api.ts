@@ -1,6 +1,7 @@
 import { getClientId } from './realtime/clientId'
 
 import type { Role, Scope } from './roles'
+import type { ProjectSettings as ProjectSettingsData } from './projectSettings'
 export type { Role, Scope }
 
 export interface User { id: string; email: string; name: string; is_admin: boolean; /** Admins always can; other people only when an admin granted it. */ can_create_projects?: boolean; avatar?: number | null }
@@ -13,7 +14,9 @@ export interface Project { id: string; name: string; created_at: string; role: R
   editors_see_costs?: boolean
   /** Cable defaults: slack added to every drawn run (percent) and the drop length added at each linked end (feet). */
   cable_slack_pct?: number
-  cable_drop_ft?: number }
+  cable_drop_ft?: number
+  /** Project settings (status workflow, required fields, tag rules, lock...); see projectSettings.ts. */
+  settings?: ProjectSettingsData }
 export interface DocumentSummary {
   id: string; name: string; created_at: string; device_scale?: number
   revision_id: string; revision: number; page_count: number

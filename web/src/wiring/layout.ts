@@ -2,6 +2,7 @@
 // hub, grouped by plan and page; devices are rows of mount badges with tag, cable type and length. Columns that are taller than a
 // page continue on the next page, and a group's columns wrap onto further pages when they run out of width.
 import type { Mount } from '../markups/mount'
+import { formatLength } from '../units'
 import { mountShape } from '../markups/mount'
 import { NOT_CONNECTED_TEXT, problemText } from './graph'
 import type { WHub, WLink, WNode, WRun, WRunItem, Wiring } from './graph'
@@ -47,7 +48,7 @@ export function fit(text: string, size: number, maxW: number): string {
   return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + '...'
 }
 
-export const feetText = (ft: number | null): string => (ft === null ? '' : ft < 10 ? `${Math.round(ft * 10) / 10} ft` : `${Math.round(ft)} ft`)
+export const feetText = (ft: number | null): string => (ft === null ? '' : formatLength(ft))
 
 const linkText = (l: WLink) => `${l.typeName || 'Cable'}${l.count > 1 ? ` x${l.count}` : ''}${l.parallel ? ` +${l.parallel}` : ''}`
 

@@ -17,6 +17,12 @@ export interface AdminSettings {
   retention: { mode: 'all' | 'keep'; keep_latest: number }
   storage: { backend: 'local' | 's3'; s3: S3Settings }
   smtp: SmtpSettings
+  /** Sign-in rules. lockout_limit 0 = the built-in default. */
+  security: { session_days: number; lockout_limit: number; lockout_base_min: number; lockout_cap_min: number }
+  uploads: { max_upload_mb: number }
+  invite: { sender_name: string; subject: string; body: string }
+  /** Rules copied into new projects (see projectSettings.ts). */
+  project_defaults: unknown
 }
 export interface Usage {
   db_bytes: number | null

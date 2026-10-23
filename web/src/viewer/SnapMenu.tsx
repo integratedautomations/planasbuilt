@@ -60,7 +60,7 @@ export function HoldDelayField() {
 }
 
 /** The snap toggles: master switch, one per source, show-grid and grid spacing. Remembered per user (prefs). */
-export function SnapControls({ hasScale, hint }: { hasScale: boolean; hint?: string }) {
+export function SnapControls({ hasScale, hint, holdDelay = true }: { hasScale: boolean; hint?: string; holdDelay?: boolean }) {
   const snap = usePrefs().snap
   return (
     <div className="snap-menu">
@@ -79,7 +79,7 @@ export function SnapControls({ hasScale, hint }: { hasScale: boolean; hint?: str
         <span>Show grid</span>
       </label>
       <GridSpacing snap={snap} hasScale={hasScale} />
-      <HoldDelayField />
+      {holdDelay && <HoldDelayField />}
       <p className="muted small snap-note">Hold Ctrl to place without snapping.</p>
     </div>
   )

@@ -64,7 +64,9 @@ export interface Markup {
   photo_count?: number
 }
 
-export type Status = '' | 'planned' | 'installed' | 'tested' | 'punch'
+/** A status key from the project's workflow ('' = none). The defaults are planned, installed, tested and punch. */
+export type Status = string
+/** The active project's statuses; projectSettings.applyProjectSettings() replaces the contents when a project loads. */
 export const STATUSES: { value: Status; label: string; color: string }[] = [
   { value: 'planned', label: 'Planned', color: '#868e96' },
   { value: 'installed', label: 'Installed', color: '#1971c2' },

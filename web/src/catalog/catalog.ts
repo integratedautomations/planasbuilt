@@ -1,6 +1,7 @@
 import type { Mount } from '../markups/mount'
 import { HARDWARE_FIELDS } from '../markups/types'
 import type { FieldDef, Markup, SymbolSet } from '../markups/types'
+import { activeSettings } from '../projectSettings'
 import type { CableType, CatalogData, DeviceType, Product } from './types'
 
 /** Lookup structure over the catalog; cheap to rebuild when the data changes. */
@@ -118,5 +119,6 @@ export function refillFields(fields: Markup['fields'], p: Product | undefined): 
   return out
 }
 
-/** Tag prefix for a device: the type's own, else the set's. */
-export const tagPrefixFor = (set: SymbolSet | undefined, type: DeviceType | undefined) => type?.tag_prefix || set?.tag_prefix || ''
+/** Tag prefix for a device: the type's own, else the project's override for the set, else the set's. */
+export const tagPrefixFor = (set: SymbolSet | undefined, type: DeviceType | undefined) =>
+  type?.tag_prefix || (set && activeSettings().tag_prefixes[set.id.toLowerCase()]) || set?.tag_prefix || ''

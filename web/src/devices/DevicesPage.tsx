@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import type { DocumentSummary, Project, User } from '../api'
 import { Brand } from '../Brand'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
+import { fieldDefsFor } from '../catalog/catalog'
+import { describeBlocked, gateStatus, lockedFor } from '../projectSettings'
 import { DeviceFields } from '../markups/DeviceFields'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { FieldDef, Markup, Status, SymbolSet } from '../markups/types'
@@ -63,7 +65,8 @@ export function DevicesPage({ user }: { user: User }) {
   const docsRef = useRef<DocumentSummary[]>([])
 
   const role = project?.role
-  const canFields = can(role, 'markup.fields')
+  const locked = lockedFor(role, { locked: project?.settings?.locked === true })
+  const canFields = can(role, 'markup.fields') && !locked
   const limited = isFieldOnly(role)
 
   const reload = useCallback(async () => {
@@ -115,11 +118,11 @@ export function DevicesPage({ user }: { user: User }) {
     await Promise.all(changed.map(m => queueMarkupPut(m.document_id, m)))
   }, [])
 
-  const runBulk = async (res: BulkResult, what: string) => {
+  const runBulk = async (res: BulkResult, what: string, extra = '') => {
     setNotice('')
     try {
       await applyChanges(res.changed)
-      setNotice(res.changed.length ? `${what}: ${res.changed.length} device${res.changed.length === 1 ? '' : 's'} updated${res.skipped ? `, ${res.skipped} unchanged` : ''}.` : res.skipped ? `${what}: nothing to change.` : '')
+      setNotice((res.changed.length ? `${what}: ${res.changed.length} device${res.changed.length === 1 ? '' : 's'} updated${res.skipped ? `, ${res.skipped} unchanged` : ''}.` : res.skipped ? `${what}: nothing to change.` : '') + (extra ? ` ${extra}` : ''))
     } catch (e) { setError((e as Error).message) }
   }
 
@@ -209,12 +212,18 @@ export function DevicesPage({ user }: { user: User }) {
           <button onClick={exportExcel} disabled={busy || rows.length === 0}>{busy ? 'Exporting…' : 'Export Excel'}</button>
         </div>
         {fromCache && <div className="muted small" role="status">Showing the copy saved on this device. Changes you make are kept and sent when you are back online.</div>}
+        {locked && <div className="lock-banner" role="status">This project is locked. Only admins can make changes.</div>}
         {error && <div className="error" role="alert">{error}</div>}
         {notice && <div className="muted small" role="status">{notice}</div>}
 
         {canFields && sel.selected.length > 0 && (
           <BulkBar count={sel.selected.length} selected={selectedMarkups} sets={setMap}
-            onStatus={s => runBulk(bulkStatus(selectedMarkups, s), 'Status')}
+            onStatus={s => {
+              // Required fields per status (project settings): devices missing something keep their status.
+              const defsOf = (m: Markup) => fieldDefsFor(m.symbol_set_id ? setMap.get(m.symbol_set_id) : undefined, m.device_type_id ? catalog.types.get(m.device_type_id) : undefined)
+              const { allowed, blocked } = gateStatus(selectedMarkups, s, defsOf)
+              void runBulk(bulkStatus(allowed, s), 'Status', describeBlocked(s, blocked))
+            }}
             onField={(f, v) => runBulk(bulkField(selectedMarkups, f.key, v, f.type), f.label)}
             onClear={() => setSel(emptySel())} />
         )}

@@ -6,6 +6,8 @@ import { STATUSES } from '../markups/types'
 import type { Markup, Status, SymbolSet } from '../markups/types'
 import type { Change } from '../markups/useMarkups'
 import { useCatalogContext } from '../catalog/useCatalog'
+import { fieldDefsFor } from '../catalog/catalog'
+import { describeBlocked, gateStatus } from '../projectSettings'
 import { batchChanges, isUniqueFieldKey } from '../markups/mixed'
 import { scaleKey } from './exportProject'
 import type { ProjectScaleRow } from './exportProject'
@@ -64,6 +66,7 @@ export function MarkupsList(p: Props) {
   const [busy, setBusy] = useState(false)
   const [importing, setImporting] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [statusMsg, setStatusMsg] = useState('')
 
   const refresh = useCallback(() => {
     setLoadError('')
@@ -103,12 +106,20 @@ export function MarkupsList(p: Props) {
   const editableRow = (r: ScheduleRow) => !p.readOnly && r.isDevice && r.documentId === documentId
 
   /** Edits to a row that is part of a multi-selection apply to every selected device of this document, in one undo step. */
-  const saveRows = (r: ScheduleRow, patch: (m: Markup) => Markup, single = false) => {
+  const saveRows = (r: ScheduleRow, patch: (m: Markup) => Markup, single = false, gate?: string) => {
     const ids = !single && p.selectedIds.length > 1 && p.selectedIds.includes(r.id) ? p.selectedIds : [r.id]
-    const changes = batchChanges(ids.map(id => p.markups.get(id)).filter((m): m is Markup => !!m), patch, m => m.type === 'device')
+    let changes = batchChanges(ids.map(id => p.markups.get(id)).filter((m): m is Markup => !!m), patch, m => m.type === 'device')
+    if (gate !== undefined) {
+      // Required fields per status (project settings): devices missing something keep their status.
+      const defsOf = (m: Markup) => fieldDefsFor(m.symbol_set_id ? sets.get(m.symbol_set_id) : undefined, m.device_type_id ? catalog.types.get(m.device_type_id) : undefined)
+      const { blocked } = gateStatus(changes.map(c => c.before), gate, defsOf, photoCounts)
+      const stop = new Set(blocked.map(b => b.markup.id))
+      if (stop.size) changes = changes.filter(c => !stop.has(c.before.id))
+      setStatusMsg(describeBlocked(gate, blocked))
+    }
     if (changes.length) p.commit(changes)
   }
-  const setStatus = (r: ScheduleRow, status: Status) => saveRows(r, m => ({ ...m, status }))
+  const setStatus = (r: ScheduleRow, status: Status) => saveRows(r, m => ({ ...m, status }), false, status)
   // Unique fields (IP, MAC, serial) are never mass-set
   const setField = (r: ScheduleRow, key: string, value: string | number | boolean, type?: string) =>
     saveRows(r, m => ({ ...m, fields: { ...m.fields, [key]: value } }), isUniqueFieldKey(key, type))
@@ -221,6 +232,7 @@ export function MarkupsList(p: Props) {
         {p.canImport && <button onClick={() => setImporting(true)} disabled={projectMarkups === null}>Import…</button>}
         <button className="icon-btn" onClick={p.onClose} aria-label="Close list" title="Close">✕</button>
       </div>
+      {statusMsg && <div className="error small list-msg" role="alert">{statusMsg}</div>}
       {(loadError || exportError) && <div className="error small list-msg">{loadError ? `Could not load the project: ${loadError}` : `Export failed: ${exportError}`}</div>}
       <div className="list-scroll">
         <table className="list-table">

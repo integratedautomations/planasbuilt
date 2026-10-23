@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
+import { getPrefs } from '../prefs/store'
 
 export interface View { x: number; y: number; zoom: number }
 export interface Size { width: number; height: number }
@@ -28,6 +29,8 @@ export interface PanZoomOptions {
   holdPan?: () => boolean
   /** A second finger arrived: tools should cancel whatever they were drawing. */
   onPinchStart?: () => void
+  /** When a page arrives: the view to restore instead of fitting it (null = fit). */
+  initialView?: () => View | null
   /** Every view change, for layers that position themselves (the markup stage). */
   onView?: (v: View) => void
 }
@@ -79,7 +82,11 @@ export function usePanZoom(
 
   // Fit when a new page (size) arrives
   const pageKey = page ? `${page.width}x${page.height}` : ''
-  useEffect(() => { if (pageKey) fit() }, [pageKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!pageKey) return
+    const v = opts.current.initialView?.()
+    if (v) apply({ ...v, zoom: clampZoom(v.zoom) }); else fit()
+  }, [pageKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const el = viewportRef.current
@@ -107,13 +114,13 @@ export function usePanZoom(
         return
       }
       const delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY
-      apply(zoomAround(view.current, Math.exp(-delta * (e.ctrlKey ? 0.01 : 0.0015)), p.x, p.y))
+      apply(zoomAround(view.current, Math.exp(-delta * (e.ctrlKey ? 0.01 : 0.0015) * getPrefs().general.wheelSpeed), p.x, p.y))
     }
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0 && e.button !== 1) return
       // Floating controls (selection bar) own their own pointers
       if ((e.target as Element | null)?.closest?.('[data-no-pan]')) return
-      const middle = e.button === 1
+      const middle = e.button === 1 && getPrefs().general.middlePan
       const pan = middle || (opts.current.shouldPan?.(e) ?? true)
       pointers.set(e.pointerId, { ...local(e), pan })
       if (pointers.size === 2) {

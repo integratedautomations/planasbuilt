@@ -247,6 +247,8 @@ CREATE TABLE IF NOT EXISTS cable_types (
 -- Project cable defaults: slack added to every drawn run (percent) and the drop length added at each end linked to a device (feet).
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS cable_slack_pct double precision NOT NULL DEFAULT 10;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS cable_drop_ft double precision NOT NULL DEFAULT 0;
+-- Project settings (Phase 8c): statuses, required fields, tag rules, report sections, photo quality, lock. See projectSettings.ts.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS settings jsonb NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,
   value jsonb NOT NULL DEFAULT '{}'

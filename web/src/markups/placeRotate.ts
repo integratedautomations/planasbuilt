@@ -71,10 +71,10 @@ export function faceCoverageOnly(g: BoxGeometry, angle: number): BoxGeometry {
 }
 
 /** Angle (page degrees) from a device centre to the pointer, snapped to 15 degrees unless `free`; null when the pointer is on the centre. */
-export function placeAngle(center: { x: number; y: number }, pointer: { x: number; y: number }, free: boolean): number | null {
+export function placeAngle(center: { x: number; y: number }, pointer: { x: number; y: number }, free: boolean, step = PLACE_SNAP_STEP): number | null {
   const a = angleFromTo(center, pointer)
   if (a === null) return null
-  return free ? a : snapAngle(a)
+  return free || step <= 0 ? a : snapAngle(a, step)
 }
 
 /** Label for the live angle readout: 0 to 359 degrees clockwise from the right. */

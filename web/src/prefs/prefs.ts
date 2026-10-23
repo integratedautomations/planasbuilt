@@ -12,6 +12,10 @@ import type { ThemePref } from './theme'
 import { DEFAULT_SNAP, normalizeSnap } from '../markups/snapConfig'
 import type { SnapSettings } from '../markups/snapConfig'
 import { normalizeHoldMs } from '../markups/placeRotate'
+import { DEFAULT_GENERAL, normalizeGeneral } from './general'
+import type { GeneralPrefs } from './general'
+import { DEFAULT_UNITS, normalizeUnits } from '../units'
+import type { UnitsPrefs } from '../units'
 
 export interface Prefs {
   /** Only the combos the user changed ('' = unassigned); see hotkeys.resolveHotkeys. */
@@ -43,10 +47,14 @@ export interface Prefs {
   snap: SnapSettings
   /** Hold time (ms, 0 to 1500) before a placed device starts rotating. null = defaults (mouse 250 ms, touch the long-press time). */
   holdRotateMs: number | null
+  /** Preferences page options: placing, viewing, touch (see prefs/general). */
+  general: GeneralPrefs
+  /** Length style: ft-in or decimal feet, and the rounding. */
+  units: UnitsPrefs
 }
 
 export type PrefKey = keyof Prefs
-export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap', 'propsPinned', 'density', 'theme', 'snap', 'holdRotateMs']
+export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap', 'propsPinned', 'density', 'theme', 'snap', 'holdRotateMs', 'general', 'units']
 
 export const RECENT_MAX = 10
 export const DEFAULT_POPUP_FIELDS = ['tag', 'type', 'status', 'area']
@@ -67,6 +75,8 @@ export const DEFAULT_PREFS: Prefs = {
   theme: 'auto',
   snap: DEFAULT_SNAP,
   holdRotateMs: null,
+  general: DEFAULT_GENERAL,
+  units: DEFAULT_UNITS,
 }
 
 /** What is stored locally and on the server: the values the user set, each stamped with when (ms since epoch). */
@@ -106,6 +116,8 @@ export function sanitizeStored(raw: unknown): StoredPrefs {
   if (isThemePref(d.theme)) keep('theme', d.theme)
   if (d.snap && typeof d.snap === 'object' && !Array.isArray(d.snap)) keep('snap', normalizeSnap(d.snap))
   if (d.holdRotateMs === null || normalizeHoldMs(d.holdRotateMs) !== null) keep('holdRotateMs', normalizeHoldMs(d.holdRotateMs))
+  if (d.general && typeof d.general === 'object' && !Array.isArray(d.general)) keep('general', normalizeGeneral(d.general))
+  if (d.units && typeof d.units === 'object' && !Array.isArray(d.units)) keep('units', normalizeUnits(d.units))
   return { data, stamps }
 }
 

@@ -1,6 +1,6 @@
 // Viewer status banners collapse into one chip: the most important one is shown, with a count of the rest.
 
-export type BannerKind = 'foreign' | 'failed' | 'authRequired' | 'notCached' | 'offline' | 'viewingOld' | 'busy' | 'orphaned'
+export type BannerKind = 'foreign' | 'failed' | 'authRequired' | 'notCached' | 'offline' | 'viewingOld' | 'busy' | 'orphaned' | 'locked'
 export type BannerLevel = 'bad' | 'warn' | 'info'
 
 export interface Banner {
@@ -13,7 +13,7 @@ export interface Banner {
 
 /** Lower = more important. Data-loss risks first, then connectivity, then context. */
 export const BANNER_PRIORITY: Record<BannerKind, number> = {
-  foreign: 0, authRequired: 1, failed: 2, notCached: 3, offline: 4, viewingOld: 5, busy: 6, orphaned: 7,
+  foreign: 0, authRequired: 1, failed: 2, notCached: 3, offline: 4, viewingOld: 5, locked: 5, busy: 6, orphaned: 7,
 }
 
 /** Banners most important first (stable for equal priority). */
@@ -30,5 +30,5 @@ export function chipSummary(list: Banner[]): { top: Banner; more: number; ordere
 /** Short chip text for a banner kind (the full sentence lives in the popover). */
 export const BANNER_SHORT: Record<BannerKind, string> = {
   foreign: 'Sync paused', authRequired: 'Sign in to sync', failed: 'Sync failed', notCached: 'Not saved offline', offline: 'Offline',
-  viewingOld: 'Old revision', busy: 'Working…', orphaned: 'Orphaned markups',
+  viewingOld: 'Old revision', busy: 'Working…', orphaned: 'Orphaned markups', locked: 'Project locked',
 }

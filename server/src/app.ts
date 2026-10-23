@@ -15,6 +15,9 @@ import type { Conn } from './realtime.js'
 import { Storage, validateS3Config } from './storage.js'
 import type { S3Factory } from './storage.js'
 import { getSection, storageConfigOf } from './settings.js'
+import { defaultsPart, formatTag, missingRequired, nextNumber, publicProjectSettings, readProjectSettings, tagNumber, tagPrefixFromTag } from './projectSettings.js'
+import type { ProjectSettings } from './projectSettings.js'
+import { registerProjectSettings } from './projectSettingsRoutes.js'
 import { registerAdmin } from './admin.js'
 import { registerBackups } from './backups.js'
 import { installLibrary, previewLibrary } from './standardLibrary.js'
@@ -31,7 +34,7 @@ interface AuthUser { id: string; email: string; isAdmin: boolean; tv?: number }
 
 /** Thrown inside handlers/transactions to answer with a specific status. */
 export class HttpError extends Error {
-  constructor(readonly statusCode: number, message: string) { super(message) }
+  constructor(readonly statusCode: number, message: string, readonly extra?: Record<string, unknown>) { super(message) }
 }
 
 const PDF_MAGIC = Buffer.from('%PDF-')
@@ -67,8 +70,8 @@ export interface AppOptions {
   maxSocketsPerUser?: number
 }
 
-/** Failed logins per account: after RL_MAX failures the account locks, for 1 min, then 2, 4... up to 15 min. */
-const LOCK_BASE_MS = 60_000, LOCK_CAP_MS = 15 * 60_000, FAILURE_MEMORY_MS = 60 * 60_000
+/** Failed logins per account: after the limit (organization setting, default RL_MAX) the account locks, for the base time (1 min), then 2x, 4x... up to the cap (15 min). */
+const FAILURE_MEMORY_MS = 60 * 60_000
 
 export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rateLimitMax, publicUrl: publicUrlOpt, setupToken: setupTokenOpt, inviteRateLimitMax, maxSocketsPerUser }: AppOptions) {
   const isTest = !!(process.env.NODE_ENV === 'test' || process.env.VITEST)
@@ -79,6 +82,20 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   if (!publicUrl && !isTest)
     console.warn('[config] PUBLIC_URL is not set: invite and reset links will use the request Host header and cross-origin API access is disabled. Set PUBLIC_URL (e.g. https://pab.example.com).')
   mkdirSync(filesDir, { recursive: true })
+  // Organization settings the hot paths need synchronously (session length, lockout, upload size). Reloaded when an admin saves them.
+  const runtime = { sessionDays: 30, lockoutLimit: RL_MAX, lockBaseMs: 60_000, lockCapMs: 15 * 60_000, maxUploadMb: 200, maxUploadBytes: 200 * 1024 * 1024 }
+  const reloadRuntime = async () => {
+    try {
+      const [sec, up] = await Promise.all([getSection(db, 'security'), getSection(db, 'uploads')])
+      runtime.sessionDays = sec.session_days
+      runtime.lockoutLimit = sec.lockout_limit > 0 ? sec.lockout_limit : RL_MAX
+      runtime.lockBaseMs = sec.lockout_base_min * 60_000
+      runtime.lockCapMs = Math.max(sec.lockout_cap_min, sec.lockout_base_min) * 60_000
+      runtime.maxUploadMb = up.max_upload_mb
+      runtime.maxUploadBytes = up.max_upload_mb * 1024 * 1024
+    } catch { /* settings table not ready: keep the defaults */ }
+  }
+  await reloadRuntime()
   const storage = new Storage(filesDir,
     async () => storageConfigOf(await getSection(db, 'storage')),
     s3Factory,
@@ -91,8 +108,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     bodyLimit: 10 * 1024 * 1024, // JSON bodies; file uploads stream via multipart (200MB cap below)
   })
   app.setErrorHandler((err: any, req, reply) => {
-    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.message })
+    if (err instanceof HttpError) return reply.code(err.statusCode).send({ ...err.extra, error: err.message })
     const code = Number(err?.statusCode)
+    if (err?.code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(413).send({ error: `File too large (${runtime.maxUploadMb} MB max)` })
     if (code >= 400 && code < 500) return reply.code(code).send({ error: err.message })
     console.error(`[error] ${req.method} ${req.url.split('?')[0]}:`, err)
     return reply.code(500).send({ error: 'Something went wrong' })
@@ -137,7 +155,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
   const rl = { config: { rateLimit: { max: RL_MAX, timeWindow: '1 minute' } } }
   await app.register(websocket, { options: { maxPayload: 64 * 1024 } })
-  await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } })
+  await app.register(multipart, { limits: { fileSize: 1024 * 1024 * 1024 } }) // ceiling; each route applies the organization's upload limit (runtime.maxUploadBytes)
 
   // Identity comes from the database on every request (cached up to 60s per process, dropped at once on any change here):
   // is_admin, status and token_version are never trusted from the token.
@@ -209,7 +227,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
   const sign = (u: { id: string; email: string; is_admin: boolean; token_version?: number }) =>
-    app.jwt.sign({ id: u.id, email: u.email, isAdmin: u.is_admin, tv: u.token_version ?? 0 }, { expiresIn: '30d' })
+    app.jwt.sign({ id: u.id, email: u.email, isAdmin: u.is_admin, tv: u.token_version ?? 0 }, { expiresIn: `${runtime.sessionDays}d` })
   const publicUser = ({ token_version: _tv, password_hash: _ph, ...u }: any) => u
 
   // Short-lived token for plain file URLs: use as ?ft= on GET file routes instead of putting the login token in a URL.
@@ -222,11 +240,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   /** Someone's role, scope and the project's cost setting; null when they are not a member. */
   async function projectAccess(userId: string, projectId: string): Promise<Access | null> {
-    const rows = await db.query<{ role: Role; scope: unknown; editors_see_costs: boolean }>(
-      `SELECT m.role, m.scope, p.editors_see_costs FROM project_members m JOIN projects p ON p.id = m.project_id
+    const rows = await db.query<{ role: Role; scope: unknown; editors_see_costs: boolean; locked: boolean }>(
+      `SELECT m.role, m.scope, p.editors_see_costs, (p.settings->>'locked') = 'true' AS locked FROM project_members m JOIN projects p ON p.id = m.project_id
        WHERE m.project_id = $1 AND m.user_id = $2`, [projectId, userId])
     const r = rows[0]
-    return r ? { role: r.role, scope: normalizeScope(r.scope), editorsSeeCosts: r.editors_see_costs !== false } : null
+    return r ? { role: r.role, scope: normalizeScope(r.scope), editorsSeeCosts: r.editors_see_costs !== false, locked: !!r.locked } : null
   }
 
   /** What requireCap resolved for a request, for handlers that need the role or scope afterwards. */
@@ -237,7 +255,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   async function requireCap(req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) {
     const access = await projectAccess(req.user.id, projectId)
     if (!accessCan(access, cap)) {
-      reply.code(403).send({ error: 'Not allowed' })
+      reply.code(403).send({ error: access?.locked && can(access.role, cap, { editorsSeeCosts: access.editorsSeeCosts }) ? 'This project is locked. Only admins can make changes.' : 'Not allowed' })
       return null
     }
     accessByReq.set(req, access!)
@@ -395,7 +413,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const ok = await bcrypt.compare(String(password ?? ''), real ? user.password_hash : DUMMY_HASH)
     if (!real || !ok) {
       const n = (f?.n ?? 0) + 1
-      failures.set(key, { n, lockedUntil: n >= RL_MAX ? now + Math.min(LOCK_CAP_MS, LOCK_BASE_MS * 2 ** Math.min(n - RL_MAX, 10)) : 0 })
+      failures.set(key, { n, lockedUntil: n >= runtime.lockoutLimit ? now + Math.min(runtime.lockCapMs, runtime.lockBaseMs * 2 ** Math.min(n - runtime.lockoutLimit, 10)) : 0 })
       return reply.code(401).send({ error: 'Wrong email or password' })
     }
     accountFailures.delete(key)
@@ -461,18 +479,23 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     }
     const name = String((req.body as any)?.name ?? '').trim()
     if (!name) return reply.code(400).send({ error: 'Project name is required' })
+    // New projects start from the organization's defaults (a copy: later changes to the defaults do not touch existing projects).
+    const defaults = defaultsPart(readProjectSettings(await getSection(db, 'project_defaults')))
     const [project] = await db.query(
-      'INSERT INTO projects (name, created_by) VALUES ($1,$2) RETURNING *', [name, req.user.id])
+      'INSERT INTO projects (name, created_by, settings) VALUES ($1,$2,$3) RETURNING *', [name, req.user.id, JSON.stringify(defaults)])
     await db.query('INSERT INTO project_members VALUES ($1,$2,$3)', [project.id, req.user.id, 'admin'])
-    return { ...project, role: 'admin' }
+    return { ...shapeProject(project), role: 'admin' }
   })
+
+  /** A project row as the API shows it: settings completed with defaults, the logo's file key hidden. */
+  const shapeProject = ({ settings, ...p }: any) => ({ ...p, settings: publicProjectSettings(readProjectSettings(settings)) })
 
   app.get('/api/projects/:id', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
     const access = await requireCap(req, reply, id, 'view')
     if (!access) return
     const [project] = await db.query('SELECT * FROM projects WHERE id = $1', [id])
-    return { ...project, role: access.role, scope: access.scope, can_see_costs: accessCan(access, 'costs.view') }
+    return { ...shapeProject(project), role: access.role, scope: access.scope, can_see_costs: accessCan(access, 'costs.view') }
   })
 
   // Mark a project Complete or reopen it (anyone who can edit plans), and/or switch the "editors see costs" setting (project admins).
@@ -502,7 +525,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       [project] = await db.query(
         'UPDATE projects SET cable_slack_pct = coalesce($1, cable_slack_pct), cable_drop_ft = coalesce($2, cable_drop_ft) WHERE id = $3 RETURNING *',
         [b.cable_slack_pct ?? null, b.cable_drop_ft ?? null, id])
-    return { ...project, role: access.role, scope: access.scope }
+    return { ...shapeProject(project), role: access.role, scope: access.scope }
   })
 
   app.get('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {
@@ -575,7 +598,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       file.file.resume(); reply.code(400).send({ error: 'Only PDF files are supported' }); return null
     }
     const bytes = new Uint8Array(await file.toBuffer())
-    if (file.file.truncated) { reply.code(413).send({ error: 'File too large' }); return null }
+    if (file.file.truncated) { reply.code(413).send({ error: `File too large (${runtime.maxUploadMb} MB max)` }); return null }
     if (!isPdf(bytes)) { reply.code(400).send({ error: 'That is not a PDF file' }); return null }
     let pageCount: number
     try { pageCount = await countPages(bytes) } catch { reply.code(400).send({ error: 'That is not a readable PDF' }); return null }
@@ -595,7 +618,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/projects/:id/documents', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
     if (!(await requireCap(req, reply, id, 'plans.edit'))) return
-    const file = await req.file()
+    const file = await req.file({ limits: { fileSize: runtime.maxUploadBytes } })
     if (!file) return reply.code(400).send({ error: 'No file' })
     const up = await readPdfUpload(file, reply)
     if (!up) return
@@ -732,7 +755,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
-    const file = await req.file()
+    const file = await req.file({ limits: { fileSize: runtime.maxUploadBytes } })
     if (!file) return reply.code(400).send({ error: 'No file' })
     const up = await readPdfUpload(file, reply)
     if (!up) return
@@ -961,10 +984,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   /** Reads the uploaded PDF of a multipart page-tool request. Text fields must come before the file part. */
   async function pageToolUpload(req: FastifyRequest, reply: FastifyReply) {
-    const file = await req.file()
+    const file = await req.file({ limits: { fileSize: runtime.maxUploadBytes } })
     if (!file) { reply.code(400).send({ error: 'No file' }); return null }
     const bytes = new Uint8Array(await file.toBuffer())
-    if (file.file.truncated) { reply.code(413).send({ error: 'File too large' }); return null }
+    if (file.file.truncated) { reply.code(413).send({ error: `File too large (${runtime.maxUploadMb} MB max)` }); return null }
     if (!isPdf(bytes)) { reply.code(400).send({ error: 'That is not a PDF file' }); return null }
     return { bytes, fields: file.fields as any }
   }
@@ -1460,24 +1483,23 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return { ok: true, deactivated: used.n > 0 }
   })
 
-  /** Next free tag for a prefix across the whole project, e.g. CAM-07. Call under the project+prefix advisory lock. */
-  async function nextTag(q: Q, padding: number, projectId: string, prefix: string) {
+  /**
+   * Next free tag for a prefix across the whole project, e.g. CAM-07. The project's tag format (CAM-01 / CAM1 / CAM-001)
+   * and gap filling decide the shape and which number is next. Call under the project+prefix advisory lock.
+   */
+  async function nextTag(q: Q, padding: number, projectId: string, prefix: string, ps: Pick<ProjectSettings, 'tag_format' | 'tag_fill_gaps'>) {
     const rows = await q<{ tag: string }>(
       `SELECT m.tag FROM markups m JOIN documents d ON d.id = m.document_id
-       WHERE d.project_id = $1 AND NOT m.deleted AND left(m.tag, $3) = $2`, [projectId, `${prefix}-`, prefix.length + 1])
-    const max = rows.reduce((n, r) => {
-      const suffix = r.tag.slice(prefix.length + 1)
-      if (!/^\d{1,9}$/.test(suffix)) return n
-      const k = Number(suffix)
-      return k > n ? k : n
-    }, 0)
-    return `${prefix}-${String(max + 1).padStart(padding, '0')}`
+       WHERE d.project_id = $1 AND NOT m.deleted AND left(m.tag, $3) = $2`, [projectId, prefix, prefix.length])
+    const used = rows.map(r => tagNumber(r.tag, prefix)).filter((n): n is number => n !== null)
+    return formatTag(prefix, nextNumber(used, ps.tag_fill_gaps), ps.tag_format, padding)
   }
-  const tagPrefixOf = (tag: string) => tag.replace(/-\d+$/, '')
 
   // ---- Markups ----
   const MARKUP_COLUMNS = 'id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, device_type_id, product_id, tag, status, fields, version, created_by, updated_by, created_at, updated_at'
-  const STATUSES = ['', 'planned', 'installed', 'tested', 'punch']
+  /** Field keys every device has (the web app's HARDWARE_FIELDS), with the labels used in "missing" messages. */
+  const HARDWARE_LABELS: Record<string, string> = { manufacturer: 'Manufacturer', model: 'Model #', serial: 'Serial #', firmware: 'Firmware' }
+  const projectSettingsOf = async (projectId: string) => readProjectSettings((await db.query('SELECT settings FROM projects WHERE id = $1', [projectId]))[0]?.settings)
 
   app.get('/api/documents/:id/markups', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'view')
@@ -1642,20 +1664,24 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (layer && layer.project_id === doc.project_id) layerId = b.layer_id
     }
     const status = String(b.status ?? '')
-    if (!STATUSES.includes(status)) return reply.code(400).send({ error: 'Bad status' })
+    const ps = await projectSettingsOf(doc.project_id)
     const clientTag = String(b.tag ?? '').trim().slice(0, 100)
     let prefix: string | null = null
     let deviceTypeId: string | null = null, productId: string | null = null
+    /** Field definitions that apply to this device: set and type fields (hardware fields apply to every device). */
+    const defs = new Map<string, string>(Object.entries(HARDWARE_LABELS))
     if (b.symbol_set_id) {
-      const [set] = uuidRe.test(String(b.symbol_set_id)) ? await db.query('SELECT tag_prefix FROM symbol_sets WHERE id = $1', [b.symbol_set_id]) : []
+      const [set] = uuidRe.test(String(b.symbol_set_id)) ? await db.query('SELECT tag_prefix, fields FROM symbol_sets WHERE id = $1', [b.symbol_set_id]) : []
       if (!set) return reply.code(400).send({ error: 'Unknown symbol set' })
-      prefix = set.tag_prefix
+      prefix = ps.tag_prefixes[String(b.symbol_set_id).toLowerCase()] ?? set.tag_prefix
+      for (const f of Array.isArray(set.fields) ? set.fields : []) if (f?.key) defs.set(String(f.key), String(f.label || f.key))
       if (b.device_type_id) {
         const [dt] = uuidRe.test(String(b.device_type_id))
-          ? await db.query('SELECT id, tag_prefix FROM device_types WHERE id = $1 AND symbol_set_id = $2', [b.device_type_id, b.symbol_set_id]) : []
+          ? await db.query('SELECT id, tag_prefix, fields FROM device_types WHERE id = $1 AND symbol_set_id = $2', [b.device_type_id, b.symbol_set_id]) : []
         if (!dt) return reply.code(400).send({ error: 'Unknown device type' })
         deviceTypeId = dt.id
         if (dt.tag_prefix) prefix = dt.tag_prefix
+        for (const f of Array.isArray(dt.fields) ? dt.fields : []) if (f?.key) defs.set(String(f.key), String(f.label || f.key))
       }
       if (b.product_id) {
         const [pr] = uuidRe.test(String(b.product_id)) ? await db.query('SELECT id FROM products WHERE id = $1', [b.product_id]) : []
@@ -1672,6 +1698,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`markup|${markupId}`])
       const [existing] = await q('SELECT * FROM markups WHERE id = $1 FOR UPDATE', [markupId])
       if (existing && existing.document_id !== doc.id) throw new HttpError(409, 'Markup belongs to another document')
+      // A status must be one of the project's (a device may keep one that was removed from the list since).
+      if (status !== '' && !ps.statuses.some(s => s.key === status) && existing?.status !== status) throw new HttpError(400, 'Bad status')
       if (restricted) {
         if (!existing || existing.deleted) throw new HttpError(403, 'You cannot add markups')
         if (!canSeeMarkup(access, existing)) throw new HttpError(403, 'Not allowed')
@@ -1696,15 +1724,28 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       const checkTag = autoPrefix === null && tag !== '' && (!existing || existing.deleted || existing.tag !== tag)
       // One lock per project+prefix, held until commit, so two simultaneous creates cannot draw the same number.
       if (autoPrefix !== null || checkTag)
-        await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`${doc.project_id}|${autoPrefix ?? tagPrefixOf(tag)}`])
-      if (autoPrefix !== null) tag = await nextTag(q, padding, doc.project_id, autoPrefix)
+        await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`${doc.project_id}|${autoPrefix ?? tagPrefixFromTag(tag, ps.tag_format)}`])
+      if (autoPrefix !== null) tag = await nextTag(q, padding, doc.project_id, autoPrefix, ps)
       else if (checkTag) {
         const dup = await q(
           `SELECT 1 FROM markups m JOIN documents d ON d.id = m.document_id
            WHERE d.project_id = $1 AND NOT m.deleted AND m.tag = $2 AND m.id <> $3 LIMIT 1`, [doc.project_id, tag, markupId])
         // Taken by another markup (typed offline, or by someone else meanwhile): renumber instead of failing the save for good.
         // The client adopts the tag in the answer.
-        if (dup.length) tag = await nextTag(q, padding, doc.project_id, tagPrefixOf(tag))
+        if (dup.length) tag = await nextTag(q, padding, doc.project_id, tagPrefixFromTag(tag, ps.tag_format), ps)
+      }
+      // Required fields: only when the device moves into a status that has requirements (so devices already in that status stay editable).
+      if (ps.required[status]?.length && (!existing || existing.deleted || existing.status !== status)) {
+        const [{ n }] = await q<{ n: number }>('SELECT count(*)::int AS n FROM attachments WHERE markup_id = $1', [markupId])
+        // Photos taken offline are queued behind the markup save, so the client says how many are waiting.
+        const queued = Number.isInteger(b.pending_photos) ? Math.min(Math.max(b.pending_photos, 0), 50) : 0
+        const missing = missingRequired(ps, { status, fields, tag, photoCount: n + queued, applicable: new Set(defs.keys()) })
+        if (missing.length) {
+          const label = (k: string) => (k === 'photo' ? 'a photo' : k === 'tag' ? 'a tag' : defs.get(k) ?? k)
+          const name = ps.statuses.find(s => s.key === status)?.label ?? status
+          throw new HttpError(422, `Cannot set ${name}: missing ${missing.map(label).join(', ')}`,
+            { missing: missing.map(k => ({ key: k, label: label(k) })), status })
+        }
       }
       const [r] = await q(
       `INSERT INTO markups (id, document_id, page, type, geometry, style, text, layer_id, symbol_set_id, tag, status, fields, created_by, updated_by, device_type_id, product_id)
@@ -1758,6 +1799,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const PHOTO_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }
   const EXT_TYPES: Record<string, string> = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
   const PHOTO_MAX = 15 * 1024 * 1024
+  /** Photos obey the smaller of their own cap and the organization's upload limit. */
+  const photoMax = () => Math.min(PHOTO_MAX, runtime.maxUploadBytes)
   const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
 
   /** Deletes a stored file only when nothing else (a revision, a frozen snapshot, a photo, a setting) still points at it. */
@@ -1767,7 +1810,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         const ref = await db.query(
           `SELECT 1 AS x FROM document_revisions WHERE file_key = $1::text OR position($1::text in coalesce(attachments_snapshot::text, '')) > 0
            UNION ALL SELECT 1 FROM attachments WHERE file_key = $1::text OR annotated_key = $1::text
-           UNION ALL SELECT 1 FROM settings WHERE position($1::text in value::text) > 0 LIMIT 1`, [key])
+           UNION ALL SELECT 1 FROM settings WHERE position($1::text in value::text) > 0
+           UNION ALL SELECT 1 FROM projects WHERE position($1::text in settings::text) > 0 LIMIT 1`, [key])
         if (!ref.length) await storage.remove(key)
       } catch { /* best effort */ }
     }
@@ -1807,7 +1851,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   async function savePhoto(file: any, reply: FastifyReply) {
     if (!PHOTO_TYPES[file.mimetype]) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
     const bytes = new Uint8Array(await file.toBuffer())
-    if (file.file.truncated) { reply.code(413).send({ error: 'Photo too large (15 MB max)' }); return null }
+    if (file.file.truncated) { reply.code(413).send({ error: `Photo too large (${Math.round(photoMax() / 1048576)} MB max)` }); return null }
     const ext = photoExt(bytes) // what the bytes really are, not what the client said
     if (!ext) { reply.code(400).send({ error: 'That is not a valid JPEG, PNG or WebP image' }); return null }
     return storage.save(ext, bytes)
@@ -1830,7 +1874,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
     const m = await markupWithAccess(req, reply, 'photos.edit')
     if (!m) return
-    const file = await req.file({ limits: { fileSize: PHOTO_MAX } })
+    const file = await req.file({ limits: { fileSize: photoMax() } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
     const f = file.fields as any
     const id = String(f.id?.value ?? '')
@@ -1873,7 +1917,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.put('/api/attachments/:id/annotated', { preHandler: auth }, async (req, reply) => {
     const a = await attachmentWithAccess(req, reply, 'photos.edit')
     if (!a) return
-    const file = await req.file({ limits: { fileSize: PHOTO_MAX } })
+    const file = await req.file({ limits: { fileSize: photoMax() } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
     const key = await savePhoto(file, reply)
     if (!key) return
@@ -1940,7 +1984,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return reply.send(stream)
   })
 
-  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX })
+  await registerProjectSettings({ app, db, auth, fileAuth, storage, requireCap, releaseFile: removeFile })
+  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX, reloadRuntime })
   await registerBackups({ app, db, auth })
 
   // ---- Built web app (production) ----

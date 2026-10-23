@@ -1,15 +1,16 @@
 import imageCompression from 'browser-image-compression'
 import { loadCompany } from '../settings/company'
+import { photoQuality } from '../projectSettings'
 
 export interface Compressed { blob: Blob; width: number; height: number }
 
-/** JPEG, max long side from the company setting (2000px by default), ~0.8 quality, aiming for <= 1 MB. EXIF orientation is applied by the library. */
+/** JPEG, max long side from the company setting (2000px by default), quality from the project's setting (0.8 by default), aiming for <= 1 MB. EXIF orientation is applied by the library. */
 export async function compressPhoto(file: File): Promise<Compressed> {
   const max = (await loadCompany().catch(() => null))?.photo_max_dimension ?? 2000
   const out = await imageCompression(file, {
     maxWidthOrHeight: max,
     maxSizeMB: 1,
-    initialQuality: 0.8,
+    initialQuality: photoQuality(),
     fileType: 'image/jpeg',
     useWebWorker: true,
     preserveExif: false,

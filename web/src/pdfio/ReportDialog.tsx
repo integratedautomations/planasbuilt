@@ -4,6 +4,7 @@ import type { DocumentSummary } from '../api'
 import { STATUSES } from '../markups/types'
 import type { SymbolSet } from '../markups/types'
 import { getPrefs, setPref } from '../prefs/store'
+import { allowedSections } from '../projectSettings'
 import { loadCompany } from '../settings/company'
 import { normalizeReportOptions, pageRangeError, rememberableOptions } from './reportOptions'
 import type { ReportGroupBy, ReportOptions, ReportPhotos, PhotosPerPage } from './reportOptions'
@@ -16,10 +17,14 @@ interface Props {
   onClose: () => void
 }
 
-const STATUS_CHOICES = [...STATUSES.map(s => ({ value: s.value as string, label: s.label })), { value: 'none', label: 'No status' }]
+/** The project's statuses (they change per project), plus devices without one. */
+const statusChoices = () => [...STATUSES.map(s => ({ value: s.value as string, label: s.label })), { value: 'none', label: 'No status' }]
 
 /** Options asked before the as-built report is built. Last choices are remembered in the user prefs. */
 export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: Props) {
+  const STATUS_CHOICES = useMemo(statusChoices, [])
+  // Sections the project switched off (Settings > Project) cannot be turned back on here.
+  const allow = allowedSections()
   const [o, setO] = useState<ReportOptions>(() => normalizeReportOptions(getPrefs().reportOptions))
   const [sets, setSets] = useState<SymbolSet[]>([])
   const [docOn, setDocOn] = useState<Set<string>>(() => new Set(docs.map(d => d.id)))
@@ -64,8 +69,8 @@ export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: P
 
         <fieldset className="print-group">
           <legend className="small muted">Title page</legend>
-          <label className="check"><input type="checkbox" checked={o.titlePage} onChange={e => patch({ titlePage: e.target.checked })} /> Include a title page</label>
-          {o.titlePage && (
+          <label className="check"><input type="checkbox" checked={o.titlePage && allow.title} disabled={!allow.title} onChange={e => patch({ titlePage: e.target.checked })} /> Include a title page</label>
+          {o.titlePage && allow.title && (
             <>
               <div className="muted small">Project: {projectName}</div>
               <label className="field">Address<textarea rows={2} value={o.address} onChange={e => patch({ address: e.target.value })} /></label>
@@ -92,11 +97,11 @@ export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: P
 
         <fieldset className="print-group">
           <legend className="small muted">Contents</legend>
-          <label className="check"><input type="checkbox" checked={o.includeSheets} onChange={e => patch({ includeSheets: e.target.checked })} /> Sheets (flattened plans with markups)</label>
-          <label className="check"><input type="checkbox" checked={o.includeDevices} onChange={e => patch({ includeDevices: e.target.checked })} /> Device pages</label>
-          <label className="check"><input type="checkbox" checked={o.includeLegend} onChange={e => patch({ includeLegend: e.target.checked })} /> Legend summary (device counts)</label>
-          <label className="check"><input type="checkbox" checked={o.includeBom} onChange={e => patch({ includeBom: e.target.checked })} /> Bill of materials summary</label>
-          <label className="check"><input type="checkbox" checked={o.includeWiring} onChange={e => patch({ includeWiring: e.target.checked })} /> Wiring riser (tabloid pages, from the cable runs)</label>
+          <label className="check"><input type="checkbox" checked={o.includeSheets && allow.sheets} disabled={!allow.sheets} onChange={e => patch({ includeSheets: e.target.checked })} /> Sheets (flattened plans with markups)</label>
+          <label className="check"><input type="checkbox" checked={o.includeDevices && allow.devices} disabled={!allow.devices} onChange={e => patch({ includeDevices: e.target.checked })} /> Device pages</label>
+          <label className="check"><input type="checkbox" checked={o.includeLegend && allow.legend} disabled={!allow.legend} onChange={e => patch({ includeLegend: e.target.checked })} /> Legend summary (device counts)</label>
+          <label className="check"><input type="checkbox" checked={o.includeBom && allow.bom} disabled={!allow.bom} onChange={e => patch({ includeBom: e.target.checked })} /> Bill of materials summary</label>
+          <label className="check"><input type="checkbox" checked={o.includeWiring && allow.wiring} disabled={!allow.wiring} onChange={e => patch({ includeWiring: e.target.checked })} /> Wiring riser (tabloid pages, from the cable runs)</label>
         </fieldset>
 
         {o.includeDevices && (
@@ -127,7 +132,7 @@ export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: P
               </select>
             </label>
             <label className="field">Photos
-              <select value={o.photos} onChange={e => patch({ photos: e.target.value as ReportPhotos })}>
+              <select value={allow.photos ? o.photos : 'none'} disabled={!allow.photos} onChange={e => patch({ photos: e.target.value as ReportPhotos })}>
                 <option value="all">All photos</option>
                 <option value="first">First photo only</option>
                 <option value="none">No photos</option>

@@ -15,6 +15,7 @@ import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
 import { cacheAllowed } from './cacheOwner'
 import { isForeign } from './owner'
 import { ackSnapshot, getSyncUser, mergeServerMarkups } from './sync'
+import { applyProjectSettings } from '../projectSettings'
 
 /** revisions are newest first. */
 export interface DocMeta { id: string; name: string; device_scale?: number; revisions: { id?: string; revision: number; page_count: number; kind?: 'upload' | 'issued' | 'restore'; label?: string }[] }
@@ -59,7 +60,11 @@ export const loadProject = (id: string) => readThrough(
   p => db.projects.put(p),
   () => db.projects.get(id),
   'This project',
-)
+).then(r => {
+  // The project's status list and rules apply everywhere statuses are shown, online or from the offline copy.
+  applyProjectSettings(r.data?.settings)
+  return r
+})
 
 export const loadDocuments = (projectId: string) => readThrough(
   () => api<DocumentSummary[]>(`/projects/${projectId}/documents`),
