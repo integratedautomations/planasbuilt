@@ -1,7 +1,7 @@
 // Phase 6: turning devices and boxes to the line they snapped to. Pure math; the canvas decides when to call it.
 import type { BoxGeometry } from './types'
 import type { Pt } from './geometry'
-import { WALL_FLAT, resolveMount } from './mount'
+import { SQUARE_HALF, WALL_FLAT, resolveMount } from './mount'
 import type { Mount } from './mount'
 import { faceAngle, norm180 } from './placeRotate'
 import { cornerBisector } from './snap'
@@ -40,11 +40,31 @@ export function normalToward(lineDeg: number, on: Pt, side: Pt): number {
  */
 export function alignDevice(g: BoxGeometry, hit: SnapHit & { angle: number }, pointer: Pt, mount: Mount | string | null | undefined): BoxGeometry {
   const facing = hit.corner ? cornerBisector(hit.corner) : normalToward(hit.angle, hit.point, pointer)
-  const turned = faceAngle(g, facing)
   const r = Math.min(g.width, g.height) / 2
-  const back = resolveMount(mount, g.mount) === 'wall' ? WALL_FLAT * r : 0
+  const m = resolveMount(mount, g.mount)
+  if (m === 'square') return alignSquare(g, hit, facing, r)
+  const turned = faceAngle(g, facing)
+  const back = m === 'wall' ? WALL_FLAT * r : 0
   const a = (facing * Math.PI) / 180
   return withCenter(turned, { x: hit.point.x + Math.cos(a) * back, y: hit.point.y + Math.sin(a) * back })
+}
+
+/**
+ * A square (panel / box) device on a wall: one side lies flat on the line, not its centre. At a corner it sits in the corner
+ * with a side on each wall (its centre on the bisector, half a side from both walls). Free coverage still points `facing`.
+ */
+function alignSquare(g: BoxGeometry, hit: SnapHit & { angle: number }, facing: number, r: number): BoxGeometry {
+  const h = SQUARE_HALF * r
+  const wallDeg = hit.corner ? hit.corner.a : hit.angle
+  let back = h
+  if (hit.corner) {
+    const span = (((hit.corner.b - hit.corner.a) % 360) + 360) % 360
+    back = h / Math.max(0.2, Math.sin((span * Math.PI) / 360))
+  }
+  let out: BoxGeometry = { ...g, rotation: nearestSideRotation(g.rotation || 0, wallDeg) }
+  if (g.fov && !g.fov.locked) out = { ...out, fov: { ...g.fov, direction: Math.round(facing * 100) / 100 } }
+  const a = (facing * Math.PI) / 180
+  return withCenter(out, { x: hit.point.x + Math.cos(a) * back, y: hit.point.y + Math.sin(a) * back })
 }
 
 /** Rotation among `lineDeg + k * 90` closest to `current` (a rectangle's sides may sit on the line with either pair). */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { alignBox, alignDevice, alignable, boxFromDragAligned, nearestSideRotation, normalToward, snapRotation, withCenter } from './align'
 import { deviceCenter } from './geometry'
-import { WALL_FLAT, wallFacing } from './mount'
+import { SQUARE_HALF, WALL_FLAT, wallFacing } from './mount'
 import { norm180 } from './placeRotate'
 import type { BoxGeometry } from './types'
 
@@ -144,5 +144,28 @@ describe('corner alignment', () => {
   it('135 degree corner: bisector is half way between the walls', () => {
     const g = dev({ fov: { direction: 0, angle: 90, range: 50 } })
     expect(alignDevice(g, corner(0, 0, 0, 135), { x: 5, y: 5 }, 'ceiling').fov?.direction).toBeCloseTo(67.5, 3)
+  })
+})
+
+describe('alignDevice: square mount', () => {
+  it('puts a side of the square on the wall, not its centre', () => {
+    const out = alignDevice(dev({ rotation: 7 }), hit(100, 100, 0), { x: 100, y: 110 }, 'square')
+    const c = deviceCenter(out)
+    expect(c.x).toBeCloseTo(100, 1)
+    expect(c.y).toBeCloseTo(100 + SQUARE_HALF * 12, 1) // half a side below the wall
+    expect(((out.rotation % 90) + 90) % 90).toBeCloseTo(0, 3) // sides parallel to the wall
+  })
+  it('sits in a 90 degree corner with a side on each wall', () => {
+    const corner = { point: { x: 100, y: 100 }, kind: 'endpoint' as const, angle: 0, corner: { a: 0, b: 90 } }
+    const out = alignDevice(dev(), corner, { x: 110, y: 110 }, 'square')
+    const c = deviceCenter(out)
+    expect(c.x).toBeCloseTo(100 + SQUARE_HALF * 12, 1)
+    expect(c.y).toBeCloseTo(100 + SQUARE_HALF * 12, 1)
+    expect(((out.rotation % 90) + 90) % 90).toBeCloseTo(0, 3)
+  })
+  it('keeps the square square to the wall and turns free coverage away from it', () => {
+    const out = alignDevice(dev({ fov: { direction: 0, angle: 90, range: 50 } }), hit(100, 100, 0), { x: 100, y: 110 }, 'square')
+    expect(out.fov?.direction).toBeCloseTo(90, 3)
+    expect(((out.rotation % 90) + 90) % 90).toBeCloseTo(0, 3)
   })
 })
