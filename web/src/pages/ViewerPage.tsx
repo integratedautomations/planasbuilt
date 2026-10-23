@@ -63,6 +63,8 @@ import { AREA_STYLE, DEFAULT_STYLE, defaultStyleFor } from '../markups/types'
 import type { Status } from '../markups/types'
 import { defaultProductId, productFields, productOptionLabel, productsFor } from '../catalog/catalog'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
+import { RoleContext } from '../roleContext'
+import { can, isFieldOnly } from '../roles'
 import { DeviceTypeEditor, draftOfType } from '../catalog/DeviceTypeEditor'
 import { useSession } from '../settings/session'
 import type { Layer, Markup, MarkupStyle, MarkupType, SymbolSet, Tool } from '../markups/types'
@@ -384,8 +386,12 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     const t = setTimeout(() => setToast(''), 4000)
     return () => clearTimeout(t)
   }, [toast])
-  const canEditRole = project?.role === 'admin' || project?.role === 'editor'
-  const readOnly = project?.role === 'viewer' || viewingOld
+  // What this role may do (src/roles.ts). Field and sub roles get a read-only canvas (no drawing tools, no drag or transform
+  // handles) but keep editing device fields, status, notes and photos through `fieldsOnly`. While the project loads nothing is locked.
+  const role = project?.role
+  const canEditRole = can(role, 'plans.edit')
+  const fieldsOnly = isFieldOnly(role) && !viewingOld
+  const readOnly = (!!role && !can(role, 'markup.geometry')) || viewingOld
   const activeTool: Tool = spaceHeld ? 'pan' : tool
 
   const syncStage = useCallback((v: View) => {
@@ -768,9 +774,11 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }, [readOnly, store, revealMarkups])
 
   const updateSelected = useCallback((patch: (m: Markup) => Markup, mergeKey: string) => {
-    if (readOnly) return
-    store.commit(selected.map(m => ({ before: m, after: patch(m) })), `${mergeKey}:${selectedIds.join(',')}`)
-  }, [readOnly, selected, selectedIds, store])
+    if (readOnly && !fieldsOnly) return
+    // Field and sub users may only change fields and status, whatever the panel sends.
+    const apply = fieldsOnly ? (m: Markup) => { const n = patch(m); return { ...m, fields: n.fields, status: n.status } } : patch
+    store.commit(selected.map(m => ({ before: m, after: apply(m) })), `${mergeKey}:${selectedIds.join(',')}`)
+  }, [readOnly, fieldsOnly, selected, selectedIds, store])
 
   const [replacing, setReplacing] = useState(false)
   /** Tool chest entry whose hotkey is being recorded. */
@@ -1287,7 +1295,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }
 
   const sidePanelEl = (
-    <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
+    <SidePanel tab={panelTab} onTab={setPanelTab} selected={selected} readOnly={readOnly} fieldsOnly={fieldsOnly} defaultStyle={defaultStyle} onDefaultStyle={setDefaultStyle}
       stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
       layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
       hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
@@ -1379,6 +1387,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }
 
   return (
+    <RoleContext.Provider value={role ?? null}>
     <CatalogContext.Provider value={catalog}>
     <div className={'viewer' + (focus ? ' focus' : '')}>
       {!focus && (
@@ -1531,5 +1540,6 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       {overlap && <OverlapPrompt message={overlap.message} onChoose={answerOverlap} />}
     </div>
     </CatalogContext.Provider>
+    </RoleContext.Provider>
   )
 }

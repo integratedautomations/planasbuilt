@@ -12,6 +12,8 @@ interface Props {
   type: DeviceType | null
   set?: SymbolSet
   admin: boolean
+  /** False for roles that may not see unit costs and labor hours (default true). */
+  showCosts?: boolean
   onChanged: () => void
   onError: (msg: string) => void
 }
@@ -20,7 +22,7 @@ const save = (p: Product) => api<Product>(`/products/${p.id}`, { method: 'PUT', 
 const num = (v: string) => (v === '' ? 0 : Math.max(0, Number(v) || 0))
 
 /** Inline-editable product list for one device type (or the standalone accessories). */
-export function ProductsTable({ products, allProducts, type, set, admin, onChanged, onError }: Props) {
+export function ProductsTable({ products, allProducts, type, set, admin, showCosts = true, onChanged, onError }: Props) {
   const [details, setDetails] = useState<Product | null>(null)
   const [add, setAdd] = useState({ manufacturer: '', model: '', name: '' })
 
@@ -52,12 +54,12 @@ export function ProductsTable({ products, allProducts, type, set, admin, onChang
             <tr>
               {type && <th title="Default product for this type">Default</th>}
               <th>Manufacturer</th><th>Model</th><th>Name</th><th>Spec link</th>
-              <th>Unit cost</th><th>Labor hrs</th><th>Accessories</th><th>Active</th><th />
+              {showCosts && <><th>Unit cost</th><th>Labor hrs</th></>}<th>Accessories</th><th>Active</th><th />
             </tr>
           </thead>
           <tbody>
             {products.map(p => (
-              <ProductRow key={p.id} p={p} isDefault={type?.default_product_id === p.id} showStar={!!type} admin={admin}
+              <ProductRow key={p.id} p={p} isDefault={type?.default_product_id === p.id} showStar={!!type} admin={admin} showCosts={showCosts}
                 onSave={d => run(() => save(d))} onDefault={() => makeDefault(p)} onDetails={() => setDetails(p)} onDelete={() => remove(p)} />
             ))}
             {products.length === 0 && <tr><td colSpan={10} className="muted">No products yet.</td></tr>}
@@ -75,7 +77,7 @@ export function ProductsTable({ products, allProducts, type, set, admin, onChang
         </table>
       </div>
       {details && (
-        <ProductDetails product={details} allProducts={allProducts} type={type} set={set} admin={admin}
+        <ProductDetails product={details} allProducts={allProducts} type={type} set={set} admin={admin} showCosts={showCosts}
           onClose={() => setDetails(null)}
           onSave={async d => { await run(() => save(d)); setDetails(null) }} />
       )}
@@ -83,8 +85,8 @@ export function ProductsTable({ products, allProducts, type, set, admin, onChang
   )
 }
 
-function ProductRow({ p, isDefault, showStar, admin, onSave, onDefault, onDetails, onDelete }: {
-  p: Product; isDefault: boolean; showStar: boolean; admin: boolean
+function ProductRow({ p, isDefault, showStar, admin, showCosts, onSave, onDefault, onDetails, onDelete }: {
+  p: Product; isDefault: boolean; showStar: boolean; admin: boolean; showCosts: boolean
   onSave: (p: Product) => void; onDefault: () => void; onDetails: () => void; onDelete: () => void
 }) {
   const [d, setD] = useState(p)
@@ -105,10 +107,12 @@ function ProductRow({ p, isDefault, showStar, admin, onSave, onDefault, onDetail
       <td>{text('model', 'Model')}</td>
       <td>{text('name', 'Name')}</td>
       <td>{text('spec_url', 'Spec link')}{/^https?:/i.test(d.spec_url) && <a href={d.spec_url} target="_blank" rel="noreferrer" title="Open spec"> ↗</a>}</td>
-      <td><input className="num" aria-label="Unit cost" inputMode="decimal" disabled={!admin} value={d.unit_cost}
-        onChange={e => setD({ ...d, unit_cost: num(e.target.value) })} onBlur={() => commit()} /></td>
-      <td><input className="num" aria-label="Labor hours" inputMode="decimal" disabled={!admin} value={d.labor_hours}
-        onChange={e => setD({ ...d, labor_hours: num(e.target.value) })} onBlur={() => commit()} /></td>
+      {showCosts && <>
+        <td><input className="num" aria-label="Unit cost" inputMode="decimal" disabled={!admin} value={d.unit_cost}
+          onChange={e => setD({ ...d, unit_cost: num(e.target.value) })} onBlur={() => commit()} /></td>
+        <td><input className="num" aria-label="Labor hours" inputMode="decimal" disabled={!admin} value={d.labor_hours}
+          onChange={e => setD({ ...d, labor_hours: num(e.target.value) })} onBlur={() => commit()} /></td>
+      </>}
       <td><button onClick={onDetails}>{p.accessories.length ? `${p.accessories.length} item${p.accessories.length === 1 ? '' : 's'}` : 'None'}{' / defaults'}</button></td>
       <td><input type="checkbox" aria-label="Active" disabled={!admin} checked={d.active} onChange={e => { const n = { ...d, active: e.target.checked }; setD(n); commit(n) }} /></td>
       <td>{admin && <button className="icon-btn small danger" title="Delete product" aria-label="Delete product" onClick={onDelete}>✕</button>}</td>
@@ -117,8 +121,8 @@ function ProductRow({ p, isDefault, showStar, admin, onSave, onDefault, onDetail
 }
 
 /** Accessories picker and default field values for one product. */
-function ProductDetails({ product, allProducts, type, set, admin, onClose, onSave }: {
-  product: Product; allProducts: Product[]; type: DeviceType | null; set?: SymbolSet; admin: boolean
+function ProductDetails({ product, allProducts, type, set, admin, showCosts, onClose, onSave }: {
+  product: Product; allProducts: Product[]; type: DeviceType | null; set?: SymbolSet; admin: boolean; showCosts: boolean
   onClose: () => void; onSave: (p: Product) => void | Promise<void>
 }) {
   const [d, setD] = useState(product)
@@ -148,8 +152,10 @@ function ProductDetails({ product, allProducts, type, set, admin, onClose, onSav
               ) : (
                 <>
                   <input placeholder="Item name" disabled={!admin} value={a.name} onChange={e => setAcc(i, { ...a, name: e.target.value })} />
-                  <input className="num" placeholder="Cost" inputMode="decimal" disabled={!admin} value={a.unit_cost ?? 0} onChange={e => setAcc(i, { ...a, unit_cost: num(e.target.value) })} />
-                  <input className="num" placeholder="Labor" inputMode="decimal" disabled={!admin} value={a.labor_hours ?? 0} onChange={e => setAcc(i, { ...a, labor_hours: num(e.target.value) })} />
+                  {showCosts && <>
+                    <input className="num" placeholder="Cost" inputMode="decimal" disabled={!admin} value={a.unit_cost ?? 0} onChange={e => setAcc(i, { ...a, unit_cost: num(e.target.value) })} />
+                    <input className="num" placeholder="Labor" inputMode="decimal" disabled={!admin} value={a.labor_hours ?? 0} onChange={e => setAcc(i, { ...a, labor_hours: num(e.target.value) })} />
+                  </>}
                 </>
               )}
               <input className="num" type="number" min={1} aria-label="Quantity" disabled={!admin} value={a.qty}

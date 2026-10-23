@@ -117,11 +117,13 @@ export const hours = (n: number) => (Math.round(n * 100) / 100).toLocaleString('
 export const BOM_HEADER = ['Section', 'Group', 'Manufacturer', 'Model', 'Name', 'Qty', 'From accessories', 'Unit cost', 'Ext cost', 'Labor hrs', 'Ext labor hrs']
 
 /** Header + rows (+ totals row) as plain cells, for Excel and PDF. */
-export function bomTable(bom: Bom): { header: string[]; rows: (string | number)[][]; totals: (string | number)[] } {
+export function bomTable(bom: Bom, costs = true): { header: string[]; rows: (string | number)[][]; totals: (string | number)[] } {
   const sec: Record<BomSection, string> = { devices: 'Devices', accessories: 'Accessories', unassigned: 'Unassigned' }
+  // Without costs the four cost/labor columns (the last four) are left out entirely.
+  const keep = <T extends string | number>(r: T[]) => (costs ? r : r.slice(0, 7))
   return {
-    header: BOM_HEADER,
-    rows: bom.lines.map(l => [sec[l.section], l.group, l.manufacturer, l.model, l.name, l.qty, l.accessoryQty, l.unitCost, l.extCost, l.laborHours, l.extLabor]),
-    totals: ['Total', '', '', '', '', bom.totals.qty, '', '', bom.totals.cost, '', bom.totals.labor],
+    header: keep(BOM_HEADER),
+    rows: bom.lines.map(l => keep<string | number>([sec[l.section], l.group, l.manufacturer, l.model, l.name, l.qty, l.accessoryQty, l.unitCost, l.extCost, l.laborHours, l.extLabor])),
+    totals: keep<string | number>(['Total', '', '', '', '', bom.totals.qty, '', '', bom.totals.cost, '', bom.totals.labor]),
   }
 }

@@ -9,9 +9,18 @@ export interface Catalog {
   products: Map<string, Product>
   typesBySet: Map<string, DeviceType[]>
   productsByType: Map<string, Product[]>
+  /** False when unit costs and labor hours were withheld from this person. */
+  canSeeCosts: boolean
 }
 
 export function buildCatalog(data: CatalogData): Catalog {
+  const canSeeCosts = data.can_see_costs !== false
+  // The server leaves costs out when this person may not see them; zero keeps the BOM maths finite (the UI hides the numbers).
+  const list = canSeeCosts ? data.products : data.products.map(p => ({
+    ...p, unit_cost: 0, labor_hours: 0,
+    accessories: p.accessories.map(a => ('product_id' in a ? a : { ...a, unit_cost: 0, labor_hours: 0 })),
+  }))
+  data = { ...data, products: list }
   const types = new Map(data.device_types.map(t => [t.id, t]))
   const products = new Map(data.products.map(p => [p.id, p]))
   const typesBySet = new Map<string, DeviceType[]>()
@@ -25,7 +34,7 @@ export function buildCatalog(data: CatalogData): Catalog {
     const l = productsByType.get(p.device_type_id)
     if (l) l.push(p); else productsByType.set(p.device_type_id, [p])
   }
-  return { types, products, typesBySet, productsByType }
+  return { types, products, typesBySet, productsByType, canSeeCosts }
 }
 
 export const EMPTY_CATALOG: Catalog = buildCatalog({ device_types: [], products: [] })

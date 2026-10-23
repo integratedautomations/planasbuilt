@@ -1,0 +1,7 @@
+.backups-page { display: flex; flex-direction: column; gap: 12px; }
+.backup-target h3 { margin: 0; }
+.backup-alert { background: #ffe3e3; color: #7a1212; padding: 6px 12px; font-size: 13px; text-align: center; }
+.backup-alert a { color: inherit; font-weight: 600; }
+.backup-help { background: var(--panel-2, rgba(127, 127, 127, 0.12)); border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+.backup-help pre { margin: 6px 0; padding: 6px 8px; background: rgba(127, 127, 127, 0.18); border-radius: 4px; overflow-x: auto; user-select: all; }
+.drawer textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; box-sizing: border-box; }

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { WebSocket } from 'ws'
+import { can, canSeeMarkup, stripInternalValues } from './roles.js'
+import type { Access } from './roles.js'
 
 const PALETTE = ['#e8590c', '#1c7ed6', '#2f9e44', '#ae3ec9', '#f08c00', '#0c8599', '#d6336c', '#5c940d']
 export const colorFor = (userId: string) => PALETTE[createHash('sha1').update(userId).digest().readUInt32BE(0) % PALETTE.length]
@@ -23,6 +25,8 @@ export interface Peer {
 export interface Conn extends Peer {
   socket: WebSocket
   documentId: string | null
+  /** Role and scope in the project of the joined document: decides which markups this socket is sent. Unset = unrestricted. */
+  access: Pick<Access, 'role' | 'scope'> | null
   alive: boolean
   /** Set by remove(): a socket that is gone must never be put back into a room. */
   removed?: boolean
@@ -58,7 +62,7 @@ export class Realtime {
   add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null }): Conn {
     const c: Conn = {
       socket, ...info, avatar: info.avatar ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
-      documentId: null, alive: true, windowStart: 0, windowCount: 0, joinWindowStart: 0, joinCount: 0,
+      documentId: null, access: null, alive: true, windowStart: 0, windowCount: 0, joinWindowStart: 0, joinCount: 0,
     }
     this.conns.add(c)
     socket.on('pong', () => { c.alive = true })
@@ -114,10 +118,29 @@ export class Realtime {
   error(c: Conn, message: string) { this.send(c, { type: 'error', message }) }
   pong(c: Conn) { this.send(c, { type: 'pong' }) }
 
-  join(c: Conn, documentId: string) {
+  /** True when someone with this role is in the document's room. */
+  hasRole(documentId: string, role: Access['role']) {
+    for (const c of this.rooms.get(documentId) ?? []) if (c.access?.role === role) return true
+    return false
+  }
+
+  /** A user's role or scope changed: update their sockets in the given documents. */
+  setAccess(userId: string, documentIds: string[], access: Pick<Access, 'role' | 'scope'>) {
+    const ids = new Set(documentIds)
+    for (const c of this.conns) if (c.userId === userId && c.documentId && ids.has(c.documentId)) c.access = access
+  }
+
+  /** Tells a user's sockets in the given documents to reload their markups (their visible set changed). */
+  markupsResetFor(userId: string, documentIds: string[]) {
+    const ids = new Set(documentIds)
+    for (const c of this.conns) if (c.userId === userId && c.documentId && ids.has(c.documentId)) this.send(c, { type: 'markups_reset', by: userId })
+  }
+
+  join(c: Conn, documentId: string, access: Pick<Access, 'role' | 'scope'> | null = null) {
     if (c.removed || c.documentId === documentId) return
     this.leave(c)
     c.documentId = documentId
+    c.access = access
     c.page = null; c.cursor = null; c.selection = []; c.viewport = null; c.marquee = null
     let room = this.rooms.get(documentId)
     if (!room) this.rooms.set(documentId, (room = new Set()))
@@ -156,8 +179,22 @@ export class Realtime {
   }
 
   // ---- Broadcast helpers used by REST handlers (clientId = originating socket to skip) ----
-  markupChanged(documentId: string, markup: unknown, by: string, clientId?: string | null) {
-    this.toRoom(documentId, { type: 'markup', op: 'upsert', markup, by }, clientId)
+  /**
+   * A sub is sent only markups in their scope (one that moved out of scope is sent as a delete so it disappears from their
+   * canvas, but only if `prev` was in scope); clients get the markup without the values of internal fields (`internalKeys`).
+   */
+  markupChanged(documentId: string, markup: any, by: string, clientId?: string | null, internalKeys?: Set<string>, prev?: { symbol_set_id?: string | null; layer_id?: string | null } | null) {
+    for (const c of this.rooms.get(documentId) ?? []) {
+      if (clientId && c.clientId === clientId) continue
+      const a = c.access
+      if (a && !canSeeMarkup(a, markup)) {
+        // Out of scope now: say nothing, unless it was in scope before (then it must vanish from their canvas).
+        if (prev && canSeeMarkup(a, prev)) this.send(c, { type: 'markup', op: 'delete', id: markup?.id, by })
+        continue
+      }
+      const shown = a && internalKeys && !can(a.role, 'internal.view') ? stripInternalValues(markup, internalKeys) : markup
+      this.send(c, { type: 'markup', op: 'upsert', markup: shown, by })
+    }
   }
   markupDeleted(documentId: string, id: string, by: string, clientId?: string | null) {
     this.toRoom(documentId, { type: 'markup', op: 'delete', id, by }, clientId)

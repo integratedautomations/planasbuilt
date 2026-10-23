@@ -1,14 +1,21 @@
 import { getClientId } from './realtime/clientId'
 
-export type Role = 'admin' | 'editor' | 'viewer'
+import type { Role, Scope } from './roles'
+export type { Role, Scope }
 
 export interface User { id: string; email: string; name: string; is_admin: boolean; /** Admins always can; other people only when an admin granted it. */ can_create_projects?: boolean; avatar?: number | null }
-export interface Project { id: string; name: string; created_at: string; role: Role; document_count?: number; status?: 'open' | 'completed'; completed_at?: string | null }
+export interface Project { id: string; name: string; created_at: string; role: Role; document_count?: number; status?: 'open' | 'completed'; completed_at?: string | null
+  /** Sub only: the symbol sets and layers they work on. */
+  scope?: Scope
+  /** Whether this person sees unit costs and labor hours in the project. */
+  can_see_costs?: boolean
+  /** Project setting: editors see costs (pm and admin always do). Default on. */
+  editors_see_costs?: boolean }
 export interface DocumentSummary {
   id: string; name: string; created_at: string; device_scale?: number
   revision_id: string; revision: number; page_count: number
 }
-export interface Member { id: string; email: string; name: string; role: Role }
+export interface Member { id: string; email: string; name: string; role: Role; /** Only sent to people who manage members. */ scope?: Scope }
 
 const TOKEN_KEY = 'planmark.token'
 

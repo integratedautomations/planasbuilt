@@ -11,3 +11,7 @@ services:
     pull_policy: always
     ports:
       - "${PLANASBUILT_PORT:-8080}:3001"
+  # Same pattern for the backup service (postgres + rclone + jq), built from Dockerfile.backup in CI.
+  backup:
+    image: ghcr.io/integratedautomations/planasbuilt-backup:${PLANASBUILT_TAG:-latest}
+    pull_policy: always

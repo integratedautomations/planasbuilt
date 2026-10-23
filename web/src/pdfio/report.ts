@@ -170,9 +170,11 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
   if (opts.includeBom) {
     const cat = input.catalog ?? EMPTY_CATALOG
     const bom = computeBom(filtered.map(r => ({ setId: r.setId, typeId: r.typeId || null, productId: r.productId || null, documentId: r.documentId, areaPath: r.areaPath })), cat, input.symbolSets)
-    const body = bom.lines.map(l => [l.group, [l.manufacturer, l.model].filter(Boolean).join(' ') || l.name, String(l.qty), money(l.extCost), hours(l.extLabor)])
-    body.push(['Total', '', String(bom.totals.qty), money(bom.totals.cost), hours(bom.totals.labor)])
-    table('Bill of materials', ['Group', 'Item', 'Qty', 'Cost', 'Labor hrs'], body, [150, 190, 40, 70, 66])
+    // Roles that may not see costs get a quantity-only list.
+    const costs = cat.canSeeCosts
+    const body = bom.lines.map(l => [l.group, [l.manufacturer, l.model].filter(Boolean).join(' ') || l.name, String(l.qty), ...(costs ? [money(l.extCost), hours(l.extLabor)] : [])])
+    body.push(['Total', '', String(bom.totals.qty), ...(costs ? [money(bom.totals.cost), hours(bom.totals.labor)] : [])])
+    table(costs ? 'Bill of materials' : 'Parts list', costs ? ['Group', 'Item', 'Qty', 'Cost', 'Labor hrs'] : ['Group', 'Item', 'Qty'], body, costs ? [150, 190, 40, 70, 66] : [190, 250, 60])
   }
 
   // ---- flattened sheets

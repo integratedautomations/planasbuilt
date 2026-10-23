@@ -17,13 +17,15 @@ RUN npm ci --omit=dev --workspace server
 
 FROM node:24-bookworm-slim
 WORKDIR /app
-ENV NODE_ENV=production DATA_DIR=/data PORT=3001 WEB_DIR=/app/web/dist
+ENV NODE_ENV=production DATA_DIR=/data PORT=3001 WEB_DIR=/app/web/dist RCLONE_DIR=/rclone
+# rclone: the admin Backups page uses it to test off-site connections (backup.sh in the backup image does the uploads).
+COPY --from=rclone/rclone:1.68.2 /usr/local/bin/rclone /usr/local/bin/rclone
 COPY --from=deps /app/node_modules node_modules
 COPY package.json ./
 COPY server/package.json server/
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/web/dist web/dist
-RUN mkdir -p /data && chown node:node /data
+RUN mkdir -p /data /rclone && chown node:node /data /rclone
 USER node
 VOLUME /data
 EXPOSE 3001

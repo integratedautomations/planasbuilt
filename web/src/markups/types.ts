@@ -67,7 +67,7 @@ export const STATUSES: { value: Status; label: string; color: string }[] = [
 ]
 
 export type FieldType = 'text' | 'number' | 'select' | 'ip' | 'date' | 'checkbox'
-export interface FieldDef { key: string; label: string; type: FieldType; options?: string[] }
+export interface FieldDef { key: string; label: string; type: FieldType; options?: string[]; /** Hidden from clients. */ internal?: boolean }
 
 /** Fields every device has, before its symbol set's own fields. */
 export const HARDWARE_FIELDS: FieldDef[] = [

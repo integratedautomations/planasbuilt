@@ -2,6 +2,8 @@ import { HARDWARE_FIELDS, STATUSES } from './types'
 import { defaultProductId, fieldDefsFor, productOptionLabel, productsFor, refillFields, tagPrefixFor } from '../catalog/catalog'
 import { useCatalogContext } from '../catalog/useCatalog'
 import { useState } from 'react'
+import { useProjectRole } from '../roleContext'
+import { can } from '../roles'
 import { Attribution, HistorySection } from './MarkupInfo'
 import { DevicePhotos } from '../photos/DevicePhotos'
 import { BarcodeScanner } from '../photos/BarcodeScanner'
@@ -19,6 +21,8 @@ interface Props {
   devices: Markup[]
   set?: SymbolSet
   readOnly: boolean
+  /** Field and sub roles: only fields, status, notes and photos may change; device type, product, mount, tag and coverage are locked. */
+  limited?: boolean
   onUpdate: (patch: (m: Markup) => Markup, mergeKey: string) => void
   /** Computed area names (outermost first) for a single device; omitted for multi-select. */
   areaPath?: string[]
@@ -29,7 +33,7 @@ interface Props {
 }
 
 /** Device data entry: tag, install status, hardware fields and the symbol set's own fields. */
-export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, heading, scale = null }: Props) {
+export function DeviceFields({ devices, set, readOnly, limited = false, onUpdate, areaPath, heading, scale = null }: Props) {
   const d = devices[0]
   const single = devices.length === 1
   const setStatus = (status: Status) => onUpdate(m => ({ ...m, status }), 'status')
@@ -64,7 +68,9 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
   const dtype = sameType && d.device_type_id ? cat.types.get(d.device_type_id) : undefined
   const sameProduct = devices.every(m => (m.product_id ?? null) === (d.product_id ?? null))
   const typeOptions = set ? cat.typesBySet.get(set.id) ?? [] : []
-  const defs = fieldDefsFor(set, dtype)
+  // Clients never see fields flagged internal.
+  const role = useProjectRole()
+  const defs = fieldDefsFor(set, dtype).filter(f => !f.internal || !role || can(role, 'internal.view'))
   const productList = sameType ? productsFor(cat, d.device_type_id) : []
   const curProduct = sameProduct && d.product_id ? cat.products.get(d.product_id) : undefined
   const setType = (typeId: string) => {
@@ -101,7 +107,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
 
       {set && typeOptions.length > 0 && (
         <label className="field">Device type
-          <select value={sameType ? d.device_type_id ?? '' : '__mixed'} onChange={e => setType(e.target.value)}>
+          <select disabled={limited} value={sameType ? d.device_type_id ?? '' : '__mixed'} onChange={e => setType(e.target.value)}>
             {!sameType && <option value="__mixed" disabled>Mixed</option>}
             <option value="">—</option>
             {typeOptions.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -110,7 +116,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
       )}
       {sameType && d.device_type_id && (
         <label className="field">Product
-          <select value={sameProduct ? d.product_id ?? '' : '__mixed'} onChange={e => setProduct(e.target.value)}>
+          <select disabled={limited} value={sameProduct ? d.product_id ?? '' : '__mixed'} onChange={e => setProduct(e.target.value)}>
             {!sameProduct && <option value="__mixed" disabled>Mixed</option>}
             <option value="">Unassigned</option>
             {curProduct && !productList.includes(curProduct) && <option value={curProduct.id}>{productOptionLabel(curProduct)} (inactive)</option>}
@@ -120,7 +126,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
         </label>
       )}
       <label className="field">Mount
-        <select value={mountOf.mixed ? '__mixed' : mountOf.value ?? ''} onChange={e => setMount(e.target.value)}>
+        <select disabled={limited} value={mountOf.mixed ? '__mixed' : mountOf.value ?? ''} onChange={e => setMount(e.target.value)}>
           {mountOf.mixed && <option value="__mixed" disabled>Mixed</option>}
           <option value="">{sameType ? `Type default (${mountLabel(resolveMount(dtype?.mount, null))})` : 'Type default'}</option>
           {MOUNTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -140,7 +146,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
       {single && (
         <>
           <label className="field">Tag
-            <input value={d.tag ?? ''} onChange={e => onUpdate(m => ({ ...m, tag: e.target.value }), `tag.${d.id}`)} />
+            <input disabled={limited} value={d.tag ?? ''} onChange={e => onUpdate(m => ({ ...m, tag: e.target.value }), `tag.${d.id}`)} />
           </label>
           {defs.map(f => <FieldInput key={f.key} def={f} value={d.fields?.[f.key]} onChange={v => setField(f.key, v)} {...scanProps(f.key)} />)}
           <div className="muted small section-label">Hardware</div>
@@ -148,6 +154,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           <label className="field">Notes
             <textarea rows={2} value={String(d.fields?.notes ?? '')} onChange={e => setField('notes', e.target.value)} />
           </label>
+          <fieldset disabled={limited} className="stack">
           <div className="muted small section-label">Coverage</div>
           <label className="check"><input type="checkbox" checked={!!fov && !fov.hidden}
             onChange={e => {
@@ -196,6 +203,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
               </label>
             </>
           )}
+          </fieldset>
         </>
       )}
       {!single && (
@@ -215,6 +223,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
           <label className="field">Notes
             <textarea rows={2} value={shared('notes').mixed ? '' : String(shared('notes').value ?? '')} placeholder={shared('notes').mixed ? 'Mixed' : undefined} onChange={e => setField('notes', e.target.value)} />
           </label>
+          <fieldset disabled={limited} className="stack">
           <div className="muted small section-label">Coverage</div>
           {(() => {
             const withFov = devices.filter(m => 'width' in m.geometry)
@@ -249,6 +258,7 @@ export function DeviceFields({ devices, set, readOnly, onUpdate, areaPath, headi
               </>
             )
           })()}
+          </fieldset>
         </>
       )}
       {scanKey && <BarcodeScanner onResult={onScanned} onClose={() => setScanKey(null)} />}

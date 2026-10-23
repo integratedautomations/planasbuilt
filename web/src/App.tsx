@@ -18,6 +18,7 @@ import { SymbolSetsPage } from './pages/SymbolSetsPage'
 import { SettingsPage } from './settings/SettingsPage'
 import { UsersPage } from './settings/UsersPage'
 import { InvitePage } from './settings/InvitePage'
+import { BackupAlert, BackupsPage } from './settings/BackupsPage'
 import { SessionContext } from './settings/session'
 import './settings/settings.css'
 
@@ -79,6 +80,7 @@ export default function App() {
   return (
     <SessionContext.Provider value={{ user, signOut }}>
     <ForeignNotice />
+    {user.is_admin && <BackupAlert />}
     <Routes>
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
       <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
@@ -88,6 +90,7 @@ export default function App() {
       <Route path="/catalog" element={<SymbolSetsPage user={user} />} />
       <Route path="/settings" element={<SettingsPage user={user} onUser={u => { cacheUser(u); setUser(u) }} />} />
       <Route path="/users" element={user.is_admin ? <UsersPage me={user} /> : <Navigate to="/" replace />} />
+      <Route path="/backups" element={user.is_admin ? <BackupsPage /> : <Navigate to="/" replace />} />
       <Route path="/invite/:token" element={<Navigate to="/" replace />} />
       <Route path="/reset/:token" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -633,3 +633,8 @@ input.invalid { border-color: var(--danger); }
 /* Device-type editor: Mount segmented control with shape previews */
 .mount-seg { align-self: flex-start; }
 .mount-seg button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px 4px 8px; }
+
+/* Project roles */
+.role-select { display: inline-flex; flex-direction: column; gap: 2px; max-width: 320px; }
+.role-desc { white-space: normal; }
+.scope-list { display: flex; flex-wrap: wrap; gap: 4px 16px; }

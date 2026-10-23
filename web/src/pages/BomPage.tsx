@@ -29,6 +29,8 @@ export function BomPage({ user }: { user: User }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const { catalog } = useCatalog()
+  /** Roles that may not see costs get quantities only. */
+  const costs = catalog.canSeeCosts
 
   useEffect(() => {
     loadProject(projectId!).then(r => setProject(r.data)).catch(e => setError(e.message))
@@ -59,8 +61,8 @@ export function BomPage({ user }: { user: User }) {
     if (!project) return
     setBusy(kind); setError('')
     try {
-      if (kind === 'xlsx') await downloadBomExcel(bom, bomFileName(project.name, 'xlsx'))
-      else await downloadBomPdf(bom, { projectName: project.name, scope, date: new Date() }, bomFileName(project.name, 'pdf'))
+      if (kind === 'xlsx') await downloadBomExcel(bom, bomFileName(project.name, 'xlsx'), costs)
+      else await downloadBomPdf(bom, { projectName: project.name, scope, date: new Date(), costs }, bomFileName(project.name, 'pdf'))
     } catch (e) { setError(`Export failed: ${(e as Error).message}`) } finally { setBusy('') }
   }
 
@@ -102,15 +104,15 @@ export function BomPage({ user }: { user: User }) {
           <div className="table-scroll">
             <table className="bom-table">
               <thead>
-                <tr><th>Item</th><th className="num">Qty</th><th className="num">Unit cost</th><th className="num">Ext cost</th><th className="num">Labor hrs</th><th className="num">Ext labor</th></tr>
+                <tr><th>Item</th><th className="num">Qty</th>{costs && <><th className="num">Unit cost</th><th className="num">Ext cost</th><th className="num">Labor hrs</th><th className="num">Ext labor</th></>}</tr>
               </thead>
               <tbody>
                 {grouped.map(g => (
-                  <SectionRows key={g.s} title={SECTION_TITLE[g.s]} lines={g.lines} unassigned={g.s === 'unassigned'} />
+                  <SectionRows key={g.s} title={SECTION_TITLE[g.s]} lines={g.lines} unassigned={g.s === 'unassigned'} costs={costs} />
                 ))}
               </tbody>
               <tfoot>
-                <tr><td>Total</td><td className="num">{bom.totals.qty}</td><td /><td className="num">{money(bom.totals.cost)}</td><td /><td className="num">{hours(bom.totals.labor)}</td></tr>
+                <tr><td>Total</td><td className="num">{bom.totals.qty}</td>{costs && <><td /><td className="num">{money(bom.totals.cost)}</td><td /><td className="num">{hours(bom.totals.labor)}</td></>}</tr>
               </tfoot>
             </table>
           </div>
@@ -120,10 +122,10 @@ export function BomPage({ user }: { user: User }) {
   )
 }
 
-function SectionRows({ title, lines, unassigned }: { title: string; lines: ReturnType<typeof computeBom>['lines']; unassigned: boolean }) {
+function SectionRows({ title, lines, unassigned, costs }: { title: string; lines: ReturnType<typeof computeBom>['lines']; unassigned: boolean; costs: boolean }) {
   return (
     <>
-      <tr className="section-row"><td colSpan={6}>{title}</td></tr>
+      <tr className="section-row"><td colSpan={costs ? 6 : 2}>{title}</td></tr>
       {lines.map(l => (
         <tr key={l.key}>
           <td>
@@ -133,10 +135,12 @@ function SectionRows({ title, lines, unassigned }: { title: string; lines: Retur
             {l.group && <div className="muted small">{l.group}</div>}
           </td>
           <td className="num">{l.qty}</td>
-          <td className="num">{unassigned ? '' : money(l.unitCost)}</td>
-          <td className="num">{unassigned ? '' : money(l.extCost)}</td>
-          <td className="num">{unassigned ? '' : hours(l.laborHours)}</td>
-          <td className="num">{unassigned ? '' : hours(l.extLabor)}</td>
+          {costs && <>
+            <td className="num">{unassigned ? '' : money(l.unitCost)}</td>
+            <td className="num">{unassigned ? '' : money(l.extCost)}</td>
+            <td className="num">{unassigned ? '' : hours(l.laborHours)}</td>
+            <td className="num">{unassigned ? '' : hours(l.extLabor)}</td>
+          </>}
         </tr>
       ))}
     </>

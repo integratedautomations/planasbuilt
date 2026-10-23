@@ -14,8 +14,12 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       # Optional first-run setup code; if empty one is generated and logged while there are no users.
       SETUP_TOKEN: ${SETUP_TOKEN:-}
+      # Encrypts off-site backup passwords/tokens stored by the admin Backups page: openssl rand -hex 32
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
     volumes:
       - files:/data
+      # rclone.conf + status shared with the backup service (written by the app, mode 600)
+      - rclone:/rclone
     # Uncomment for local debugging only (loopback, never public):
     # ports:
     #   - "127.0.0.1:3001:3001"
@@ -52,8 +56,12 @@ services:
 
   # Nightly pg_dump (custom format) + tar of the files volume -> ./backups, 14-day retention.
   # backup.sh makes ./backups mode 700 and every backup file mode 600 (they contain password hashes and all plans).
+  # Image: Dockerfile.backup = postgres:17 + rclone + jq (built locally, or pulled from GHCR with docker-compose.unraid.yml).
+  # Off-site copies (SFTP, S3, OneDrive, Google Drive, Zoho) are configured on the app's admin "Backups" page.
   backup:
-    image: postgres:17
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
     restart: unless-stopped
     entrypoint: ["/bin/bash", "/backup.sh"]
     environment:
@@ -63,10 +71,12 @@ services:
       PGDATABASE: planmark
       BACKUP_HOUR: ${BACKUP_HOUR:-3}
       RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      RCLONE_DIR: /rclone
     volumes:
       - ./deploy/backup.sh:/backup.sh:ro
       - files:/data:ro
       - ./backups:/backups
+      - rclone:/rclone
     depends_on:
       db:
         condition: service_healthy
@@ -74,3 +84,4 @@ services:
 volumes:
   files:
   pgdata:
+  rclone:

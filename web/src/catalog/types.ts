@@ -39,7 +39,11 @@ export interface Product {
   active: boolean
 }
 
-export interface CatalogData { device_types: DeviceType[]; products: Product[] }
+export interface CatalogData {
+  device_types: DeviceType[]; products: Product[]
+  /** False when the server withheld unit costs and labor hours from this person (absent = they are shown). */
+  can_see_costs?: boolean
+}
 export const EMPTY_CATALOG_DATA: CatalogData = { device_types: [], products: [] }
 
 export const accessoryProductId = (a: Accessory): string | null => ('product_id' in a ? a.product_id : null)

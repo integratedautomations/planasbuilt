@@ -28,6 +28,9 @@ export function FieldsEditor({ fields, onChange }: { fields: FieldDef[]; onChang
               onChange={e => setField(i, { options: e.target.value.split(',').map(s => s.trimStart()) })}
               onBlur={e => setField(i, { options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
           )}
+          <label className="check nowrap" title="Clients never see internal fields or their values">
+            <input type="checkbox" checked={!!f.internal} onChange={e => setField(i, { internal: e.target.checked || undefined })} /> Internal
+          </label>
           <span className="row nowrap">
             <button className="icon-btn small" title="Move up" onClick={() => moveField(i, -1)}>↑</button>
             <button className="icon-btn small" title="Move down" onClick={() => moveField(i, 1)}>↓</button>

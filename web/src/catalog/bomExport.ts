@@ -7,18 +7,18 @@ import { bomTable, hours, money } from './bom'
 import type { Bom } from './bom'
 
 /** The BOM as an Excel sheet: header, rows and a totals row. */
-export function bomWorkbookTable(bom: Bom): Table {
-  const t = bomTable(bom)
+export function bomWorkbookTable(bom: Bom, costs = true): Table {
+  const t = bomTable(bom, costs)
   const data: Cell[][] = [...t.rows, t.totals].map(r => r.map(c => (c === '' ? null : c)))
   return { name: 'BOM', header: t.header, data, widths: autoWidths(t.header, data) }
 }
 
-export async function downloadBomExcel(bom: Bom, fileName: string) {
+export async function downloadBomExcel(bom: Bom, fileName: string, costs = true) {
   const { downloadWorkbook } = await import('../schedule/xlsxIO')
-  await downloadWorkbook([bomWorkbookTable(bom)], fileName)
+  await downloadWorkbook([bomWorkbookTable(bom, costs)], fileName)
 }
 
-export interface BomPdfInfo { projectName: string; scope: string; date: Date }
+export interface BomPdfInfo { projectName: string; scope: string; date: Date; /** false = leave out unit cost, extended cost and labor (default true). */ costs?: boolean }
 
 const W = 792, H = 612, M = 36 // landscape letter
 
@@ -37,10 +37,11 @@ export async function buildBomPdf(bom: Bom, info: BomPdfInfo): Promise<Uint8Arra
   const width = (s: string, size: number) => { try { return font.widthOfTextAtSize(sanitizeText(s), size) } catch { return s.length * size * 0.55 } }
 
   // columns: label, x, width, right aligned
+  const costs = info.costs !== false
   const cols = [
     { h: 'Item', x: M, w: 330 }, { h: 'Qty', x: M + 330, w: 40, r: true }, { h: 'Unit cost', x: M + 370, w: 80, r: true },
     { h: 'Ext cost', x: M + 450, w: 90, r: true }, { h: 'Labor hrs', x: M + 540, w: 70, r: true }, { h: 'Ext labor', x: M + 610, w: 70, r: true },
-  ]
+  ].slice(0, costs ? 6 : 2)
   let page = doc.addPage([W, H])
   let y = H - M
   text(page, 'Bill of Materials', M, y - 16, 20, true)
@@ -73,7 +74,7 @@ export async function buildBomPdf(bom: Bom, info: BomPdfInfo): Promise<Uint8Arra
     lines.forEach((ln, i) => text(page, ln, cols[0].x, y - i * 11, 9))
     const vals = [String(l.qty), l.section === 'unassigned' ? '' : money(l.unitCost), l.section === 'unassigned' ? '' : money(l.extCost),
       l.section === 'unassigned' ? '' : hours(l.laborHours), l.section === 'unassigned' ? '' : hours(l.extLabor)]
-    vals.forEach((v, i) => { const c = cols[i + 1]; if (v) text(page, v, c.x, y, 9, false, c.x + c.w) })
+    vals.forEach((v, i) => { const c = cols[i + 1]; if (c && v) text(page, v, c.x, y, 9, false, c.x + c.w) })
     y -= h
   }
   ensure(24)
@@ -81,7 +82,7 @@ export async function buildBomPdf(bom: Bom, info: BomPdfInfo): Promise<Uint8Arra
   y -= 8
   text(page, 'Total', cols[0].x, y, 10, true)
   const tv = [String(bom.totals.qty), '', money(bom.totals.cost), '', hours(bom.totals.labor)]
-  tv.forEach((v, i) => { const c = cols[i + 1]; if (v) text(page, v, c.x, y, 10, true, c.x + c.w) })
+  tv.forEach((v, i) => { const c = cols[i + 1]; if (c && v) text(page, v, c.x, y, 10, true, c.x + c.w) })
   return doc.save()
 }
 

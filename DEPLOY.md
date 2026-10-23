@@ -47,7 +47,30 @@ The `backup` service runs nightly at `BACKUP_HOUR` (UTC) and writes `backups/db-
 docker compose exec backup /bin/bash /backup.sh once
 ls -lh backups
 ```
-Backups contain every password hash and all plans, so the script creates `./backups` as mode 700 and each file as mode 600 (owner: root, because the backup container runs as root). Use `sudo` to read or copy them, and run `deploy/restore.sh` with `sudo`. Copy `./backups` off the box (rclone, rsync, or a provider snapshot) so a lost VPS does not lose the backups.
+Backups contain every password hash and all plans, so the script creates `./backups` as mode 700 and each file as mode 600 (owner: root, because the backup container runs as root). Use `sudo` to read or copy them, and run `deploy/restore.sh` with `sudo`. A lost server must not lose the backups, so also set up off-site copies (below).
+
+### Off-site copies (rclone)
+After each local backup, `backup.sh` copies the new `db-*.dump` and `files-*.tar.gz` to every enabled target with rclone and deletes remote copies older than that target's retention (default 30 days). Targets: SFTP, S3-compatible, OneDrive, Google Drive, Zoho WorkDrive, each optionally wrapped in rclone `crypt` so the files are encrypted before they leave the server.
+
+1. Generate a key that encrypts the saved passwords/tokens in the database, and add it to `.env` (keep a copy somewhere safe):
+   ```bash
+   echo "BACKUP_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env   # or paste it over the empty BACKUP_ENCRYPTION_KEY= line
+   ```
+2. Update the stack so the app and backup containers have rclone (the `backup` service now uses `Dockerfile.backup`: postgres + rclone + jq):
+   ```bash
+   docker compose up -d --build                                  # VPS
+   docker compose -f docker-compose.yml -f docker-compose.unraid.yml pull
+   docker compose -f docker-compose.yml -f docker-compose.unraid.yml up -d   # Unraid (prebuilt GHCR images)
+   ```
+3. Sign in as an admin: avatar menu > **Backups** > **Add target**, fill it in, Save, then **Test connection**. **Run backup now** starts a backup within a few seconds. Each target shows its last result; a red banner appears for admins whenever an enabled target's last run failed.
+
+OneDrive, Google Drive and Zoho need a one-time sign-in done on any computer that has [rclone](https://rclone.org/downloads/) installed:
+```bash
+rclone authorize "onedrive"     # or "drive" (Google Drive) / "zoho"
+```
+A browser opens; after you sign in, rclone prints a line of JSON (`{"access_token":...}`). Paste it into the Token field. The server never runs an OAuth flow itself. For Google Drive, rclone's shared client is rate-limited; for heavy use create your own OAuth client and run `rclone authorize "drive" "<client_id>" "<client_secret>"`, then enter the same ID and secret under Advanced. Zoho: also pick your data centre (`com`, `eu`, `in`, ...).
+
+How it works: the app stores targets in the database (secrets AES-256-GCM encrypted with `BACKUP_ENCRYPTION_KEY`) and writes `rclone.conf` (mode 600) and `targets.json` to the `rclone` volume shared with the backup service; `backup.sh` writes `status.json` there. The backup service checks every few seconds for a "run now" request, so it also runs a backup on demand. If `BACKUP_ENCRYPTION_KEY` is lost or changed, saved targets must be re-entered. If you enable `crypt`, the passphrase is the only way to read the remote copies: store it separately (rclone can restore with `rclone copy tNNNNNNNNc: ./restore` using the same config). Restoring from off-site: download the `db-*.dump` and `files-*.tar.gz` pair (decrypted if you used crypt) into `./backups` and follow section 6.
 
 ## 6. Restore
 ```bash

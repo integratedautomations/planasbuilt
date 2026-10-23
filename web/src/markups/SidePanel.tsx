@@ -78,6 +78,8 @@ interface Props {
   areas: AreasProps
   selected: Markup[]
   readOnly: boolean
+  /** Field and sub roles: read-only canvas, but device fields, status, notes and photos stay editable. */
+  fieldsOnly?: boolean
   /** Style used for new markups when nothing is selected. */
   defaultStyle: MarkupStyle
   onDefaultStyle: (s: MarkupStyle) => void
@@ -218,7 +220,7 @@ function Properties(p: Props) {
         {one && <button className="stack-back" onClick={() => p.onSelectIds(stack.members.map(m => m.id))}>{'‹'} Back to stack ({stack.members.length})</button>}
         {whole && <StackMembers stack={stack} set={set} onPick={id => p.onSelectIds([id])} />}
         <Section title="Device">
-          <DeviceFields devices={selected} readOnly={readOnly} onUpdate={onUpdate} set={set} scale={p.measure.scale?.pointsPerFoot ?? null}
+          <DeviceFields devices={selected} readOnly={readOnly && !p.fieldsOnly} limited={p.fieldsOnly} onUpdate={onUpdate} set={set} scale={p.measure.scale?.pointsPerFoot ?? null}
             heading={whole ? `Stack ×${selected.length} · ${tagRange(selected.map(m => m.tag ?? ''))}` : undefined}
             areaPath={selected.length === 1 ? p.areas.pathOf(first) : undefined} />
         </Section>

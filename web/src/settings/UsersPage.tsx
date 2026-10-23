@@ -4,6 +4,7 @@ import { api } from '../api'
 import type { LinkResult, ManagedUser, Role, User, UserStatus } from '../api'
 import { Brand } from '../Brand'
 import { OfflineBanner } from '../offline/OfflineBanner'
+import { RoleOptions } from './RoleSelect'
 import { CopyLink } from './CopyLink'
 import { UserMenu } from './UserMenu'
 
@@ -164,7 +165,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
                 <li key={m.id} className="list-item member-row">
                   <span className="grow">{m.name}</span>
                   <select value={m.role} aria-label={`Role on ${m.name}`} onChange={e => setMembership(m.id, e.target.value as Role)}>
-                    <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option>
+                    <RoleOptions />
                   </select>
                   <button className="danger" onClick={() => setMembership(m.id, null)}>Remove</button>
                 </li>
@@ -177,7 +178,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
                   {unassigned.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
                 <select value={addRole} aria-label="Role" onChange={e => setAddRole(e.target.value as Role)}>
-                  <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option>
+                  <RoleOptions />
                 </select>
                 <button disabled={!addId} onClick={async () => { await setMembership(addId, addRole); setAddId('') }}>Add</button>
               </div>
@@ -260,7 +261,7 @@ function InviteDialog({ projects, onClose, onDone }: { projects: ProjectRef[]; o
                       onChange={e => setPicked(cur => { const n = { ...cur }; if (e.target.checked) n[p.id] = 'editor'; else delete n[p.id]; return n })} /> {p.name}</label>
                     {p.id in picked && (
                       <select aria-label={`Role on ${p.name}`} value={picked[p.id]} onChange={e => setPicked(cur => ({ ...cur, [p.id]: e.target.value as Role }))}>
-                        <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option>
+                        <RoleOptions />
                       </select>
                     )}
                   </div>

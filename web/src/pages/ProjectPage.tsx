@@ -16,6 +16,7 @@ import { Brand } from '../Brand'
 import { Icon } from '../ui/Icon'
 import { UserMenu } from '../settings/UserMenu'
 import { MembersPanel } from '../settings/MembersPanel'
+import { can } from '../roles'
 
 /** Page count of a PDF; the pdf.js task is destroyed whether it parses or is rejected. */
 async function countPages(bytes: ArrayBuffer): Promise<number> {
@@ -105,8 +106,19 @@ export function ProjectPage({ user }: { user: User }) {
   }
 
   const allOffline = docs.length > 0 && docs.every(d => offlineState.get(d.id)?.offline)
-  const canEdit = project?.role === 'admin' || project?.role === 'editor'
-  const isAdmin = project?.role === 'admin'
+  const canEdit = can(project?.role, 'plans.edit')
+  const isAdmin = can(project?.role, 'members.manage')
+  const canDeletePlans = can(project?.role, 'plans.delete')
+  const canSeeCosts = project?.can_see_costs !== false
+
+  async function setEditorsSeeCosts(on: boolean) {
+    if (!project) return
+    setError('')
+    try {
+      const p = await api<Project>(`/projects/${project.id}`, { method: 'PATCH', body: JSON.stringify({ editors_see_costs: on }) })
+      setProject({ ...project, editors_see_costs: p.editors_see_costs })
+    } catch (err) { setError((err as Error).message) }
+  }
 
   async function toggleComplete() {
     if (!project) return
@@ -224,6 +236,11 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
           <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
         </div>
+        {tab === 'members' && isAdmin && project && (
+          <label className="check" title="Project managers and admins always see costs">
+            <input type="checkbox" checked={project.editors_see_costs !== false} onChange={e => setEditorsSeeCosts(e.target.checked)} /> Editors see unit costs and labor hours
+          </label>
+        )}
         {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
         {tab === 'plans' && <>
         <div className="row pp-toolbar">
@@ -257,7 +274,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             <button role="menuitem" className="vmenu-item" disabled={!!progress || docs.length === 0} onClick={makeOffline}>
               <span className="vmenu-label">{allOffline ? 'Refresh offline copy' : 'Make available offline'}</span>
             </button>
-            <Link role="menuitem" className="vmenu-item" to={`/projects/${projectId}/bom`}><span className="vmenu-label">BOM</span></Link>
+            <Link role="menuitem" className="vmenu-item" to={`/projects/${projectId}/bom`}><span className="vmenu-label">{canSeeCosts ? 'BOM' : 'Parts list'}</span></Link>
             <button role="menuitem" className="vmenu-item" disabled={!project || exporting} onClick={exportSchedule}>
               <span className="vmenu-label">{exporting ? 'Exporting…' : 'Export schedule'}</span>
             </button>
@@ -301,7 +318,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                       <span className="vmenu-label">Issue revision</span>
                     </button>
                   )}
-                  {isAdmin && (
+                  {canDeletePlans && (
                     <button role="menuitem" className="vmenu-item pp-danger" onClick={() => remove(d)}>
                       <span className="vmenu-label">Delete</span>
                     </button>

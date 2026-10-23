@@ -16,14 +16,16 @@ import { Storage, validateS3Config } from './storage.js'
 import type { S3Factory } from './storage.js'
 import { getSection, storageConfigOf } from './settings.js'
 import { registerAdmin } from './admin.js'
+import { registerBackups } from './backups.js'
 import { installLibrary, previewLibrary } from './standardLibrary.js'
 import { BoundedTtlMap } from './ttlmap.js'
 import { clientIp, normalizePublicUrl, TRUSTED_PROXIES } from './net.js'
 import { countPages, editPdf, isIdentity, pageSizes, PageOpError, parsePageList, remapPages, rotateGeometry } from './pages.js'
 import type { PageMapping, PageOp } from './pages.js'
+import { accessCan, can, canSeeMarkup, filterMarkups, isRole, normalizeScope, ROLES, stripInternalValues, stripProductCosts } from './roles.js'
+import type { Access, Cap, Role, Scope } from './roles.js'
 
-export type Role = 'admin' | 'editor' | 'viewer'
-const ROLE_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 }
+export type { Role }
 
 interface AuthUser { id: string; email: string; isAdmin: boolean; tv?: number }
 
@@ -218,19 +220,58 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const userCount = async () =>
     (await db.query<{ count: number }>('SELECT count(*)::int AS count FROM users'))[0].count
 
-  async function projectRole(userId: string, projectId: string): Promise<Role | null> {
-    const rows = await db.query<{ role: Role }>(
-      'SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2', [projectId, userId])
-    return rows[0]?.role ?? null
+  /** Someone's role, scope and the project's cost setting; null when they are not a member. */
+  async function projectAccess(userId: string, projectId: string): Promise<Access | null> {
+    const rows = await db.query<{ role: Role; scope: unknown; editors_see_costs: boolean }>(
+      `SELECT m.role, m.scope, p.editors_see_costs FROM project_members m JOIN projects p ON p.id = m.project_id
+       WHERE m.project_id = $1 AND m.user_id = $2`, [projectId, userId])
+    const r = rows[0]
+    return r ? { role: r.role, scope: normalizeScope(r.scope), editorsSeeCosts: r.editors_see_costs !== false } : null
   }
 
-  async function requireRole(req: FastifyRequest, reply: FastifyReply, projectId: string, min: Role) {
-    const role = await projectRole(req.user.id, projectId)
-    if (!role || ROLE_RANK[role] < ROLE_RANK[min]) {
+  /** What requireCap resolved for a request, for handlers that need the role or scope afterwards. */
+  const accessByReq = new WeakMap<FastifyRequest, Access>()
+  const accessOf = (req: FastifyRequest) => accessByReq.get(req)!
+
+  /** Answers 403 unless the user is a member of the project whose role has the capability. Returns their access. */
+  async function requireCap(req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) {
+    const access = await projectAccess(req.user.id, projectId)
+    if (!accessCan(access, cap)) {
       reply.code(403).send({ error: 'Not allowed' })
       return null
     }
-    return role
+    accessByReq.set(req, access!)
+    return access!
+  }
+
+  /** What a user may see across the whole organization (catalog and symbol sets are shared by all projects). */
+  async function orgVisibility(user: { id: string; isAdmin: boolean }) {
+    if (user.isAdmin) return { costs: true, internal: true }
+    const rows = await db.query<{ role: Role; editors_see_costs: boolean }>(
+      'SELECT m.role, p.editors_see_costs FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = $1', [user.id])
+    return {
+      costs: rows.some(r => can(r.role, 'costs.view', { editorsSeeCosts: r.editors_see_costs })),
+      internal: rows.some(r => can(r.role, 'internal.view')),
+    }
+  }
+
+  /** Keys of fields flagged `internal` in any symbol set or device type (clients never see their values). */
+  async function internalFieldKeys(): Promise<Set<string>> {
+    const rows = await db.query<{ key: string }>(
+      `SELECT DISTINCT f->>'key' AS key FROM (
+         SELECT jsonb_array_elements(fields) AS f FROM symbol_sets
+         UNION ALL SELECT jsonb_array_elements(fields) FROM device_types) x
+       WHERE f->>'internal' = 'true'`)
+    return new Set(rows.map(r => r.key).filter(Boolean))
+  }
+  const withoutInternalDefs = (defs: any) => (Array.isArray(defs) ? defs.filter((d: any) => !d?.internal) : defs)
+
+  /** A markup list as this user may see it: sub scope applied, internal field values removed for clients. */
+  async function visibleMarkups<T extends { symbol_set_id?: string | null; layer_id?: string | null; fields?: Record<string, any> }>(access: Access, list: T[]) {
+    const out = filterMarkups(access, list)
+    if (can(access.role, 'internal.view')) return out
+    const keys = await internalFieldKeys()
+    return out.map(m => stripInternalValues(m, keys))
   }
 
   function validNewUser(body: any) {
@@ -276,9 +317,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
           try {
             const id = String(m.documentId ?? '')
             const [doc] = UUID_RE.test(id) ? await db.query('SELECT project_id FROM documents WHERE id = $1', [id]) : []
-            if (!doc || !(await projectRole(user.id, doc.project_id))) return realtime.error(conn, 'Not allowed')
+            const access = doc ? await projectAccess(user.id, doc.project_id) : null
+            if (!doc || !access) return realtime.error(conn, 'Not allowed')
             if (closed) return
-            realtime.join(conn, id)
+            realtime.join(conn, id, access)
           } catch { realtime.error(conn, 'Join failed') }
         }
       }).catch(() => {})
@@ -427,42 +469,60 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   app.get('/api/projects/:id', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    const role = await requireRole(req, reply, id, 'viewer')
-    if (!role) return
+    const access = await requireCap(req, reply, id, 'view')
+    if (!access) return
     const [project] = await db.query('SELECT * FROM projects WHERE id = $1', [id])
-    return { ...project, role }
+    return { ...project, role: access.role, scope: access.scope, can_see_costs: accessCan(access, 'costs.view') }
   })
 
-  // Mark a project Complete or reopen it (project admins and editors). Completed projects stay fully usable.
+  // Mark a project Complete or reopen it (anyone who can edit plans), and/or switch the "editors see costs" setting (project admins).
+  // Completed projects stay fully usable.
   app.patch('/api/projects/:id', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'editor'))) return
-    const status = (req.body as any)?.status
-    if (status !== 'open' && status !== 'completed') return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
-    const [project] = await db.query(
-      `UPDATE projects SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN now() ELSE NULL END WHERE id = $2 RETURNING *`, [status, id])
-    return { ...project, role: await projectRole(req.user.id, id) }
+    const b = (req.body ?? {}) as any
+    const hasStatus = b.status !== undefined, hasCosts = b.editors_see_costs !== undefined
+    if (!hasStatus && !hasCosts) return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
+    const access = await requireCap(req, reply, id, hasCosts ? 'members.manage' : 'plans.edit')
+    if (!access) return
+    if (hasStatus && b.status !== 'open' && b.status !== 'completed') return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
+    if (hasCosts && typeof b.editors_see_costs !== 'boolean') return reply.code(400).send({ error: 'editors_see_costs must be true or false' })
+    if (hasStatus && !accessCan(access, 'plans.edit')) return reply.code(403).send({ error: 'Not allowed' })
+    let project: any
+    if (hasStatus)
+      [project] = await db.query(
+        `UPDATE projects SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN now() ELSE NULL END WHERE id = $2 RETURNING *`, [b.status, id])
+    if (hasCosts)
+      [project] = await db.query('UPDATE projects SET editors_see_costs = $1 WHERE id = $2 RETURNING *', [b.editors_see_costs, id])
+    return { ...project, role: access.role, scope: access.scope }
   })
 
   app.get('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'viewer'))) return
-    return db.query(
-      `SELECT u.id, u.email, u.name, u.status, m.role FROM project_members m JOIN users u ON u.id = m.user_id
+    const access = await requireCap(req, reply, id, 'view')
+    if (!access) return
+    const rows = await db.query(
+      `SELECT u.id, u.email, u.name, u.status, m.role, m.scope FROM project_members m JOIN users u ON u.id = m.user_id
        WHERE m.project_id = $1 ORDER BY u.name`, [id])
+    // Scopes are only for the people who manage members.
+    return accessCan(access, 'members.manage') ? rows : rows.map(({ scope: _s, ...r }: any) => r)
   })
 
   app.put('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'admin'))) return
+    if (!(await requireCap(req, reply, id, 'members.manage'))) return
     const { email, role } = (req.body ?? {}) as any
-    if (!['admin', 'editor', 'viewer'].includes(role)) return reply.code(400).send({ error: 'Bad role' })
+    if (!isRole(role)) return reply.code(400).send({ error: 'Bad role' })
     const [user] = await db.query("SELECT id FROM users WHERE email = $1 AND status <> 'deactivated'", [String(email ?? '').toLowerCase()])
     if (!user) return reply.code(404).send({ error: 'No active user with that email' })
     if (role !== 'admin' && !(await keepsAnAdmin(id, user.id))) return reply.code(400).send({ error: 'A project needs at least one admin' })
+    // The scope only matters for a sub. Not sent = keep the stored one; a non-sub role resets it to empty.
+    const scope = role !== 'sub' ? normalizeScope(null) : (req.body as any).scope !== undefined ? normalizeScope((req.body as any).scope) : null
     await db.query(
-      `INSERT INTO project_members VALUES ($1,$2,$3)
-       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`, [id, user.id, role])
+      `INSERT INTO project_members (project_id, user_id, role, scope) VALUES ($1,$2,$3, coalesce($4::jsonb, '{"sets":[],"layers":[]}'::jsonb))
+       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role,
+         scope = CASE WHEN $4::jsonb IS NULL THEN project_members.scope ELSE EXCLUDED.scope END`,
+      [id, user.id, role, scope ? JSON.stringify(scope) : null])
+    await refreshAccess(user.id, id)
     return { ok: true }
   })
 
@@ -470,6 +530,15 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   async function keepsAnAdmin(projectId: string, userId: string) {
     return (await db.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM project_members WHERE project_id = $1 AND role = 'admin' AND user_id <> $2", [projectId, userId]))[0].n > 0
+  }
+
+  /** Pushes a changed role or scope to the person's open sockets so a sub's filtering follows the change at once. */
+  async function refreshAccess(userId: string, projectId: string) {
+    const access = await projectAccess(userId, projectId)
+    if (!access) return
+    const docs = await db.query<{ id: string }>('SELECT id FROM documents WHERE project_id = $1', [projectId])
+    realtime.setAccess(userId, docs.map(d => d.id), access)
+    realtime.markupsResetFor(userId, docs.map(d => d.id))
   }
 
   /** Removes a person's live sockets from a project's document rooms (membership was taken away). */
@@ -506,7 +575,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
   app.get('/api/projects/:id/documents', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    if (!(await requireCap(req, reply, id, 'view'))) return
     return db.query(
       `SELECT d.id, d.name, d.created_at, d.device_scale, r.id AS revision_id, r.revision, r.page_count
        FROM documents d
@@ -516,7 +585,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   app.post('/api/projects/:id/documents', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'editor'))) return
+    if (!(await requireCap(req, reply, id, 'plans.edit'))) return
     const file = await req.file()
     if (!file) return reply.code(400).send({ error: 'No file' })
     const up = await readPdfUpload(file, reply)
@@ -537,16 +606,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     } catch (e) { void storage.remove(fileKey); throw e }
   })
 
-  async function documentWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+  async function documentWithAccess(req: FastifyRequest, reply: FastifyReply, cap: Cap) {
     const { id } = req.params as any
     const [doc] = await db.query('SELECT * FROM documents WHERE id = $1', [id])
     if (!doc) { reply.code(404).send({ error: 'Not found' }); return null }
-    if (!(await requireRole(req, reply, doc.project_id, min))) return null
+    if (!(await requireCap(req, reply, doc.project_id, cap))) return null
     return doc
   }
 
   app.get('/api/documents/:id', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     const revisions = await db.query(
       'SELECT id, revision, page_count, created_at, kind, label FROM document_revisions WHERE document_id = $1 ORDER BY revision DESC', [doc.id])
@@ -554,7 +623,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.patch('/api/documents/:id', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const b = (req.body ?? {}) as any
     const hasScale = b.device_scale !== undefined
@@ -571,7 +640,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.delete('/api/documents/:id', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'admin')
+    const doc = await documentWithAccess(req, reply, 'plans.delete')
     if (!doc) return
     const keys = await db.query<{ k: string }>(
       `SELECT file_key AS k FROM document_revisions WHERE document_id = $1
@@ -583,7 +652,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.get('/api/documents/:id/file', { preHandler: fileAuth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     const rid = (req.query as any)?.revision
     const [rev] = rid
@@ -604,7 +673,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     FROM document_revisions r LEFT JOIN users u ON u.id = r.uploaded_by WHERE r.document_id = $1 ORDER BY r.revision DESC`
 
   app.get('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     return db.query(REVISION_SQL, [doc.id])
   })
@@ -652,7 +721,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // those on pages beyond the new page count are kept and reported as orphaned. The markups as they were at this moment
   // are frozen into the revision being replaced (so it can be viewed and compared later).
   app.post('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const file = await req.file()
     if (!file) return reply.code(400).send({ error: 'No file' })
@@ -678,7 +747,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   // Issue revision: freeze the current PDF + markups + device data under a name, without changing anything live.
   app.post('/api/documents/:id/revisions/issue', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const b = (req.body ?? {}) as any
     const label = String(b.label ?? '').trim().slice(0, 200)
@@ -698,7 +767,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // Make an older revision current without deleting newer ones: the present state is frozen first, then a new revision
   // points at the older PDF and the live markups / scales are replaced by that revision's snapshot.
   app.post('/api/documents/:id/revisions/:rid/make-current', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const { rid } = req.params as any
     const [src] = UUID_RE.test(String(rid)) ? await db.query(
@@ -778,7 +847,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // One revision: meta plus the markups (and photo references / scales) as they were. The newest revision, which is
   // still live, answers with the current markups and `live: true`.
   app.get('/api/documents/:id/revisions/:rid', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     const { rid } = req.params as any
     const [rev] = UUID_RE.test(String(rid)) ? await db.query(
@@ -787,13 +856,18 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
        FROM document_revisions r LEFT JOIN users u ON u.id = r.uploaded_by WHERE r.document_id = $1 AND r.id = $2`, [doc.id, rid]) : []
     if (!rev) return reply.code(404).send({ error: 'Revision not found' })
     const { markups_snapshot, attachments_snapshot, scales_snapshot, ...meta } = rev
-    if (markups_snapshot) return { ...meta, live: false, markups: markups_snapshot, attachments: attachments_snapshot ?? [], scales: scales_snapshot ?? [] }
-    const s = await liveSnapshot(db.query, doc.id)
-    return { ...meta, live: true, ...s }
+    const access = accessOf(req)
+    const snap = markups_snapshot
+      ? { live: false, markups: markups_snapshot as any[], attachments: (attachments_snapshot ?? []) as any[], scales: scales_snapshot ?? [] }
+      : { live: true, ...(await liveSnapshot(db.query, doc.id)) }
+    // A sub only gets their own markups (and those markups' photos); a client gets no internal field values.
+    const markups = await visibleMarkups(access, snap.markups)
+    const keep = new Set(markups.map((m: any) => m.id))
+    return { ...meta, ...snap, markups, attachments: access.role === 'sub' ? snap.attachments.filter((a: any) => keep.has(a.markup_id)) : snap.attachments }
   })
 
   app.get('/api/documents/:id/revisions/:rid/file', { preHandler: fileAuth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     const { rid } = req.params as any
     const [rev] = UUID_RE.test(String(rid)) ? await db.query('SELECT file_key FROM document_revisions WHERE document_id = $1 AND id = $2', [doc.id, rid]) : []
@@ -887,7 +961,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   app.post('/api/documents/:id/pages/insert', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const up = await pageToolUpload(req, reply)
     if (!up) return
@@ -898,7 +972,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.post('/api/documents/:id/pages/replace', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const up = await pageToolUpload(req, reply)
     if (!up) return
@@ -910,20 +984,20 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.post('/api/documents/:id/pages/delete', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const pages = (req.body as any)?.pages
     return runPageOp(req, reply, doc, { type: 'delete', pages }, `Deleted ${Array.isArray(pages) ? describePages(pages) : 'pages'}`)
   })
 
   app.post('/api/documents/:id/pages/reorder', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     return runPageOp(req, reply, doc, { type: 'reorder', order: (req.body as any)?.order }, 'Reordered pages')
   })
 
   app.post('/api/documents/:id/pages/rotate', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const b = (req.body ?? {}) as any
     const deg = b.degrees === undefined ? 90 : Number(b.degrees)
@@ -946,13 +1020,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   app.get('/api/documents/:id/scales', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     return db.query(`SELECT ${SCALE_COLUMNS} FROM page_scales WHERE document_id = $1 ORDER BY page`, [doc.id])
   })
 
   app.put('/api/documents/:id/scales/:page', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const page = Number((req.params as any).page)
     const b = (req.body ?? {}) as any
@@ -964,7 +1038,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.put('/api/documents/:id/scales', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const b = (req.body ?? {}) as any
     if (!validPpf(b.points_per_foot) || !Array.isArray(b.pages) || !b.pages.length || b.pages.length > 5000 || !b.pages.every(validPage))
@@ -982,7 +1056,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.delete('/api/documents/:id/scales/:page', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
     const page = Number((req.params as any).page)
     if (!validPage(page)) return reply.code(400).send({ error: 'Bad page' })
@@ -994,7 +1068,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // ---- Layers ----
   app.get('/api/projects/:id/layers', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    if (!(await requireCap(req, reply, id, 'view'))) return
     return db.query('SELECT * FROM layers WHERE project_id = $1 ORDER BY sort, created_at', [id])
   })
 
@@ -1005,7 +1079,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   app.post('/api/projects/:id/layers', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'editor'))) return
+    if (!(await requireCap(req, reply, id, 'plans.edit'))) return
     const { name, color } = (req.body ?? {}) as any
     if (!String(name ?? '').trim()) return reply.code(400).send({ error: 'Layer name is required' })
     const [layer] = await db.query(
@@ -1016,16 +1090,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return layer
   })
 
-  async function layerWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+  async function layerWithAccess(req: FastifyRequest, reply: FastifyReply, cap: Cap) {
     const { id } = req.params as any
     const [layer] = await db.query('SELECT * FROM layers WHERE id = $1', [id])
     if (!layer) { reply.code(404).send({ error: 'Not found' }); return null }
-    if (!(await requireRole(req, reply, layer.project_id, min))) return null
+    if (!(await requireCap(req, reply, layer.project_id, cap))) return null
     return layer
   }
 
   app.patch('/api/layers/:id', { preHandler: auth }, async (req, reply) => {
-    const layer = await layerWithAccess(req, reply, 'editor')
+    const layer = await layerWithAccess(req, reply, 'plans.edit')
     if (!layer) return
     const { name, color } = (req.body ?? {}) as any
     const [updated] = await db.query(
@@ -1036,7 +1110,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.delete('/api/layers/:id', { preHandler: auth }, async (req, reply) => {
-    const layer = await layerWithAccess(req, reply, 'admin')
+    const layer = await layerWithAccess(req, reply, 'plans.delete')
     if (!layer) return
     await db.query('DELETE FROM layers WHERE id = $1', [layer.id])
     await layersChanged(layer.project_id, req)
@@ -1056,6 +1130,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         label: String(f.label).trim(),
         type: f.type,
         ...(f.type === 'select' ? { options: (Array.isArray(f.options) ? f.options : []).map(String).filter(Boolean) } : {}),
+        // Internal fields are hidden from clients (the role).
+        ...(f.internal === true ? { internal: true } : {}),
       })) : []
     const icon = String(b.icon ?? '')
     if (icon && !/^data:image\/(svg\+xml|png|jpeg|webp)[;,]/.test(icon)) return null
@@ -1063,8 +1139,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return { name, tag_prefix, fields, icon, color: String(b.color || '#868e96'), has_fov: !!b.has_fov }
   }
 
-  app.get('/api/symbol-sets', { preHandler: auth }, async () =>
-    db.query('SELECT * FROM symbol_sets WHERE NOT archived ORDER BY sort, created_at'))
+  app.get('/api/symbol-sets', { preHandler: auth }, async (req) => {
+    const rows = await db.query('SELECT * FROM symbol_sets WHERE NOT archived ORDER BY sort, created_at')
+    return (await orgVisibility(req.user)).internal ? rows : rows.map((r: any) => ({ ...r, fields: withoutInternalDefs(r.fields) }))
+  })
 
   app.post('/api/symbol-sets', { preHandler: auth }, async (req, reply) => {
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
@@ -1151,10 +1229,20 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // numeric columns come back as strings from Postgres; the client wants numbers
   const productOut = (r: any) => ({ ...r, unit_cost: Number(r.unit_cost), labor_hours: Number(r.labor_hours) })
 
-  app.get('/api/catalog', { preHandler: auth }, async () => ({
-    device_types: await db.query('SELECT * FROM device_types WHERE NOT archived ORDER BY symbol_set_id, sort, created_at'),
-    products: (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut),
-  }))
+  // The catalog is shared by every project, so what a person sees is decided across all their memberships (see orgVisibility):
+  // unit costs and labor hours come back only for app admins and for people whose role in at least one project can see costs
+  // (admin, pm, editors while that project's "editors see costs" is on, and viewers); internal field definitions only for
+  // people who are not clients everywhere.
+  app.get('/api/catalog', { preHandler: auth }, async (req) => {
+    const vis = await orgVisibility(req.user)
+    const types = await db.query('SELECT * FROM device_types WHERE NOT archived ORDER BY symbol_set_id, sort, created_at')
+    const products = (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut)
+    return {
+      device_types: vis.internal ? types : types.map((t: any) => ({ ...t, fields: withoutInternalDefs(t.fields) })),
+      products: vis.costs ? products : products.map(stripProductCosts),
+      can_see_costs: vis.costs,
+    }
+  })
 
   // ---- Standard device library: symbol sets and device types for the built-in icon set (admins; only ever adds or fills blanks) ----
   app.get('/api/catalog/standard-library', { preHandler: auth }, async (req, reply) => {
@@ -1344,35 +1432,37 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const STATUSES = ['', 'planned', 'installed', 'tested', 'punch']
 
   app.get('/api/documents/:id/markups', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'viewer')
+    const doc = await documentWithAccess(req, reply, 'view')
     if (!doc) return
     const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
-    return db.query(
+    const rows = await db.query(
       `SELECT ${cols}, cu.name AS created_by_name, uu.name AS updated_by_name
        FROM markups m LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
        WHERE m.document_id = $1 AND NOT m.deleted ORDER BY m.created_at`, [doc.id])
+    return visibleMarkups(accessOf(req), rows)
   })
 
   app.get('/api/projects/:id/markups', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    if (!(await requireCap(req, reply, id, 'view'))) return
     const type = (req.query as any)?.type
     const params: any[] = [id]
     let typeClause = ''
     if (typeof type === 'string' && type) { params.push(type); typeClause = ' AND m.type = $2' }
     const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
-    return db.query(
+    const rows = await db.query(
       `SELECT ${cols}, cu.name AS created_by_name, uu.name AS updated_by_name, d.name AS document_name,
               (SELECT count(*)::int FROM attachments a WHERE a.markup_id = m.id) AS photo_count
        FROM markups m JOIN documents d ON d.id = m.document_id
        LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
        WHERE d.project_id = $1 AND NOT m.deleted${typeClause}
        ORDER BY d.name, m.page, m.created_at`, params)
+    return visibleMarkups(accessOf(req), rows)
   })
 
   app.get('/api/projects/:id/scales', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'viewer'))) return
+    if (!(await requireCap(req, reply, id, 'view'))) return
     return db.query(
       `SELECT s.document_id, s.page, s.points_per_foot, s.label
        FROM page_scales s JOIN documents d ON d.id = s.document_id
@@ -1436,7 +1526,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const [m] = await db.query(
       'SELECT d.project_id FROM markups m JOIN documents d ON d.id = m.document_id WHERE m.id = $1', [markupId])
     if (!m) return reply.code(404).send({ error: 'Not found' })
-    if (!(await requireRole(req, reply, m.project_id, 'viewer'))) return
+    const access = await requireCap(req, reply, m.project_id, 'view')
+    if (!access) return
+    if (access.role === 'sub') {
+      const [mk] = await db.query('SELECT symbol_set_id, layer_id FROM markups WHERE id = $1', [markupId])
+      if (!mk || !canSeeMarkup(access, mk)) return reply.code(404).send({ error: 'Not found' })
+    }
     const rows = await db.query(
       `SELECT e.id, e.at, e.action, e.changes, u.id AS uid, u.name AS uname, u.email AS uemail
        FROM markup_events e LEFT JOIN users u ON u.id = e.user_id
@@ -1451,9 +1546,27 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // sends `base_version`, the version its edit was based on): if the markup was deleted, or moved/rotated/restored by a
   // page operation, after that version, the edit is NOT applied and the answer is 409 { conflict: true, current } so
   // the client can adopt the server's page/geometry. `restore: true` (undo of a delete) skips that check.
+  /**
+   * True when the request body changes nothing but fields, status and notes (notes live in `fields`) compared with the stored row:
+   * what field and sub users are allowed to send. Blank ids/tag in the body mean "unchanged".
+   */
+  function onlyFieldChanges(existing: any, b: any): boolean {
+    const id = (v: unknown) => (v ? String(v).toLowerCase() : null)
+    return b.page === existing.page && String(b.type) === existing.type
+      && same(b.geometry, existing.geometry) && same(b.style ?? {}, existing.style ?? {})
+      && String(b.text ?? '') === (existing.text ?? '')
+      && id(b.layer_id) === id(existing.layer_id) && id(b.symbol_set_id) === id(existing.symbol_set_id)
+      && id(b.device_type_id) === id(existing.device_type_id) && id(b.product_id) === id(existing.product_id)
+      && (String(b.tag ?? '').trim() === '' || String(b.tag).trim() === existing.tag)
+  }
+
   app.put('/api/documents/:id/markups/:markupId', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'markup.fields')
     if (!doc) return
+    const access = accessOf(req)
+    // Field and sub users can only edit what already exists: no creating, moving, resizing or restoring.
+    const restricted = !accessCan(access, 'markup.geometry')
+    if (!restricted && !accessCan(access, 'markup.create')) return reply.code(403).send({ error: 'Not allowed' })
     const { markupId } = req.params as any
     const b = (req.body ?? {}) as any
     if (!/^[0-9a-f-]{36}$/i.test(markupId)) return reply.code(400).send({ error: 'Bad markup id' })
@@ -1497,6 +1610,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       await q('SELECT pg_advisory_xact_lock(hashtext($1))', [`markup|${markupId}`])
       const [existing] = await q('SELECT * FROM markups WHERE id = $1 FOR UPDATE', [markupId])
       if (existing && existing.document_id !== doc.id) throw new HttpError(409, 'Markup belongs to another document')
+      if (restricted) {
+        if (!existing || existing.deleted) throw new HttpError(403, 'You cannot add markups')
+        if (!canSeeMarkup(access, existing)) throw new HttpError(403, 'Not allowed')
+        if (!onlyFieldChanges(existing, b)) throw new HttpError(403, 'You can only change device fields, status and notes')
+      }
       if (existing && baseVersion !== null && !restore && Number(existing.struct_version ?? 0) > baseVersion) {
         const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
         const [current] = await q(
@@ -1505,10 +1623,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
            WHERE m.id = $1`, [markupId])
         return { conflict: current as any }
       }
-      let tag = clientTag
+      let tag = restricted ? existing.tag : clientTag
       let autoPrefix: string | null = null
       // An update that leaves the tag blank keeps the one it has; only a new device draws the next number.
-      if (prefix !== null && !tag) {
+      if (!restricted && prefix !== null && !tag) {
         if (existing && !existing.deleted && existing.tag && existing.symbol_set_id === b.symbol_set_id) tag = existing.tag
         else autoPrefix = prefix
       }
@@ -1534,8 +1652,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
          symbol_set_id = EXCLUDED.symbol_set_id, device_type_id = EXCLUDED.device_type_id, product_id = EXCLUDED.product_id, tag = EXCLUDED.tag, status = EXCLUDED.status, fields = EXCLUDED.fields,
          deleted = false, version = markups.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()
        RETURNING ${MARKUP_COLUMNS}`,
-      [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
-        String(b.text ?? ''), layerId, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id, deviceTypeId, productId])
+      // A restricted user's row keeps every stored value except fields and status (checked above).
+      restricted
+        ? [markupId, doc.id, existing.page, existing.type, JSON.stringify(existing.geometry), JSON.stringify(existing.style ?? {}),
+          existing.text, existing.layer_id, existing.symbol_set_id, tag, status, JSON.stringify(fields), req.user.id, existing.device_type_id, existing.product_id]
+        : [markupId, doc.id, b.page, String(b.type), JSON.stringify(b.geometry), JSON.stringify(b.style ?? {}),
+          String(b.text ?? ''), layerId, b.symbol_set_id || null, tag, status, JSON.stringify(fields), req.user.id, deviceTypeId, productId])
       return { row: r, existing }
     })
     if ('conflict' in out) {
@@ -1552,12 +1674,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const [names] = await db.query(
       `SELECT (SELECT name FROM users WHERE id = $1) AS created_by_name, (SELECT name FROM users WHERE id = $2) AS updated_by_name`,
       [row.created_by, row.updated_by])
-    realtime.markupChanged(doc.id, { ...row, ...names }, req.user.id, cid(req))
+    realtime.markupChanged(doc.id, { ...row, ...names }, req.user.id, cid(req), realtime.hasRole(doc.id, 'client') ? await internalFieldKeys() : undefined, existing && !existing.deleted ? existing : null)
     return row
   })
 
   app.delete('/api/documents/:id/markups/:markupId', { preHandler: auth }, async (req, reply) => {
-    const doc = await documentWithAccess(req, reply, 'editor')
+    const doc = await documentWithAccess(req, reply, 'markup.delete')
     if (!doc) return
     const { markupId } = req.params as any
     const gone = await db.query(
@@ -1594,24 +1716,28 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return v !== undefined && v !== '' && Number.isInteger(n) && n > 0 && n < 100000 ? n : null
   }
 
-  async function markupWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+  async function markupWithAccess(req: FastifyRequest, reply: FastifyReply, cap: Cap) {
     const { markupId } = req.params as any
     if (!UUID_RE.test(String(markupId))) { reply.code(404).send({ error: 'Not found' }); return null }
     const [m] = await db.query(
       'SELECT m.*, d.project_id FROM markups m JOIN documents d ON d.id = m.document_id WHERE m.id = $1', [markupId])
     if (!m || m.deleted) { reply.code(404).send({ error: 'Not found' }); return null }
-    if (!(await requireRole(req, reply, m.project_id, min))) return null
+    const access = await requireCap(req, reply, m.project_id, cap)
+    if (!access) return null
+    if (!canSeeMarkup(access, m)) { reply.code(404).send({ error: 'Not found' }); return null }
     return m
   }
 
-  async function attachmentWithAccess(req: FastifyRequest, reply: FastifyReply, min: Role) {
+  async function attachmentWithAccess(req: FastifyRequest, reply: FastifyReply, cap: Cap) {
     const { id } = req.params as any
     if (!UUID_RE.test(String(id))) { reply.code(404).send({ error: 'Not found' }); return null }
     const [a] = await db.query(
-      `SELECT a.*, d.project_id FROM attachments a
+      `SELECT a.*, d.project_id, m.symbol_set_id, m.layer_id FROM attachments a
        JOIN markups m ON m.id = a.markup_id JOIN documents d ON d.id = m.document_id WHERE a.id = $1`, [id])
     if (!a) { reply.code(404).send({ error: 'Not found' }); return null }
-    if (!(await requireRole(req, reply, a.project_id, min))) return null
+    const access = await requireCap(req, reply, a.project_id, cap)
+    if (!access) return null
+    if (!canSeeMarkup(access, a)) { reply.code(404).send({ error: 'Not found' }); return null }
     return a
   }
 
@@ -1633,14 +1759,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const attRow = async (id: string) => (await db.query(`SELECT ${ATT_COLUMNS} FROM attachments WHERE id = $1`, [id]))[0]
 
   app.get('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
-    const m = await markupWithAccess(req, reply, 'viewer')
+    const m = await markupWithAccess(req, reply, 'view')
     if (!m) return
     return db.query(`SELECT ${ATT_COLUMNS} FROM attachments WHERE markup_id = $1 ORDER BY created_at, id`, [m.id])
   })
 
   // Text fields (id, caption, width, height) must come before the `photo` file part.
   app.post('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
-    const m = await markupWithAccess(req, reply, 'editor')
+    const m = await markupWithAccess(req, reply, 'photos.edit')
     if (!m) return
     const file = await req.file({ limits: { fileSize: PHOTO_MAX } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
@@ -1673,7 +1799,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.patch('/api/attachments/:id', { preHandler: auth }, async (req, reply) => {
-    const a = await attachmentWithAccess(req, reply, 'editor')
+    const a = await attachmentWithAccess(req, reply, 'photos.edit')
     if (!a) return
     const caption = (req.body as any)?.caption
     if (typeof caption !== 'string') return reply.code(400).send({ error: 'caption is required' })
@@ -1683,7 +1809,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.put('/api/attachments/:id/annotated', { preHandler: auth }, async (req, reply) => {
-    const a = await attachmentWithAccess(req, reply, 'editor')
+    const a = await attachmentWithAccess(req, reply, 'photos.edit')
     if (!a) return
     const file = await req.file({ limits: { fileSize: PHOTO_MAX } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
@@ -1697,7 +1823,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.delete('/api/attachments/:id', { preHandler: auth }, async (req, reply) => {
-    const a = await attachmentWithAccess(req, reply, 'editor')
+    const a = await attachmentWithAccess(req, reply, 'photos.edit')
     if (!a) return
     await db.query('DELETE FROM attachments WHERE id = $1', [a.id])
     await recordEvent(a.markup_id, req.user.id, 'photo_deleted', { attachment_id: a.id, caption: a.caption })
@@ -1708,7 +1834,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   })
 
   app.get('/api/attachments/:id/file', { preHandler: fileAuth }, async (req, reply) => {
-    const a = await attachmentWithAccess(req, reply, 'viewer')
+    const a = await attachmentWithAccess(req, reply, 'view')
     if (!a) return
     const variant = (req.query as any)?.variant
     const key = variant === 'original' ? a.file_key : variant === 'annotated' ? a.annotated_key : (a.annotated_key ?? a.file_key)
@@ -1752,7 +1878,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return reply.send(stream)
   })
 
-  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX })
+  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX })
+  await registerBackups({ app, db, auth })
 
   // ---- Built web app (production) ----
   if (webDir && existsSync(webDir)) {

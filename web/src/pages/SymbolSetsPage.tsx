@@ -99,7 +99,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
         <div className="row wrap">
           <h2>Catalog</h2>
           <span className="spacer" />
-          <button onClick={() => exportCatalogExcel(data, sets).catch(e => setError(e.message))} title="Download the catalog as an Excel workbook">Export Excel</button>
+          {catalog.canSeeCosts && <button onClick={() => exportCatalogExcel(data, sets).catch(e => setError(e.message))} title="Download the catalog as an Excel workbook">Export Excel</button>}
           {admin && <button onClick={() => setDialog('excel')}>Import Excel</button>}
           {admin && <button onClick={() => setDialog('btx')} title="Convert a Bluebeam Revu tool set into device types">Import Revu .btx</button>}
           {admin && <button onClick={() => setDialog('library')} title="Add the built-in symbol sets and device types, or fill in missing icons and defaults. Never deletes anything.">Install / update standard library</button>}
@@ -175,7 +175,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
                     onRemoved={async (_id, setId) => { await reload(); setSel({ kind: 'set', setId }) }} />
                 )}
                 <h4>Products</h4>
-                <ProductsTable products={products} allProducts={data.products} type={selType} set={selSet} admin={admin} onChanged={reload} onError={setError} />
+                <ProductsTable products={products} allProducts={data.products} type={selType} set={selSet} admin={admin} showCosts={catalog.canSeeCosts} onChanged={reload} onError={setError} />
               </>
             )}
 
@@ -183,7 +183,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
               <>
                 <h3>Standalone accessories</h3>
                 <p className="muted small">Parts that belong to no device type (bases, mounts, power supplies). Attach them to products as accessories.</p>
-                <ProductsTable products={products} allProducts={data.products} type={null} admin={admin} onChanged={reload} onError={setError} />
+                <ProductsTable products={products} allProducts={data.products} type={null} admin={admin} showCosts={catalog.canSeeCosts} onChanged={reload} onError={setError} />
               </>
             )}
           </section>

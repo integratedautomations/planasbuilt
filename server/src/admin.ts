@@ -10,7 +10,8 @@ import { mailerFor, smtpProblem } from './mail.js'
 import { getSection, maskSection, mergeSection, putSection } from './settings.js'
 import type { SectionName } from './settings.js'
 
-type Role = 'admin' | 'editor' | 'viewer'
+import { isRole, normalizeScope, ROLES } from './roles.js'
+import type { Cap, Role, Access } from './roles.js'
 type Auth = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
 
 export interface AdminContext {
@@ -21,13 +22,15 @@ export interface AdminContext {
   fileAuth: Auth
   storage: Storage
   forgetUser: (id: string) => void
-  requireRole: (req: FastifyRequest, reply: FastifyReply, projectId: string, min: Role) => Promise<Role | null>
+  requireCap: (req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) => Promise<Access | null>
   sign: (u: { id: string; email: string; is_admin: boolean; token_version?: number }) => string
   realtime: Realtime
   /** Route options carrying the per-IP rate limit for unauthenticated endpoints. */
   rl: { config: { rateLimit: { max: number; timeWindow: string } } }
   keepsAnAdmin: (projectId: string, userId: string) => Promise<boolean>
   dropFromProject: (userId: string, projectId: string) => Promise<void>
+  /** Pushes a changed role/scope to the person's open sockets. */
+  refreshAccess: (userId: string, projectId: string) => Promise<void>
   publicUser: (u: any) => any
   /** The site's public origin (PUBLIC_URL), or null when unset. Every emailed or returned link is built from it. */
   publicUrl: string | null
@@ -37,7 +40,6 @@ export interface AdminContext {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
-const ROLES = ['admin', 'editor', 'viewer']
 const INVITE_DAYS = 7, RESET_DAYS = 1
 const LOGO_MAX = 1024 * 1024
 const LOGO_TYPES: Record<string, string> = { 'image/png': 'png', 'image/svg+xml': 'svg' }
@@ -48,7 +50,7 @@ const NO_PASSWORD = '!'
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
 export async function registerAdmin(ctx: AdminContext) {
-  const { app, db, auth, fileAuth, storage, forgetUser, requireRole, sign, realtime, rl, keepsAnAdmin, dropFromProject, publicUser, publicUrl, inviteRateLimitMax } = ctx
+  const { app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax } = ctx
 
   const adminOnly = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.user.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return false }
@@ -402,17 +404,22 @@ export async function registerAdmin(ctx: AdminContext) {
       await db.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [project_id, id])
       await dropFromProject(id, project_id)
     } else {
-      if (!ROLES.includes(role)) return reply.code(400).send({ error: 'Bad role' })
+      if (!isRole(role)) return reply.code(400).send({ error: 'Bad role' })
       if (role !== 'admin' && !(await keepsAnAdmin(project_id, id))) return reply.code(400).send({ error: 'A project needs at least one admin' })
+      const scope = role !== 'sub' ? normalizeScope(null) : (req.body as any).scope !== undefined ? normalizeScope((req.body as any).scope) : null
       await db.query(
-        `INSERT INTO project_members VALUES ($1,$2,$3) ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`, [project_id, id, role])
+        `INSERT INTO project_members (project_id, user_id, role, scope) VALUES ($1,$2,$3, coalesce($4::jsonb, '{"sets":[],"layers":[]}'::jsonb))
+         ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role,
+           scope = CASE WHEN $4::jsonb IS NULL THEN project_members.scope ELSE EXCLUDED.scope END`,
+        [project_id, id, role, scope ? JSON.stringify(scope) : null])
+      await refreshAccess(id, project_id)
     }
     return userDetail(id)
   })
 
   app.delete('/api/projects/:id/members/:userId', { preHandler: auth }, async (req, reply) => {
     const { id, userId } = req.params as any
-    if (!(await requireRole(req, reply, id, 'admin'))) return
+    if (!(await requireCap(req, reply, id, 'members.manage'))) return
     if (!UUID_RE.test(String(userId))) return reply.code(404).send({ error: 'Not found' })
     if (!(await keepsAnAdmin(id, userId))) return reply.code(400).send({ error: 'A project needs at least one admin' })
     await db.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [id, userId])
@@ -505,7 +512,7 @@ export async function registerAdmin(ctx: AdminContext) {
   // A project admin can invite someone straight into their project (never as an app admin).
   app.post('/api/projects/:id/invites', { preHandler: auth, ...inviteLimit }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireRole(req, reply, id, 'admin'))) return
+    if (!(await requireCap(req, reply, id, 'members.manage'))) return
     const b = (req.body ?? {}) as any
     return createInvite(req, reply, {
       email: String(b.email ?? ''), name: b.name, isAdmin: false, projects: [{ id, role: ROLES.includes(b.role) ? b.role : 'editor' }],

@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS project_members (
   project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
   user_id uuid REFERENCES users(id) ON DELETE CASCADE,
-  role text NOT NULL CHECK (role IN ('admin','editor','viewer')),
+  role text NOT NULL,
   PRIMARY KEY (project_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS documents (
@@ -226,6 +226,14 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_version int NOT NULL DEFAULT 0
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_create_projects boolean NOT NULL DEFAULT false;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS completed_at timestamptz;
+-- Project roles: admin, pm, editor, field, sub, client, viewer (server/src/roles.ts). The old 3-role CHECK is replaced.
+ALTER TABLE project_members DROP CONSTRAINT IF EXISTS project_members_role_check;
+ALTER TABLE project_members DROP CONSTRAINT IF EXISTS project_members_role_chk;
+ALTER TABLE project_members ADD CONSTRAINT project_members_role_chk CHECK (role IN ('admin','pm','editor','field','sub','client','viewer'));
+-- What a sub may see and work on: {"sets": [symbol set ids], "layers": [layer ids]}. Empty = nothing.
+ALTER TABLE project_members ADD COLUMN IF NOT EXISTS scope jsonb NOT NULL DEFAULT '{"sets":[],"layers":[]}';
+-- Whether editors may see unit costs and labor hours in this project (pm and admin always can). On = behaviour before roles existed.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS editors_see_costs boolean NOT NULL DEFAULT true;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS device_scale double precision NOT NULL DEFAULT 1;
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,
