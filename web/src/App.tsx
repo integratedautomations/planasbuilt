@@ -14,6 +14,7 @@ import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { ViewerPage } from './pages/ViewerPage'
 import { BomPage } from './pages/BomPage'
+import { DevicesPage } from './devices/DevicesPage'
 import { SymbolSetsPage } from './pages/SymbolSetsPage'
 import { SettingsPage } from './settings/SettingsPage'
 import { UsersPage } from './settings/UsersPage'
@@ -85,6 +86,7 @@ export default function App() {
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
       <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
       <Route path="/projects/:projectId/documents/:documentId" element={<ViewerPage />} />
+      <Route path="/projects/:projectId/devices" element={<DevicesPage user={user} />} />
       <Route path="/projects/:projectId/bom" element={<BomPage user={user} />} />
       <Route path="/symbols" element={<SymbolSetsPage user={user} />} />
       <Route path="/catalog" element={<SymbolSetsPage user={user} />} />

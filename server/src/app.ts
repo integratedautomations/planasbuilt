@@ -1449,6 +1449,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const params: any[] = [id]
     let typeClause = ''
     if (typeof type === 'string' && type) { params.push(type); typeClause = ' AND m.type = $2' }
+    // Optional paging: ?limit=N (1..2000) [&cursor=<from the previous page's `next`>]. Without limit the answer is the plain array.
+    const q = (req.query as any) ?? {}
+    let paged: { limit: number; offset: number } | null = null
+    let pageClause = ''
+    if (q.limit !== undefined) {
+      const limit = Number(q.limit), offset = q.cursor === undefined || q.cursor === '' ? 0 : Number(q.cursor)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 2000 || !Number.isInteger(offset) || offset < 0)
+        return reply.code(400).send({ error: 'limit must be 1-2000 and cursor a value returned by a previous page' })
+      paged = { limit, offset }
+      pageClause = ` LIMIT ${limit + 1} OFFSET ${offset}`
+    }
     const cols = MARKUP_COLUMNS.split(', ').map(c => `m.${c}`).join(', ')
     const rows = await db.query(
       `SELECT ${cols}, cu.name AS created_by_name, uu.name AS updated_by_name, d.name AS document_name,
@@ -1456,8 +1467,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
        FROM markups m JOIN documents d ON d.id = m.document_id
        LEFT JOIN users cu ON cu.id = m.created_by LEFT JOIN users uu ON uu.id = m.updated_by
        WHERE d.project_id = $1 AND NOT m.deleted${typeClause}
-       ORDER BY d.name, m.page, m.created_at`, params)
-    return visibleMarkups(accessOf(req), rows)
+       ORDER BY d.name, m.page, m.created_at, m.id${pageClause}`, params)
+    if (!paged) return visibleMarkups(accessOf(req), rows)
+    // Paged: ask for one extra row to know whether another page exists. The cursor is the offset of the next page.
+    const more = rows.length > paged.limit
+    return { items: await visibleMarkups(accessOf(req), more ? rows.slice(0, paged.limit) : rows), next: more ? String(paged.offset + paged.limit) : null }
   })
 
   app.get('/api/projects/:id/scales', { preHandler: auth }, async (req, reply) => {

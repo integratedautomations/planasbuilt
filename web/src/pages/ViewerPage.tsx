@@ -594,6 +594,17 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     if (isPhone) setShowList(false)
   }, [documentId, projectId, navigate, isPhone])
 
+  // Deep link from the Devices page: ?markup=<id>&page=<n> selects and zooms to that device, then the params are dropped.
+  useEffect(() => {
+    const id = searchParams.get('markup')
+    if (!id) return
+    const pg = Number(searchParams.get('page'))
+    pendingJump.current = { id, page: Number.isInteger(pg) && pg >= 1 ? pg : 1 }
+    setPageNum(pendingJump.current.page)
+    setJumpTick(n => n + 1)
+    setSearchParams(sp => { const n = new URLSearchParams(sp); n.delete('markup'); n.delete('page'); return n }, { replace: true })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const j = pendingJump.current
     if (!j || !page || !pdf || pageSrc !== pdf || pdfFor !== documentId || pageNum !== j.page || page.pageNumber !== j.page || !store.loaded) return
@@ -1456,6 +1467,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           {!isPhone && <MenuItemBtn icon="maximize" label="Focus mode" hint={hotkeys['view.focus'] || undefined} onClick={() => setFocus(true)} />}
           <MenuSep />
           <MenuItemBtn icon="keyboard" label="Hotkeys…" onClick={() => setShowHotkeys(true)} />
+          <Link to={`/projects/${projectId}/devices`} role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="list" size={16} /></span><span className="vmenu-label">Devices (whole project)</span></Link>
           <Link to="/settings" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Settings</span></Link>
         </MoreMenu>
       </header>

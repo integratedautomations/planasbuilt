@@ -372,6 +372,22 @@ describe('milestone 1 api', () => {
       expect(devices.length).toBeLessThan(all.length)
       expect(devices.every((m: any) => m.type === 'device')).toBe(true)
 
+      // Paging: pages concatenate to the unpaged answer, in the same order
+      const first = (await app.inject({ url: `/api/projects/${projectId}/markups?limit=1`, headers: h })).json()
+      expect(first.items).toHaveLength(1)
+      expect(first.next).toBe('1')
+      const got: any[] = [...first.items]
+      for (let cur = first.next; cur;) {
+        const pg = (await app.inject({ url: `/api/projects/${projectId}/markups?limit=1&cursor=${cur}`, headers: h })).json()
+        got.push(...pg.items); cur = pg.next
+      }
+      expect(got.map((m: any) => m.id)).toEqual(all.map((m: any) => m.id))
+      const big = (await app.inject({ url: `/api/projects/${projectId}/markups?limit=2000&type=device`, headers: h })).json()
+      expect(big.next).toBeNull()
+      expect(big.items.map((m: any) => m.id)).toEqual(devices.map((m: any) => m.id))
+      expect((await app.inject({ url: `/api/projects/${projectId}/markups?limit=0`, headers: h })).statusCode).toBe(400)
+      expect((await app.inject({ url: `/api/projects/${projectId}/markups?limit=5&cursor=abc`, headers: h })).statusCode).toBe(400)
+
       const viewer = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'tech@x.com', password: 'password1' } })).json().token
       const vh = { authorization: `Bearer ${viewer}` }
       expect((await app.inject({ url: `/api/projects/${projectId}/markups`, headers: vh })).statusCode).toBe(200)

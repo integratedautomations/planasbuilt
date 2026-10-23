@@ -235,6 +235,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
           <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
+          <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/devices`} title="Every device in the project, without opening a plan">Devices</Link>
         </div>
         {tab === 'members' && isAdmin && project && (
           <label className="check" title="Project managers and admins always see costs">
