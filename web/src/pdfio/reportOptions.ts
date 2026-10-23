@@ -30,13 +30,15 @@ export interface ReportOptions {
   includeEmptyFields: boolean
   includeBom: boolean
   includeLegend: boolean
+  /** Append the wiring riser (tabloid pages) built from the cable runs. */
+  includeWiring: boolean
 }
 
 export const DEFAULT_REPORT_OPTIONS: ReportOptions = {
   titlePage: true, address: '', companyName: '', preparedBy: '', date: '',
   docIds: null, pageRanges: {}, includeSheets: true, includeDevices: true,
   statuses: [], setIds: [], groupBy: 'sheet', photos: 'all', photosPerPage: 4,
-  includeEmptyFields: true, includeBom: false, includeLegend: false,
+  includeEmptyFields: true, includeBom: false, includeLegend: false, includeWiring: false,
 }
 
 const str = (v: unknown, d = '') => (typeof v === 'string' ? v : d)
@@ -65,6 +67,7 @@ export function normalizeReportOptions(raw: unknown): ReportOptions {
     includeEmptyFields: bool(r.includeEmptyFields, D.includeEmptyFields),
     includeBom: bool(r.includeBom, D.includeBom),
     includeLegend: bool(r.includeLegend, D.includeLegend),
+    includeWiring: bool(r.includeWiring, D.includeWiring),
   }
 }
 

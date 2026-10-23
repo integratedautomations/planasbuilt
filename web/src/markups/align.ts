@@ -4,6 +4,7 @@ import type { Pt } from './geometry'
 import { WALL_FLAT, resolveMount } from './mount'
 import type { Mount } from './mount'
 import { faceAngle, norm180 } from './placeRotate'
+import { cornerBisector } from './snap'
 import type { SnapHit } from './snap'
 
 const round2 = (v: number) => Math.round(v * 100) / 100
@@ -13,7 +14,7 @@ export const ALIGN_BOX_TYPES: ReadonlySet<string> = new Set(['rect', 'text', 'cl
 
 /** Snaps with a direction that a device may turn to. */
 export const alignable = (hit: SnapHit | null | undefined): hit is SnapHit & { angle: number } =>
-  !!hit && hit.angle !== undefined && (hit.kind === 'pdf' || hit.kind === 'edge' || hit.kind === 'midpoint')
+  !!hit && hit.angle !== undefined && (hit.kind === 'pdf' || hit.kind === 'edge' || hit.kind === 'midpoint' || (hit.kind === 'endpoint' && !!hit.corner))
 
 /** The geometry with its centre moved to `c` (rotation is about the top-left, so turning a box moves its centre). */
 export function withCenter(g: BoxGeometry, c: Pt): BoxGeometry {
@@ -34,9 +35,11 @@ export function normalToward(lineDeg: number, on: Pt, side: Pt): number {
  * A device turned to a wall line. Its front (the round side of a wall "D", or the coverage direction) points away
  * from the line toward the side `pointer` is on; a wall D is also pushed back so its flat side lies on the line.
  * `hit.point` is the snapped point on the line. Free (unlocked) coverage turns; otherwise the device itself does.
+ * At a wall corner (`hit.corner`) the device is corner-mounted: its front (and coverage) points along the corner's bisector into the
+ * open side, and a wall D sits with its flat side across the corner.
  */
 export function alignDevice(g: BoxGeometry, hit: SnapHit & { angle: number }, pointer: Pt, mount: Mount | string | null | undefined): BoxGeometry {
-  const facing = normalToward(hit.angle, hit.point, pointer)
+  const facing = hit.corner ? cornerBisector(hit.corner) : normalToward(hit.angle, hit.point, pointer)
   const turned = faceAngle(g, facing)
   const r = Math.min(g.width, g.height) / 2
   const back = resolveMount(mount, g.mount) === 'wall' ? WALL_FLAT * r : 0

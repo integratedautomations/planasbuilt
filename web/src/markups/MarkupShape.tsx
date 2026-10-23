@@ -51,6 +51,10 @@ interface Props {
   ghost?: boolean
   /** Rows of a legend markup (computed by the viewer from all markups). */
   legendRows?: LegendRow[]
+  /** Cable only: label for the run (length with slack and drops); default is the drawn length. */
+  cableLabel?: string
+  /** Cable only: ends whose device is gone; each shows a small red cross. */
+  dangling?: ('from' | 'to')[]
 }
 
 export interface StackView { count: number; label: string; statuses: Status[] }
@@ -63,7 +67,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 function MarkupShapeInner(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDragMove: onDragMoveProp, snapHandle, onDblClick, showCones = true, stack, ghost, legendRows } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDragMove: onDragMoveProp, snapHandle, onDblClick, showCones = true, stack, ghost, legendRows, cableLabel, dangling } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && 'width' in g && showCones && hasCoverage(g.fov) ? g.fov : undefined
@@ -86,7 +90,7 @@ function MarkupShapeInner(props: Props) {
         draggable={draggable} listening={listening && !ghost} opacity={m.style.opacity}
         onDragMove={fov || onDragMoveProp ? onDragMove : undefined}
         onDragStart={onDragStart} onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
-        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
+        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} cableLabel={cableLabel} dangling={dangling} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
             : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} typeMount={typeMount} zoom={zoom} stack={stack} />)
           : m.type === 'legend' ? <LegendBody m={m} g={g} rows={legendRows ?? []} />
@@ -348,7 +352,7 @@ function hexAlpha(hex: string, a: number) {
   return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`
 }
 
-function PathBody({ m, g, zoom, scale, countNumber, areaPath }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number; areaPath?: string[] }) {
+function PathBody({ m, g, zoom, scale, countNumber, areaPath, cableLabel, dangling }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number; areaPath?: string[]; cableLabel?: string; dangling?: ('from' | 'to')[] }) {
   const { stroke, fill, strokeWidth, dash } = m.style
   const common = {
     points: g.points, stroke: stroke || '#e03131', strokeWidth,
@@ -427,14 +431,29 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath }: { m: Markup; g: 
         <>
           <Line {...common} />
           {scale && <MeasureLabel at={pathMidpoint(g.points)} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'}
-            text={formatFeetInches(feetOf(g.points, scale))} />}
+            text={cableLabel ?? formatFeetInches(feetOf(g.points, scale))} />}
           <Circle x={g.points[0]} y={g.points[1]} radius={strokeWidth * 1.6} fill={stroke || '#e03131'} />
           <Circle x={g.points[g.points.length - 2]} y={g.points[g.points.length - 1]} radius={strokeWidth * 1.6} fill={stroke || '#e03131'} />
+          {dangling?.map(end => (
+            <DanglingMark key={end} x={end === 'from' ? g.points[0] : g.points[g.points.length - 2]} y={end === 'from' ? g.points[1] : g.points[g.points.length - 1]} zoom={zoom} />
+          ))}
         </>
       )
     default:
       return <Line {...common} />
   }
+}
+
+/** A small red cross at a cable end whose device is gone. Sized in screen pixels. */
+function DanglingMark({ x, y, zoom }: { x: number; y: number; zoom: number }) {
+  const c = '#e03131'
+  return (
+    <Group x={x} y={y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false} name="dangling-end">
+      <Circle radius={8} fill="#fff" stroke={c} strokeWidth={1} opacity={0.9} />
+      <Line points={[-4.5, -4.5, 4.5, 4.5]} stroke={c} strokeWidth={2.2} lineCap="round" />
+      <Line points={[-4.5, 4.5, 4.5, -4.5]} stroke={c} strokeWidth={2.2} lineCap="round" />
+    </Group>
+  )
 }
 
 function PointHandles({ points, zoom, onChange, snap }: { points: number[]; zoom: number; onChange: (p: number[], done: boolean) => void; snap?: (index: number, x: number, y: number, ev: Event) => { x: number; y: number } | null }) {

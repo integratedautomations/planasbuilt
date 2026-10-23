@@ -39,8 +39,12 @@ export interface Product {
   active: boolean
 }
 
+/** A kind of cable (Cat6, 18/2...): drawn in `color`; removed ones stay listed as archived so existing cables keep their look. */
+export interface CableType { id: string; name: string; color: string; sort: number; archived?: boolean }
+
 export interface CatalogData {
   device_types: DeviceType[]; products: Product[]
+  cable_types?: CableType[]
   /** False when the server withheld unit costs and labor hours from this person (absent = they are shown). */
   can_see_costs?: boolean
 }

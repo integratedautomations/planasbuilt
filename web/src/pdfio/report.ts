@@ -15,6 +15,9 @@ import type { ExportInput } from './build'
 import { hexToRgb, sanitizeText, wrapText } from './stream'
 import { DEFAULT_REPORT_OPTIONS, deviceCounts, groupRows, limitPhotos, photoGrid, reportPages, rowIncluded, visiblePairs } from './reportOptions'
 import type { ReportOptions } from './reportOptions'
+import { DEFAULT_CABLE_SETTINGS } from '../markups/cables'
+import type { CableSettings } from '../markups/cables'
+import { drawRiserPages, riserPages } from '../wiring/riserPdf'
 
 export interface ReportPhoto { bytes: Uint8Array; caption: string }
 
@@ -42,6 +45,8 @@ export interface ReportInput {
   photosFor: (markupId: string) => Promise<ReportPhoto[]>
   /** What the report dialog asked for (defaults to everything). */
   options?: ReportOptions
+  /** Project cable defaults, for the lengths on the wiring riser. */
+  cableDefaults?: CableSettings
   onProgress?: (done: number, total: number, label: string) => void
 }
 
@@ -175,6 +180,16 @@ export async function buildReport(input: ReportInput): Promise<Uint8Array> {
     const body = bom.lines.map(l => [l.group, [l.manufacturer, l.model].filter(Boolean).join(' ') || l.name, String(l.qty), ...(costs ? [money(l.extCost), hours(l.extLabor)] : [])])
     body.push(['Total', '', String(bom.totals.qty), ...(costs ? [money(bom.totals.cost), hours(bom.totals.labor)] : [])])
     table(costs ? 'Bill of materials' : 'Parts list', costs ? ['Group', 'Item', 'Qty', 'Cost', 'Labor hrs'] : ['Group', 'Item', 'Qty'], body, costs ? [150, 190, 40, 70, 66] : [190, 250, 60])
+  }
+
+  // ---- wiring riser (tabloid pages)
+  if (opts.includeWiring) {
+    const pages = riserPages({
+      projectName: input.projectName, date: input.date, markups: input.markups.filter(m => !opts.docIds || opts.docIds.includes(m.document_id)),
+      symbolSets: input.symbolSets, catalog: input.catalog ?? EMPTY_CATALOG, docNames: new Map(input.sheets.map(s => [s.documentId, s.name])),
+      scaleFor, defaults: input.cableDefaults ?? DEFAULT_CABLE_SETTINGS,
+    })
+    await drawRiserPages(out, pages, input.icons)
   }
 
   // ---- flattened sheets

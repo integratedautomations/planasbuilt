@@ -1,6 +1,8 @@
 import { areaPathIn, buildAreaIndex, isArea, isSheetArea } from '../markups/areas'
 import { detectStacks, naturalCompare } from '../markups/stacks'
 import { circleStats, feetOf, formatArea, formatFeetInches, formatRadius, sqftOf } from '../markups/measure'
+import { cableLength } from '../markups/cables'
+import type { CableSettings } from '../markups/cables'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { FieldDef, Markup, SymbolSet } from '../markups/types'
 import { productLabel } from '../catalog/catalog'
@@ -56,6 +58,8 @@ export interface BuildContext {
   scaleFor?: (documentId: string, page: number) => number | null
   /** Include non-device markups (areas are never included). */
   showAll?: boolean
+  /** Project cable defaults: with these, a cable's value is its total length (slack, drops and run count included). */
+  cableDefaults?: CableSettings
 }
 
 export const statusLabel = (s: string | undefined) => STATUSES.find(x => x.value === s)?.label ?? ''
@@ -81,6 +85,7 @@ export function buildRows(markups: Markup[], ctx: BuildContext): ScheduleRow[] {
   for (const [docId, list] of byDoc) {
     const idx = buildAreaIndex(list.filter(isArea))
     const stacks = detectStacks(list)
+    const byId = ctx.cableDefaults ? new Map(list.map(x => [x.id, x])) : null
     for (const m of list) {
       if (isArea(m) || isSheetArea(m)) continue
       const isDevice = m.type === 'device'
@@ -90,7 +95,11 @@ export function buildRows(markups: Markup[], ctx: BuildContext): ScheduleRow[] {
       const product = m.product_id ? ctx.catalog?.products.get(m.product_id) : undefined
       const path = areaPathIn(idx, m)
       const docName = m.document_name ?? ctx.docNames?.get(docId) ?? ''
-      const meas = isDevice ? { value: '', num: null, unit: '' } : measurement(m, ctx.scaleFor?.(docId, m.page) ?? null)
+      let meas = isDevice ? { value: '', num: null, unit: '' } : measurement(m, ctx.scaleFor?.(docId, m.page) ?? null)
+      if (byId && m.type === 'cable') {
+        const len = cableLength(m, ctx.scaleFor?.(docId, m.page) ?? null, ctx.cableDefaults!, byId)
+        if (len) meas = { value: formatFeetInches(len.totalFt), num: len.totalFt, unit: 'ft' }
+      }
       rows.push({
         id: m.id, markup: m, type: m.type, isDevice,
         tag: m.tag ?? '', setId: m.symbol_set_id ?? '', setName: set?.name ?? '',

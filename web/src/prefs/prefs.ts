@@ -11,6 +11,7 @@ import { isThemePref } from './theme'
 import type { ThemePref } from './theme'
 import { DEFAULT_SNAP, normalizeSnap } from '../markups/snapConfig'
 import type { SnapSettings } from '../markups/snapConfig'
+import { normalizeHoldMs } from '../markups/placeRotate'
 
 export interface Prefs {
   /** Only the combos the user changed ('' = unassigned); see hotkeys.resolveHotkeys. */
@@ -40,10 +41,12 @@ export interface Prefs {
   theme: ThemePref
   /** Snapping: master switch, per-source toggles, align-to-walls and the grid. */
   snap: SnapSettings
+  /** Hold time (ms, 0 to 1500) before a placed device starts rotating. null = defaults (mouse 250 ms, touch the long-press time). */
+  holdRotateMs: number | null
 }
 
 export type PrefKey = keyof Prefs
-export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap', 'propsPinned', 'density', 'theme', 'snap']
+export const PREF_KEYS: PrefKey[] = ['hotkeys', 'layout', 'favorites', 'recent', 'popupFields', 'listColumns', 'chest', 'reportOptions', 'printOptions', 'replaceOnOverlap', 'propsPinned', 'density', 'theme', 'snap', 'holdRotateMs']
 
 export const RECENT_MAX = 10
 export const DEFAULT_POPUP_FIELDS = ['tag', 'type', 'status', 'area']
@@ -63,6 +66,7 @@ export const DEFAULT_PREFS: Prefs = {
   density: 'auto',
   theme: 'auto',
   snap: DEFAULT_SNAP,
+  holdRotateMs: null,
 }
 
 /** What is stored locally and on the server: the values the user set, each stamped with when (ms since epoch). */
@@ -101,6 +105,7 @@ export function sanitizeStored(raw: unknown): StoredPrefs {
   if (isDensityPref(d.density)) keep('density', d.density)
   if (isThemePref(d.theme)) keep('theme', d.theme)
   if (d.snap && typeof d.snap === 'object' && !Array.isArray(d.snap)) keep('snap', normalizeSnap(d.snap))
+  if (d.holdRotateMs === null || normalizeHoldMs(d.holdRotateMs) !== null) keep('holdRotateMs', normalizeHoldMs(d.holdRotateMs))
   return { data, stamps }
 }
 

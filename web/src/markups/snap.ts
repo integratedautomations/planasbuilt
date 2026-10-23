@@ -17,6 +17,20 @@ export interface SnapHit {
   angle?: number
   /** pdf only: the point is an end of a PDF segment (a corner), not just somewhere along it. */
   end?: boolean
+  /**
+   * A wall corner: two or more non-collinear segments meet here. `a` and `b` are the directions (page degrees, 0 = right, 90 = down)
+   * of the two walls bounding the open side the pointer is on (a sector under 180 degrees); the bisector is the middle of it.
+   */
+  corner?: Corner
+}
+
+export interface Corner { a: number; b: number }
+
+/** Bisector direction (page degrees) of a corner, pointing into its open side. */
+export function cornerBisector(c: Corner): number {
+  const span = (((c.b - c.a) % 360) + 360) % 360
+  const m = c.a + span / 2
+  return ((m + 180) % 360 + 360) % 360 - 180
 }
 
 /** Direction of a segment as an undirected line angle in (-90, 90]. */
@@ -78,6 +92,25 @@ export class SegIndex {
       const c = this.cell(cx, cy)
       if (c.s[c.s.length - 1] !== i) c.s.push(i)
     }
+  }
+
+  /** Directions (degrees 0..360) leaving (x, y) along every indexed segment that has an end there; duplicates within 1 degree merged. */
+  wallDirections(x: number, y: number, tol = 0.5, skip?: ReadonlySet<string>): number[] {
+    const dirs: number[] = []
+    const seen = new Set<number>()
+    for (const c of this.cellsAround(x, y, tol)) for (const i of c.s) {
+      if (seen.has(i)) continue
+      seen.add(i)
+      const id = this.segIds[i]
+      if (id && skip?.has(id)) continue
+      const x1 = this.segs[i * 4], y1 = this.segs[i * 4 + 1], x2 = this.segs[i * 4 + 2], y2 = this.segs[i * 4 + 3]
+      for (const [ax, ay, bx, by] of [[x1, y1, x2, y2], [x2, y2, x1, y1]]) {
+        if (Math.hypot(ax - x, ay - y) > tol || (bx === ax && by === ay)) continue
+        const d = ((Math.atan2(by - ay, bx - ax) * 180) / Math.PI + 360) % 360
+        if (!dirs.some(o => Math.abs(((o - d + 540) % 360) - 180) < 1)) dirs.push(d)
+      }
+    }
+    return dirs
   }
 
   /** Index over a flat [x1, y1, x2, y2, ...] list (PDF lines). */
@@ -220,6 +253,25 @@ export function buildMarkupIndex(markups: Iterable<Markup>): SegIndex {
   return ix
 }
 
+/**
+ * The corner at `pt` seen from `toward`: wall directions of `ix` and `more` meeting there, and the sector between two neighbouring
+ * walls that `toward` lies in. null unless two non-collinear walls meet and that sector is under 180 degrees.
+ */
+export function cornerAt(ix: SegIndex | null | undefined, more: SegIndex | null | undefined, pt: Pt, toward: Pt, skip?: ReadonlySet<string>): Corner | null {
+  const dirs = [...(ix?.wallDirections(pt.x, pt.y, 0.5, skip) ?? [])]
+  for (const d of more?.wallDirections(pt.x, pt.y, 0.5) ?? []) if (!dirs.some(o => Math.abs(((o - d + 540) % 360) - 180) < 1)) dirs.push(d)
+  if (dirs.length < 2) return null
+  dirs.sort((p, q) => p - q)
+  const t = ((Math.atan2(toward.y - pt.y, toward.x - pt.x) * 180) / Math.PI + 360) % 360
+  let i = dirs.length - 1
+  for (let k = 0; k < dirs.length; k++) if (dirs[k] <= t) i = k
+  const a = dirs[i], b = dirs[(i + 1) % dirs.length]
+  const span = (((b - a) % 360) + 360) % 360
+  if (span < 1 || span >= 179.5) return null
+  const n = (v: number) => { const r = ((v % 360) + 360) % 360; return r > 180 ? r - 360 : r }
+  return { a: n(a), b: n(b) }
+}
+
 // ---- Snapping
 
 export interface SnapEnv {
@@ -261,13 +313,22 @@ export function snapPoint(env: SnapEnv, p: Pt, zoom: number, opts: SnapOpts = {}
     }
     const v = mk?.nearestPoint(p.x, p.y, r, ['endpoint', 'midpoint'], opts.skip)
     if (v && (!best || v.d < best.d)) best = { x: v.x, y: v.y, d: v.d, kind: v.kind, ...(v.kind === 'midpoint' && !isNaN(v.angle) ? { angle: v.angle } : {}) }
-    if (best) return { point: { x: best.x, y: best.y }, kind: best.kind, ...(best.angle !== undefined ? { angle: best.angle } : {}) }
+    if (best) {
+      const pt = { x: best.x, y: best.y }
+      const corner = best.kind === 'endpoint' ? cornerAt(mk, env.pdf, pt, p, opts.skip) : null
+      const angle = best.angle !== undefined ? best.angle : corner ? lineAngle(0, 0, Math.cos((corner.a * Math.PI) / 180), Math.sin((corner.a * Math.PI) / 180)) : undefined
+      return { point: pt, kind: best.kind, ...(angle !== undefined ? { angle } : {}), ...(corner ? { corner } : {}) }
+    }
     const e = mk?.nearestOnSegment(p.x, p.y, r, opts.skip)
     if (e) return { point: { x: e.x, y: e.y }, kind: 'edge', angle: e.angle }
   }
   if (s.pdf && env.pdf) {
     const h = env.pdf.nearestOnSegment(p.x, p.y, r, undefined, true)
-    if (h) return { point: { x: h.x, y: h.y }, kind: 'pdf', angle: h.angle, ...(h.end ? { end: true } : {}) }
+    if (h) {
+      const pt = { x: h.x, y: h.y }
+      const corner = h.end ? cornerAt(env.pdf, mk, pt, p, opts.skip) : null
+      return { point: pt, kind: 'pdf', angle: h.angle, ...(h.end ? { end: true } : {}), ...(corner ? { corner } : {}) }
+    }
   }
   if (s.grid && env.gridStep > 0 && env.gridStep * zoom >= GRID_SNAP_MIN_PX) {
     const g = env.gridStep

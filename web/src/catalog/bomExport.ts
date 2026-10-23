@@ -5,6 +5,17 @@ import { autoWidths } from '../schedule/rows'
 import type { Cell, Table } from '../schedule/rows'
 import { bomTable, hours, money } from './bom'
 import type { Bom } from './bom'
+import type { CableTotal } from '../markups/cables'
+
+const feetText = (ft: number) => `${(Math.round(ft * 10) / 10).toLocaleString('en-US')} ft`
+
+/** The Cables sheet: one row per cable type with its runs and total length (slack, drops and run counts included). */
+export function cableWorkbookTable(rows: CableTotal[]): Table {
+  const header = ['Cable type', 'Cables', 'Runs', 'Length (ft)']
+  const data: Cell[][] = rows.map(r => [r.name, r.cables, r.runs, Math.round(r.lengthFt * 10) / 10])
+  data.push(['Total', rows.reduce((n, r) => n + r.cables, 0), rows.reduce((n, r) => n + r.runs, 0), Math.round(rows.reduce((n, r) => n + r.lengthFt, 0) * 10) / 10])
+  return { name: 'Cables', header, data, widths: autoWidths(header, data) }
+}
 
 /** The BOM as an Excel sheet: header, rows and a totals row. */
 export function bomWorkbookTable(bom: Bom, costs = true): Table {
@@ -13,12 +24,13 @@ export function bomWorkbookTable(bom: Bom, costs = true): Table {
   return { name: 'BOM', header: t.header, data, widths: autoWidths(t.header, data) }
 }
 
-export async function downloadBomExcel(bom: Bom, fileName: string, costs = true) {
+export async function downloadBomExcel(bom: Bom, fileName: string, costs = true, cables: CableTotal[] = []) {
   const { downloadWorkbook } = await import('../schedule/xlsxIO')
-  await downloadWorkbook([bomWorkbookTable(bom, costs)], fileName)
+  await downloadWorkbook([bomWorkbookTable(bom, costs), ...(cables.length ? [cableWorkbookTable(cables)] : [])], fileName)
 }
 
-export interface BomPdfInfo { projectName: string; scope: string; date: Date; /** false = leave out unit cost, extended cost and labor (default true). */ costs?: boolean }
+export interface BomPdfInfo { projectName: string; scope: string; date: Date; /** false = leave out unit cost, extended cost and labor (default true). */ costs?: boolean
+  /** Cable totals per type, listed after the parts. */ cables?: CableTotal[] }
 
 const W = 792, H = 612, M = 36 // landscape letter
 
@@ -83,6 +95,21 @@ export async function buildBomPdf(bom: Bom, info: BomPdfInfo): Promise<Uint8Arra
   text(page, 'Total', cols[0].x, y, 10, true)
   const tv = [String(bom.totals.qty), '', money(bom.totals.cost), '', hours(bom.totals.labor)]
   tv.forEach((v, i) => { const c = cols[i + 1]; if (c && v) text(page, v, c.x, y, 10, true, c.x + c.w) })
+  if (info.cables?.length) {
+    y -= 30
+    ensure(60)
+    text(page, 'Cables', M, y, 12, true)
+    y -= 16
+    const cc = [{ h: 'Cable type', x: M, w: 330 }, { h: 'Cables', x: M + 330, w: 60, r: true }, { h: 'Runs', x: M + 390, w: 60, r: true }, { h: 'Length', x: M + 450, w: 100, r: true }]
+    for (const c of cc) text(page, c.h, c.x, y, 9, true, c.r ? c.x + c.w : 0)
+    y -= 14
+    for (const r of info.cables) {
+      ensure(14)
+      const vals = [r.name, String(r.cables), String(r.runs), r.unscaled ? `${feetText(r.lengthFt)} (+${r.unscaled} unscaled)` : feetText(r.lengthFt)]
+      vals.forEach((v, i) => text(page, v, cc[i].x, y, 9, false, cc[i].r ? cc[i].x + cc[i].w : 0))
+      y -= 13
+    }
+  }
   return doc.save()
 }
 

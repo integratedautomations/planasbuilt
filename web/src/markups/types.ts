@@ -20,7 +20,13 @@ export interface Fov { direction: number; angle: number; range: number; hidden?:
 /** `mount` overrides the device type's default mount shape for this device (absent = use the type's). */
 export interface BoxGeometry { x: number; y: number; width: number; height: number; rotation: number; fov?: Fov; mount?: Mount }
 /** points are relative to x/y: [x0, y0, x1, y1, ...] */
-export interface PathGeometry { x: number; y: number; rotation: number; points: number[] }
+export interface PathGeometry {
+  x: number; y: number; rotation: number; points: number[]
+  /** Cables only: id of the device the first / last point is locked to (see cables.ts). */
+  from?: string; to?: string
+  /** Cables only: ends whose device was deleted or left the page. They show a red cross until relinked or cleared. */
+  open?: ('from' | 'to')[]
+}
 
 export interface MarkupStyle {
   stroke: string

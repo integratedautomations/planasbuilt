@@ -126,3 +126,23 @@ describe('snapRotation and alignable', () => {
     expect(alignable(null)).toBe(false)
   })
 })
+
+describe('corner alignment', () => {
+  const corner = (x: number, y: number, a: number, b: number) => ({ point: { x, y }, kind: 'pdf' as const, angle: 0, end: true, corner: { a, b } })
+  it('a corner hit is alignable and faces along the bisector, flat side across the corner', () => {
+    // L corner at (100,100): walls go right (0) and down (90); the open room is down-right, bisector 45 degrees
+    const out = alignDevice(dev(), corner(100, 100, 0, 90), { x: 120, y: 120 }, 'wall')
+    expect(norm180(out.rotation - 90)).toBeCloseTo(45, 3)
+    const c = deviceCenter(out)
+    expect(c.x).toBeCloseTo(100 + WALL_FLAT * 12 * Math.SQRT1_2, 1)
+    expect(c.y).toBeCloseTo(100 + WALL_FLAT * 12 * Math.SQRT1_2, 1)
+  })
+  it('sets the coverage direction to the bisector', () => {
+    const g = dev({ fov: { direction: 0, angle: 90, range: 50 } })
+    expect(alignDevice(g, corner(100, 100, 90, 180), { x: 80, y: 120 }, 'wall').fov?.direction).toBeCloseTo(135, 3)
+  })
+  it('135 degree corner: bisector is half way between the walls', () => {
+    const g = dev({ fov: { direction: 0, angle: 90, range: 50 } })
+    expect(alignDevice(g, corner(0, 0, 0, 135), { x: 5, y: 5 }, 'ceiling').fov?.direction).toBeCloseTo(67.5, 3)
+  })
+})

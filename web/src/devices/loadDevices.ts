@@ -10,7 +10,7 @@ export const DEVICE_PAGE = 1000
 interface Paged { items: Markup[]; next: string | null }
 
 /** Every markup of one type in the project, read page by page from the paged endpoint. */
-async function fetchAll(projectId: string, type: 'device' | 'area'): Promise<Markup[]> {
+export async function fetchAll(projectId: string, type: 'device' | 'area' | 'cable'): Promise<Markup[]> {
   const out: Markup[] = []
   let cursor: string | null = null
   do {

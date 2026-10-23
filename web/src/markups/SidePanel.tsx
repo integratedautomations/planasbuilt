@@ -12,6 +12,9 @@ import { Attribution, HistorySection } from './MarkupInfo'
 import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
 import { circleStats, formatArea, formatFeetInches, summarize } from './measure'
+import { CABLE_FIELD, DEFAULT_CABLE_SETTINGS, cableCount, cableLength, cableTypeId, clearDangling, danglingEnds, summarizeCables } from './cables'
+import type { CableSettings } from './cables'
+import { useCatalogContext } from '../catalog/useCatalog'
 import type { MeasureTotal } from './measure'
 import { commonValue } from './mixed'
 import { tagRange } from './stacks'
@@ -106,6 +109,8 @@ interface Props {
   onAddToStack: (stack: Stack) => void
   onPullOut: (m: Markup) => void
   onDeleteStack: (stack: Stack) => void
+  /** Project cable defaults (slack %, drop ft). */
+  cableDefaults?: CableSettings
   /** Opens the "Replace with..." dialog for the selected devices. */
   onReplace?: () => void
   /** Desktop: keep the panel open with nothing selected. */
@@ -473,6 +478,7 @@ function StyleProperties(p: Props) {
           })() : <p className="scale-warn small">Set a scale to see the radius, diameter and area.</p>}
         </Section>
       )}
+      {selected.length > 0 && selected.every(m => m.type === 'cable') && <CableSection {...p} />}
       <fieldset disabled={disabled} className="stack">
         <Section title="Style">
         <label className="field">Color{mixedStyle('stroke') && <span className="muted"> Mixed</span>}
@@ -536,8 +542,12 @@ function StyleProperties(p: Props) {
   )
 }
 
-function Measure({ measure: m, readOnly }: Props) {
+function Measure({ measure: m, readOnly, cableDefaults }: Props) {
+  const cat = useCatalogContext()
   const sum = summarize(m.pageMarkups, m.scale?.pointsPerFoot ?? null)
+  // Cable runs are totalled with slack, drops and run counts, per cable type
+  const cables = summarizeCables(m.pageMarkups, m.scale?.pointsPerFoot ?? null, cat.cableTypes, cableDefaults ?? DEFAULT_CABLE_SETTINGS)
+  sum.cable = cables.rows; sum.cableTotal = cables.total
   const row = (t: MeasureTotal) => (
     <li key={t.key}>
       <button className="measure-row" onClick={() => m.onSelectIds(t.ids)} title={`Select ${t.ids.length} markup${t.ids.length > 1 ? 's' : ''}`}>
@@ -632,6 +642,78 @@ export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, o
       )}
       {error && <div className="error">{error}</div>}
     </div>
+  )
+}
+
+/** Cable runs: type, runs, slack and drop (per-cable overrides of the project defaults), the two ends and the resulting length. */
+function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults }: Props) {
+  const cat = useCatalogContext()
+  const defaults = cableDefaults ?? DEFAULT_CABLE_SETTINGS
+  const byId = new Map(measure.pageMarkups.map(m => [m.id, m]))
+  const one = selected.length === 1 ? selected[0] : null
+  const type = commonValue(selected, m => cableTypeId(m))
+  const count = commonValue(selected, m => cableCount(m))
+  const slack = commonValue(selected, m => String(m.fields?.[CABLE_FIELD.slack] ?? ''))
+  const drop = commonValue(selected, m => String(m.fields?.[CABLE_FIELD.drop] ?? ''))
+  const setField = (key: string, value: string | number | null) => onUpdate(m => {
+    const fields = { ...(m.fields ?? {}) }
+    if (value === null || value === '') delete fields[key]; else fields[key] = value
+    return { ...m, fields }
+  }, `cable.${key}`)
+  const numInput = (key: string, v: { mixed: boolean; value: string | undefined }, placeholder: string) => (
+    <input type="number" min={0} step="any" inputMode="decimal" value={v.mixed ? '' : v.value ?? ''} placeholder={v.mixed ? 'Mixed' : placeholder}
+      onChange={e => { const n = e.target.value === '' ? null : Number(e.target.value); if (n === null || (Number.isFinite(n) && n >= 0)) setField(key, n) }} />
+  )
+  const len = one ? cableLength(one, measure.scale?.pointsPerFoot ?? null, defaults, byId) : null
+  const g = one && 'points' in one.geometry ? one.geometry : null
+  const dangling = one ? danglingEnds(one, byId) : []
+  const endText = (end: 'from' | 'to') => {
+    const ref = g?.[end]
+    const d = ref ? byId.get(ref) : undefined
+    if (dangling.includes(end)) return 'Open (device removed)'
+    return d ? (d.tag || 'Device') : 'Free end'
+  }
+  const types = cat.cableTypeList
+  const current = type.mixed ? undefined : cat.cableTypes.get(type.value ?? '')
+  return (
+    <Section title="Cable">
+      <fieldset disabled={readOnly} className="stack">
+        <label className="field">Cable type
+          <select value={type.mixed ? '__mixed' : type.value ?? ''} onChange={e => { if (e.target.value !== '__mixed') setField(CABLE_FIELD.type, e.target.value) }}>
+            {type.mixed && <option value="__mixed" disabled>Mixed</option>}
+            <option value="">No type</option>
+            {types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {current?.archived && <option value={current.id}>{current.name} (removed)</option>}
+          </select>
+        </label>
+        <label className="field">Runs (conductors / cables)
+          <input type="number" min={1} step={1} value={count.mixed ? '' : count.value ?? 1} placeholder={count.mixed ? 'Mixed' : '1'}
+            onChange={e => { const n = Math.round(Number(e.target.value)); if (Number.isFinite(n) && n >= 1) setField(CABLE_FIELD.count, n === 1 ? null : n) }} />
+        </label>
+        <label className="field">Slack % <span className="muted small">(blank = project {defaults.slackPct}%)</span>
+          {numInput(CABLE_FIELD.slack, slack, String(defaults.slackPct))}
+        </label>
+        <label className="field">Drop at each linked end, ft <span className="muted small">(blank = project {defaults.dropFt} ft)</span>
+          {numInput(CABLE_FIELD.drop, drop, String(defaults.dropFt))}
+        </label>
+      </fieldset>
+      {one && (
+        <>
+          <dl className="kv">
+            <dt>From</dt><dd>{endText('from')}</dd>
+            <dt>To</dt><dd>{endText('to')}</dd>
+            {len && <><dt>Drawn</dt><dd>{formatFeetInches(len.drawnFt)}</dd>
+              <dt>One run</dt><dd>{formatFeetInches(len.runFt)}</dd>
+              <dt>Total{len.count > 1 ? ` x${len.count}` : ''}</dt><dd>{formatFeetInches(len.totalFt)}</dd></>}
+          </dl>
+          {!len && <p className="scale-warn small">Set a scale to see the length.</p>}
+          {len && <p className="muted small">Run = drawn x (1 + {len.slackPct}%) + {len.dropFt} ft x {len.ends} linked end{len.ends === 1 ? '' : 's'}.</p>}
+          {!readOnly && dangling.length > 0 && (
+            <button onClick={() => onUpdate(m => ('points' in m.geometry ? { ...m, geometry: clearDangling(m.geometry, m, byId) } : m), 'cable.clear')}>Clear open-end markers</button>
+          )}
+        </>
+      )}
+    </Section>
   )
 }
 

@@ -193,6 +193,7 @@ export function DevicesPage({ user }: { user: User }) {
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={false} className="tab" onClick={() => navigate(`/projects/${pid}`)}>Plans</button>
           <button role="tab" aria-selected className="tab active">Devices</button>
+          <button role="tab" aria-selected={false} className="tab" onClick={() => navigate(`/projects/${pid}/wiring`)}>Wiring</button>
         </div>
         <div className="dv-bar">
           {isPhone ? (

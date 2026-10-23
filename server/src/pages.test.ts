@@ -91,3 +91,27 @@ describe('parsePageList limits', () => {
     expect(Date.now() - t).toBeLessThan(500)
   })
 })
+
+describe('rotateGeometry keeps linked cable ends on their devices', () => {
+  const centre = (g: { x: number; y: number; width: number; height: number; rotation: number }) => {
+    const a = (g.rotation * Math.PI) / 180
+    return { x: g.x + (g.width / 2) * Math.cos(a) - (g.height / 2) * Math.sin(a), y: g.y + (g.width / 2) * Math.sin(a) + (g.height / 2) * Math.cos(a) }
+  }
+  const end = (g: { x: number; y: number; rotation: number; points: number[] }) => {
+    const a = (g.rotation * Math.PI) / 180, px = g.points[g.points.length - 2], py = g.points[g.points.length - 1]
+    return { x: g.x + px * Math.cos(a) - py * Math.sin(a), y: g.y + px * Math.sin(a) + py * Math.cos(a) }
+  }
+  it('moves the cable end and the device centre to the same place for every quarter turn', () => {
+    const dev = { x: 80, y: 30, width: 24, height: 24, rotation: 20 }
+    const c = centre(dev)
+    // a cable from (10, 10) to the device centre, links preserved untouched
+    const cable = { x: 10, y: 10, rotation: 0, points: [0, 0, c.x - 10, c.y - 10], from: 'a', to: 'b' }
+    for (const deg of [90, 180, 270]) {
+      const d = rotateGeometry(dev, deg, 300, 200)
+      const k = rotateGeometry(cable, deg, 300, 200)
+      expect(end(k).x).toBeCloseTo(centre(d).x, 6)
+      expect(end(k).y).toBeCloseTo(centre(d).y, 6)
+      expect(k).toMatchObject({ from: 'a', to: 'b' })
+    }
+  })
+})

@@ -235,6 +235,18 @@ ALTER TABLE project_members ADD COLUMN IF NOT EXISTS scope jsonb NOT NULL DEFAUL
 -- Whether editors may see unit costs and labor hours in this project (pm and admin always can). On = behaviour before roles existed.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS editors_see_costs boolean NOT NULL DEFAULT true;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS device_scale double precision NOT NULL DEFAULT 1;
+-- Cable types (Cat6, 18/2, fiber...): a shared catalog list, cables on a plan pick one by id (markups.fields.cable_type).
+CREATE TABLE IF NOT EXISTS cable_types (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  color text NOT NULL DEFAULT '#e03131',
+  sort int NOT NULL DEFAULT 0,
+  archived boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Project cable defaults: slack added to every drawn run (percent) and the drop length added at each end linked to a device (feet).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cable_slack_pct double precision NOT NULL DEFAULT 10;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cable_drop_ft double precision NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,
   value jsonb NOT NULL DEFAULT '{}'

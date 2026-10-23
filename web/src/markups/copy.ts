@@ -34,6 +34,10 @@ export function copyMarkup(m: Markup, opts: CopyOptions = {}): Markup {
     updated_by: undefined, updated_by_name: undefined, updated_at: undefined, version: undefined,
     photo_count: undefined,
   }
+  // A copied cable is not locked to the original devices (they stay where they are)
+  if (copy.type === 'cable' && 'points' in copy.geometry) {
+    delete copy.geometry.from; delete copy.geometry.to; delete copy.geometry.open
+  }
   if (device) {
     copy.tag = ''
     copy.status = 'planned'

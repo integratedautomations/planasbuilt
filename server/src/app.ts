@@ -481,18 +481,27 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const { id } = req.params as any
     const b = (req.body ?? {}) as any
     const hasStatus = b.status !== undefined, hasCosts = b.editors_see_costs !== undefined
-    if (!hasStatus && !hasCosts) return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
+    const hasCable = b.cable_slack_pct !== undefined || b.cable_drop_ft !== undefined
+    if (!hasStatus && !hasCosts && !hasCable) return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
     const access = await requireCap(req, reply, id, hasCosts ? 'members.manage' : 'plans.edit')
     if (!access) return
     if (hasStatus && b.status !== 'open' && b.status !== 'completed') return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
     if (hasCosts && typeof b.editors_see_costs !== 'boolean') return reply.code(400).send({ error: 'editors_see_costs must be true or false' })
     if (hasStatus && !accessCan(access, 'plans.edit')) return reply.code(403).send({ error: 'Not allowed' })
+    const numIn = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null)
+    if (b.cable_slack_pct !== undefined && numIn(b.cable_slack_pct, 1000) === null) return reply.code(400).send({ error: 'Slack must be 0 to 1000 percent' })
+    if (b.cable_drop_ft !== undefined && numIn(b.cable_drop_ft, 10000) === null) return reply.code(400).send({ error: 'Drop length must be 0 to 10000 feet' })
+    if (hasCable && !accessCan(access, 'plans.edit')) return reply.code(403).send({ error: 'Not allowed' })
     let project: any
     if (hasStatus)
       [project] = await db.query(
         `UPDATE projects SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN now() ELSE NULL END WHERE id = $2 RETURNING *`, [b.status, id])
     if (hasCosts)
       [project] = await db.query('UPDATE projects SET editors_see_costs = $1 WHERE id = $2 RETURNING *', [b.editors_see_costs, id])
+    if (hasCable)
+      [project] = await db.query(
+        'UPDATE projects SET cable_slack_pct = coalesce($1, cable_slack_pct), cable_drop_ft = coalesce($2, cable_drop_ft) WHERE id = $3 RETURNING *',
+        [b.cable_slack_pct ?? null, b.cable_drop_ft ?? null, id])
     return { ...project, role: access.role, scope: access.scope }
   })
 
@@ -1237,11 +1246,50 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const vis = await orgVisibility(req.user)
     const types = await db.query('SELECT * FROM device_types WHERE NOT archived ORDER BY symbol_set_id, sort, created_at')
     const products = (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut)
+    // Archived types stay in the list (flagged) so cables already drawn with them keep their name and colour
+    const cable_types = await db.query('SELECT id, name, color, sort, archived FROM cable_types ORDER BY sort, created_at')
     return {
       device_types: vis.internal ? types : types.map((t: any) => ({ ...t, fields: withoutInternalDefs(t.fields) })),
       products: vis.costs ? products : products.map(stripProductCosts),
+      cable_types,
       can_see_costs: vis.costs,
     }
+  })
+
+  // ---- Cable types (admins manage; everyone with the catalog reads them): name + canvas colour ----
+  const cleanCableType = (b: any) => {
+    const name = String(b?.name ?? '').trim().slice(0, 60)
+    const color = String(b?.color ?? '').trim()
+    if (!name || (color && !/^#[0-9a-fA-F]{6}$/.test(color))) return null
+    return { name, color: color || '#e03131' }
+  }
+  app.post('/api/cable-types', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const t = cleanCableType(req.body)
+    if (!t) return reply.code(400).send({ error: 'A name and a colour like #1971c2 are required' })
+    const [row] = await db.query(
+      'INSERT INTO cable_types (name, color, sort) VALUES ($1,$2,(SELECT coalesce(max(sort),0)+1 FROM cable_types)) RETURNING id, name, color, sort, archived', [t.name, t.color])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return row
+  })
+  app.put('/api/cable-types/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const t = cleanCableType(req.body)
+    const id = (req.params as any).id
+    if (!t || !uuidRe.test(String(id))) return reply.code(400).send({ error: 'A name and a colour like #1971c2 are required' })
+    const [row] = await db.query('UPDATE cable_types SET name = $1, color = $2 WHERE id = $3 RETURNING id, name, color, sort, archived', [t.name, t.color, id])
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return row
+  })
+  // Archived, never deleted: cables already drawn with the type keep their name and colour
+  app.delete('/api/cable-types/:id', { preHandler: auth }, async (req, reply) => {
+    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const id = (req.params as any).id
+    if (!uuidRe.test(String(id))) return reply.code(400).send({ error: 'Bad id' })
+    await db.query('UPDATE cable_types SET archived = true WHERE id = $1', [id])
+    realtime.symbolSetsChanged(req.user.id, cid(req))
+    return { ok: true }
   })
 
   // ---- Standard device library: symbol sets and device types for the built-in icon set (admins; only ever adds or fills blanks) ----
@@ -1252,7 +1300,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/catalog/standard-library', { preHandler: auth }, async (req, reply) => {
     if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
     const result = await installLibrary(db)
-    if (result.setsCreated || result.typesAdded || result.typesUpdated) realtime.symbolSetsChanged(req.user.id, cid(req))
+    if (result.setsCreated || result.typesAdded || result.typesUpdated || result.cableTypesAdded) realtime.symbolSetsChanged(req.user.id, cid(req))
     return result
   })
 

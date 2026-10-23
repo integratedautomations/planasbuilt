@@ -3,6 +3,7 @@ import { api, setToken, User } from '../api'
 import type { ReplaceChoice } from '../markups/placeReplace'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
 import { DENSITY_PREFS } from '../prefs/density'
+import { HoldDelayField } from '../viewer/SnapMenu'
 import type { DensityPref } from '../prefs/density'
 import { setPref, usePrefs } from '../prefs/store'
 import { UserAvatar } from '../ui/UserAvatar'
@@ -96,6 +97,7 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
             {DENSITY_PREFS.map(d => <option key={d} value={d}>{DENSITY_LABEL[d]}</option>)}
           </select>
         </label>
+        <HoldDelayField />
         <p className="muted small">These follow you to every device you sign in on.</p>
       </section>
 

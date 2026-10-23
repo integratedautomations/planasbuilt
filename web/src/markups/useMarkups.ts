@@ -4,6 +4,7 @@ import { db } from '../offline/db'
 import { on as onSocket } from '../realtime/socket'
 import { flushWrites, queueMarkupDelete, queueMarkupPut, subscribe } from '../offline/sync'
 import { applyRemoteRows, EditClock, MergeTracker } from './editClock'
+import { syncCables } from './cables'
 import type { Markup } from './types'
 
 /** One undoable step: each entry swaps a markup from `before` to `after` (null = absent). */
@@ -19,6 +20,9 @@ const HISTORY_LIMIT = 200
  */
 export function useMarkups(documentId: string) {
   const [markups, setMarkups] = useState<Map<string, Markup>>(new Map())
+  /** Latest markups, kept current synchronously so back-to-back commits in one tick see each other (cable following reads it). */
+  const latest = useRef(markups)
+  latest.current = markups
   const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [fromCache, setFromCache] = useState(false)
@@ -110,6 +114,7 @@ export function useMarkups(documentId: string) {
   }, [])
 
   const applyLocal = useCallback((change: Change, direction: 'forward' | 'back') => {
+    latest.current = applyTo(latest.current, change, direction)
     setMarkups(prev => {
       const next = new Map(prev)
       for (const c of change) {
@@ -128,17 +133,21 @@ export function useMarkups(documentId: string) {
    */
   const commit = useCallback((change: Change, mergeKey?: string) => {
     if (!change.length) return
+    // Cables locked to devices follow them (move), unlink (delete / left the page) or unlink (dragged away) in the same step.
+    change = syncCables(change, latest.current)
     applyLocal(change, 'forward')
     persist(change)
     for (const c of change) remoteTouched.current.delete((c.after ?? c.before)!.id)
     const now = Date.now()
     const top = undoStack.current[undoStack.current.length - 1]
     if (top && lastMerge.current.canMerge(mergeKey, now)) {
-      undoStack.current[undoStack.current.length - 1] = top.map(c => {
+      const merged = top.map(c => {
         const id = (c.after ?? c.before)!.id
-        const latest = change.find(n => (n.after ?? n.before)!.id === id)
-        return latest ? { before: c.before, after: latest.after } : c
+        const newer = change.find(n => (n.after ?? n.before)!.id === id)
+        return newer ? { before: c.before, after: newer.after } : c
       })
+      const known = new Set(top.map(c => (c.after ?? c.before)!.id))
+      undoStack.current[undoStack.current.length - 1] = [...merged, ...change.filter(n => !known.has((n.after ?? n.before)!.id))]
       lastMerge.current.note(mergeKey, now)
       redoStack.current = []
       return
@@ -191,4 +200,16 @@ export function useMarkups(documentId: string) {
     canUndo: undoStack.current.length > 0,
     canRedo: redoStack.current.length > 0,
   }
+}
+
+/** A copy of `prev` with `change` applied forward (after) or back (before). */
+export function applyTo(prev: Map<string, Markup>, change: Change, direction: 'forward' | 'back'): Map<string, Markup> {
+  const next = new Map(prev)
+  for (const c of change) {
+    const target = direction === 'forward' ? c.after : c.before
+    const id = (c.after ?? c.before)!.id
+    if (target) next.set(id, target)
+    else next.delete(id)
+  }
+  return next
 }

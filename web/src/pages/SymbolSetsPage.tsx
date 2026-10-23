@@ -10,6 +10,7 @@ import type { TypeDraft } from '../catalog/DeviceTypeEditor'
 import { FieldsEditor } from '../catalog/FieldsEditor'
 import { StandardLibraryDialog } from '../catalog/StandardLibraryDialog'
 import { ProductsTable } from '../catalog/ProductsTable'
+import { CableTypesPanel } from '../catalog/CableTypesPanel'
 import { readIcon } from '../catalog/readIcon'
 import { IconPicker } from '../catalog/icons/IconPicker'
 import { moveBefore } from '../prefs/chest'
@@ -24,7 +25,7 @@ type Draft = Omit<SymbolSet, 'id' | 'sort'> & { id?: string }
 const EMPTY: Draft = { name: '', color: '#1971c2', tag_prefix: '', icon: '', fields: [], has_fov: false }
 
 /** Nav selection: a set, one of its device types, or the standalone accessories list. */
-type Sel = { kind: 'set'; setId: string } | { kind: 'type'; setId: string; typeId: string } | { kind: 'accessories' } | null
+type Sel = { kind: 'set'; setId: string } | { kind: 'type'; setId: string; typeId: string } | { kind: 'accessories' } | { kind: 'cables' } | null
 
 /** Admin catalog: symbol sets > device types > products, plus Excel and Revu (.btx) loading. */
 export function SymbolSetsPage({ user }: { user: User }) {
@@ -75,7 +76,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
     } catch (e) { setError((e as Error).message) }
   }
 
-  const selSet = sel && sel.kind !== 'accessories' ? sets.find(s => s.id === sel.setId) : undefined
+  const selSet = sel && (sel.kind === 'set' || sel.kind === 'type') ? sets.find(s => s.id === sel.setId) : undefined
   const selType = sel?.kind === 'type' ? catalog.types.get(sel.typeId) : undefined
   const products = useMemo(() => {
     if (sel?.kind === 'type') return data.products.filter(p => p.device_type_id === sel.typeId)
@@ -121,6 +122,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
               </div>
             ))}
             <button className={sel?.kind === 'accessories' ? 'on' : ''} onClick={() => setSel({ kind: 'accessories' })}>Standalone accessories</button>
+            <button className={sel?.kind === 'cables' ? 'on' : ''} onClick={() => setSel({ kind: 'cables' })}>Cable types</button>
           </nav>
 
           <section aria-label="Details" className="stack">
@@ -177,6 +179,10 @@ export function SymbolSetsPage({ user }: { user: User }) {
                 <h4>Products</h4>
                 <ProductsTable products={products} allProducts={data.products} type={selType} set={selSet} admin={admin} showCosts={catalog.canSeeCosts} onChanged={reload} onError={setError} />
               </>
+            )}
+
+            {sel?.kind === 'cables' && (
+              <CableTypesPanel types={data.cable_types ?? []} admin={admin} onChanged={reload} onError={setError} />
             )}
 
             {sel?.kind === 'accessories' && (

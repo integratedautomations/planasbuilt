@@ -12,6 +12,7 @@ import type { PageAction } from '../viewer/Thumbnails'
 import { usePanZoom } from '../viewer/usePanZoom'
 import type { View } from '../viewer/usePanZoom'
 import { clampDeviceScale, scaleDevice, scaleDevices, unscaleChange } from '../markups/deviceScale'
+import { cableSettings } from '../markups/cables'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { SelectionBar } from '../markups/SelectionBar'
@@ -190,6 +191,8 @@ export function ViewerPage() {
   const { projectId, documentId } = useParams() as { projectId: string; documentId: string }
   const [meta, setMeta] = useState<DocMeta | null>(null)
   const [project, setProject] = useState<Project | null>(null)
+  /** Project cable defaults (slack %, drop ft). */
+  const cableDefaults = useMemo(() => cableSettings(project), [project])
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
   /** Which document `pdf` was loaded for, and which pdf `page` came from (both lag a document switch). */
   const [pdfFor, setPdfFor] = useState('')
@@ -1275,7 +1278,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           peers={peersHere} onMarquee={onMarquee} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
           onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
-          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} pdfLines={snapLines} calLine={calLine}
+          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} pdfLines={snapLines} cableDefaults={cableDefaults} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
           newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
             deviceTypeId: activeTypeId, productId: activeProductId, deviceFields: productFields(activeProductId ? catalog.products.get(activeProductId) : undefined) }}
@@ -1318,7 +1321,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
       display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }}
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
-      stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack}
+      stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack} cableDefaults={cableDefaults}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
       pinned={prefs.propsPinned} onPinned={v => setPref('propsPinned', v)}
       areas={areasProps}
@@ -1336,7 +1339,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     <MarkupsList projectId={projectId} projectName={project?.name ?? 'Project'} documentId={documentId} documentName={meta?.name ?? ''}
       pageNum={pageNum} markups={allMarkups} commit={store.commit} symbolSets={symbolSets} localScales={scales}
       selectedIds={selectedIds} onSelectIds={setSelectedIds} readOnly={readOnly} canImport={!readOnly && !!project} isPhone={isPhone} docked={docked}
-      visibleColumns={prefs.listColumns} onVisibleColumns={ids => setPref('listColumns', ids)}
+      visibleColumns={prefs.listColumns} onVisibleColumns={ids => setPref('listColumns', ids)} cableDefaults={cableDefaults}
       onJump={jumpTo} onClose={() => (docked ? setPanel('markups', false) : setShowList(false))} />
   )
 

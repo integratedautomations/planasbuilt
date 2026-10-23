@@ -83,6 +83,8 @@ export interface LibraryPlan {
   typesToUpdate: PlanTypeUpdate[]
   /** Existing types that already match their device completely. */
   unchanged: number
+  /** Names of the cable types to add. */
+  cableTypesToAdd: string[]
   /** Categories whose symbol set was removed (archived) by someone: left alone. */
   skippedSets: string[]
   /** Types removed (archived) by someone that match a device: left alone. */
@@ -91,7 +93,20 @@ export interface LibraryPlan {
   customIconsKept: number
 }
 
+/** Cable types the library adds when they are missing (matched by name, ignoring case and punctuation; removed ones are not brought back). */
+export const STD_CABLE_TYPES: { name: string; color: string }[] = [
+  { name: 'Cat6', color: '#1971c2' },
+  { name: 'Cat6A', color: '#0c8599' },
+  { name: '18/2', color: '#e03131' },
+  { name: '18/4', color: '#c2255c' },
+  { name: '22/4', color: '#f08c00' },
+  { name: 'RG6', color: '#2f9e44' },
+  { name: 'Fiber', color: '#7048e8' },
+]
+
 export interface LibrarySummary {
+  /** Cable types added by this run. */
+  cableTypesAdded: number
   setsCreated: number
   typesAdded: number
   typesUpdated: number
@@ -107,6 +122,7 @@ export interface LibrarySummary {
 
 export function summarize(p: LibraryPlan): LibrarySummary {
   return {
+    cableTypesAdded: p.cableTypesToAdd.length,
     setsCreated: p.setsToCreate.length, typesAdded: p.typesToAdd.length, typesUpdated: p.typesToUpdate.length, unchanged: p.unchanged,
     customIconsKept: p.customIconsKept, skippedSets: p.skippedSets, skippedTypes: p.skippedTypes,
     newSets: p.setsToCreate.map(s => s.name),
@@ -118,8 +134,12 @@ export function summarize(p: LibraryPlan): LibrarySummary {
 const sameCoverage = (a: Coverage | null, b: Coverage | null) => JSON.stringify(a) === JSON.stringify(b)
 
 /** What installing the library would do to a database holding these sets and types. */
-export function planLibrary(sets: SetRow[], types: TypeRow[]): LibraryPlan {
-  const plan: LibraryPlan = { setsToCreate: [], typesToAdd: [], typesToUpdate: [], unchanged: 0, skippedSets: [], skippedTypes: [], customIconsKept: 0 }
+export function planLibrary(sets: SetRow[], types: TypeRow[], cableNames: string[] = []): LibraryPlan {
+  const have = new Set(cableNames.map(key))
+  const plan: LibraryPlan = {
+    setsToCreate: [], typesToAdd: [], typesToUpdate: [], unchanged: 0, skippedSets: [], skippedTypes: [], customIconsKept: 0,
+    cableTypesToAdd: [],
+  }
   for (const std of STD_SETS) {
     const aliases = new Set([key(std.name), ...(SET_ALIASES[std.folder] ?? [])])
     const mine = sets.filter(s => aliases.has(key(s.name)))
@@ -165,6 +185,7 @@ export function planLibrary(sets: SetRow[], types: TypeRow[]): LibraryPlan {
       else plan.unchanged++
     }
   }
+  for (const c of STD_CABLE_TYPES) if (!have.has(key(c.name))) plan.cableTypesToAdd.push(c.name)
   return plan
 }
 
@@ -174,22 +195,23 @@ function addOf(std: StdSet, live: SetRow | null, d: StdDevice): PlanTypeAdd {
 
 // ---- Database
 
-export async function loadPlanInput(q: Db['query']): Promise<{ sets: SetRow[]; types: TypeRow[] }> {
+export async function loadPlanInput(q: Db['query']): Promise<{ sets: SetRow[]; types: TypeRow[]; cableNames: string[] }> {
   const sets = await q<SetRow>('SELECT id, name, archived FROM symbol_sets ORDER BY sort, created_at')
   const types = await q<TypeRow>('SELECT id, symbol_set_id, name, icon, tag_prefix, coverage, mount, archived FROM device_types ORDER BY sort, created_at')
-  return { sets, types }
+  const cableNames = (await q<{ name: string }>('SELECT name FROM cable_types')).map(r => r.name)
+  return { sets, types, cableNames }
 }
 
 export async function previewLibrary(db: Db): Promise<LibrarySummary> {
-  const { sets, types } = await loadPlanInput(db.query.bind(db))
-  return summarize(planLibrary(sets, types))
+  const { sets, types, cableNames } = await loadPlanInput(db.query.bind(db))
+  return summarize(planLibrary(sets, types, cableNames))
 }
 
 /** Applies the plan in one transaction. A second run finds nothing to do. */
 export async function installLibrary(db: Db): Promise<LibrarySummary> {
   return db.transaction(async q => {
-    const { sets, types } = await loadPlanInput(q)
-    const plan = planLibrary(sets, types)
+    const { sets, types, cableNames } = await loadPlanInput(q)
+    const plan = planLibrary(sets, types, cableNames)
     const ids = new Map<string, string>() // folder -> id of the set created in this run
     for (const s of plan.setsToCreate) {
       const [row] = await q<{ id: string }>(
@@ -211,6 +233,10 @@ export async function installLibrary(db: Db): Promise<LibrarySummary> {
         `UPDATE device_types SET icon = coalesce($2, icon), mount = coalesce($3, mount), tag_prefix = coalesce($4, tag_prefix),
            coverage = coalesce($5::jsonb, coverage) WHERE id = $1`,
         [u.id, u.set.icon ?? null, u.set.mount ?? null, u.set.tag_prefix ?? null, u.set.coverage ? JSON.stringify(u.set.coverage) : null])
+    }
+    for (const name of plan.cableTypesToAdd) {
+      const c = STD_CABLE_TYPES.find(x => x.name === name)!
+      await q('INSERT INTO cable_types (name, color, sort) VALUES ($1,$2,(SELECT coalesce(max(sort),0)+1 FROM cable_types))', [c.name, c.color])
     }
     return summarize(plan)
   })

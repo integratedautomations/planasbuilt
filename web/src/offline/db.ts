@@ -12,7 +12,7 @@ import Dexie from 'dexie'
 import type { Table } from 'dexie'
 import type { Attachment, DocumentSummary, Project } from '../api'
 import type { Layer, Markup, SymbolSet } from '../markups/types'
-import type { DeviceType, Product } from '../catalog/types'
+import type { CableType, DeviceType, Product } from '../catalog/types'
 
 export type DocumentRow = DocumentSummary & { project_id: string }
 /** `revisionId` = which revision of the document these bytes are; a newer revision on the server makes the copy stale. */
@@ -68,6 +68,7 @@ class OfflineDb extends Dexie {
   layers!: Table<Layer, string>
   symbolSets!: Table<SymbolSet, string>
   deviceTypes!: Table<DeviceType, string>
+  cableTypes!: Table<CableType, string>
   products!: Table<Product, string>
   scales!: Table<ScaleRow, string>
   attachments!: Table<AttachmentRow, string>
@@ -92,6 +93,8 @@ class OfflineDb extends Dexie {
     })
     // Catalog (device types and products), cached for field use
     this.version(2).stores({ deviceTypes: 'id, symbol_set_id', products: 'id, device_type_id' })
+    // Cable types (part of the catalog)
+    this.version(3).stores({ cableTypes: 'id' })
   }
 }
 

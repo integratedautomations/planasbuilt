@@ -16,6 +16,8 @@ import { Brand } from '../Brand'
 import { Icon } from '../ui/Icon'
 import { UserMenu } from '../settings/UserMenu'
 import { MembersPanel } from '../settings/MembersPanel'
+import { CableDefaults } from '../settings/CableDefaults'
+import { cableSettings } from '../markups/cables'
 import { can } from '../roles'
 
 /** Page count of a PDF; the pdf.js task is destroyed whether it parses or is rejected. */
@@ -153,7 +155,7 @@ export function ProjectPage({ user }: { user: User }) {
   async function exportSchedule() {
     if (!project) return
     setExporting(true); setError('')
-    try { await exportProjectSchedule(project.id, project.name) }
+    try { await exportProjectSchedule(project.id, project.name, cableSettings(project)) }
     catch (err) { setError(`Export failed: ${(err as Error).message}`) }
     finally { setExporting(false) }
   }
@@ -236,6 +238,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
           <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
           <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/devices`} title="Every device in the project, without opening a plan">Devices</Link>
+          <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/wiring`} title="Riser diagram built from the cable runs locked to devices">Wiring</Link>
         </div>
         {tab === 'members' && isAdmin && project && (
           <label className="check" title="Project managers and admins always see costs">
@@ -244,6 +247,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         )}
         {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
         {tab === 'plans' && <>
+        {project && <CableDefaults project={project} canEdit={canEdit} onSaved={setProject} />}
         <div className="row pp-toolbar">
           <h2>Plans</h2>
           <span className="spacer" />

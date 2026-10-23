@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { setPref, usePrefs } from '../prefs/store'
 import type { SnapSettings } from '../markups/snapConfig'
+import { DEFAULT_HOLD_MS, HOLD_MAX_MS, HOLD_MIN_MS, normalizeHoldMs } from '../markups/placeRotate'
 import { GRID_MAX, GRID_MIN } from '../markups/snapConfig'
 
 export const MAGNET_ICON = (
@@ -39,6 +40,25 @@ function GridSpacing({ snap, hasScale }: { snap: SnapSettings; hasScale: boolean
   )
 }
 
+/** "Hold before rotating (ms)": how long a device stays put after placing before dragging turns it. Blank = default. Saved per user. */
+export function HoldDelayField() {
+  const pref = usePrefs().holdRotateMs
+  const [text, setText] = useState(pref === null ? '' : String(pref))
+  useEffect(() => setText(pref === null ? '' : String(pref)), [pref])
+  const commit = () => {
+    if (text.trim() === '') { setPref('holdRotateMs', null); return }
+    const n = normalizeHoldMs(Math.round(Number(text) / 50) * 50)
+    if (n === null) setText(pref === null ? '' : String(pref)); else setPref('holdRotateMs', n)
+  }
+  return (
+    <label className="snap-row snap-spacing" title="After placing a device, hold the button this long, then drag to turn it. Releasing sooner just places it.">
+      <span>Hold before rotating (ms)</span>
+      <input type="number" min={HOLD_MIN_MS} max={HOLD_MAX_MS} step={50} inputMode="numeric" placeholder={`${DEFAULT_HOLD_MS}`} value={text}
+        aria-label="Hold before rotating, milliseconds" onChange={e => setText(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
+    </label>
+  )
+}
+
 /** The snap toggles: master switch, one per source, show-grid and grid spacing. Remembered per user (prefs). */
 export function SnapControls({ hasScale, hint }: { hasScale: boolean; hint?: string }) {
   const snap = usePrefs().snap
@@ -59,6 +79,7 @@ export function SnapControls({ hasScale, hint }: { hasScale: boolean; hint?: str
         <span>Show grid</span>
       </label>
       <GridSpacing snap={snap} hasScale={hasScale} />
+      <HoldDelayField />
       <p className="muted small snap-note">Hold Ctrl to place without snapping.</p>
     </div>
   )

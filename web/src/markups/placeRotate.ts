@@ -6,6 +6,27 @@ export const PLACE_SNAP_STEP = 15
 /** The round side of a wall device faces up (-90) in the device's own frame when it has no coverage. */
 const FRONT_IN_FRAME = -90
 
+/** Default time a mouse button must stay down before a held placement starts rotating. */
+export const DEFAULT_HOLD_MS = 250
+export const HOLD_MIN_MS = 0
+export const HOLD_MAX_MS = 1500
+
+/** A stored hold delay (ms) if it is a usable number, else null (= use the defaults). */
+export function normalizeHoldMs(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= HOLD_MIN_MS && v <= HOLD_MAX_MS ? Math.round(v) : null
+}
+
+/** Mouse: the setting, else 250 ms. Touch: the setting, else the normal long-press time. */
+export const mouseHoldMs = (pref: number | null | undefined): number => pref ?? DEFAULT_HOLD_MS
+export const touchHoldMs = (pref: number | null | undefined, longPressMs: number): number => pref ?? longPressMs
+
+/** Opens `delayMs` after it was created: until then pointer movement must not start rotating the placed device. */
+export function createHoldGate(delayMs: number, now: () => number = Date.now) {
+  const t0 = now()
+  return { ready: () => now() - t0 >= delayMs }
+}
+export type HoldGate = ReturnType<typeof createHoldGate>
+
 /** Normalizes degrees to (-180, 180] without rounding. */
 export function norm180(d: number): number {
   const r = ((d % 360) + 360) % 360
@@ -39,6 +60,14 @@ export function faceAngle(g: BoxGeometry, angle: number): BoxGeometry {
   if (g.fov && !g.fov.locked) return { ...g, fov: { ...g.fov, direction: Math.round(angle * 100) / 100 } }
   const rotation = ((angle - FRONT_IN_FRAME) % 360 + 360) % 360
   return { ...g, rotation: Math.round(rotation * 100) / 100 }
+}
+
+/**
+ * A held placement of a wall- or corner-aligned device: it stays locked to its wall and only free coverage turns toward `angle`.
+ * A device without (free) coverage is returned unchanged.
+ */
+export function faceCoverageOnly(g: BoxGeometry, angle: number): BoxGeometry {
+  return rotatesCoverage(g) ? faceAngle(g, angle) : g
 }
 
 /** Angle (page degrees) from a device centre to the pointer, snapped to 15 degrees unless `free`; null when the pointer is on the centre. */

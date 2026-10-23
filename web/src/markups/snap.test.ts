@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SegIndex, buildMarkupIndex, handlePoints, lineAngle, snapHandles, snapOr, snapPoint } from './snap'
+import { SegIndex, buildMarkupIndex, cornerBisector, handlePoints, lineAngle, snapHandles, snapOr, snapPoint } from './snap'
 import type { SnapEnv } from './snap'
 import { DEFAULT_SNAP, gridStep, normalizeSnap } from './snapConfig'
 import type { SnapSettings } from './snapConfig'
@@ -181,5 +181,43 @@ describe('large indexes', () => {
     expect(hit?.x).toBeCloseTo(1002, 3)
     expect(hit?.y).toBeCloseTo(1002, 3)
     expect(ix.nearestOnSegment(1000, 1040, 8)).toBeNull()
+  })
+})
+
+describe('wall corners', () => {
+  const at = (lines: number[], px: number, py: number) => snapPoint(env({ grid: false }, [], lines), { x: px, y: py }, 1)
+  it('L corner: the sector the pointer is in, bisector into the room', () => {
+    // walls from (100,100) going right and down
+    const hit = at([100, 100, 200, 100, 100, 100, 100, 200], 103, 103)
+    expect(hit?.corner).toEqual({ a: 0, b: 90 })
+    expect(cornerBisector(hit!.corner!)).toBeCloseTo(45, 3)
+  })
+  it('L corner seen from outside (the 270 degree side) is not a corner', () => {
+    expect(at([100, 100, 200, 100, 100, 100, 100, 200], 97, 97)?.corner).toBeUndefined()
+  })
+  it('T junction: the pointer picks the side', () => {
+    // straight wall along y = 100 (through the point), stem going down
+    const lines = [0, 100, 100, 100, 100, 100, 200, 100, 100, 100, 100, 200]
+    const below = at(lines, 104, 104)
+    expect(below?.corner).toEqual({ a: 0, b: 90 })
+    const left = at(lines, 96, 104)
+    expect(left?.corner).toEqual({ a: 90, b: 180 })
+    expect(at(lines, 100, 96)?.corner).toBeUndefined() // above the straight wall: plain wall
+  })
+  it('135 degree corner', () => {
+    const d = Math.SQRT1_2 * 50
+    const hit = at([100, 100, 200, 100, 100, 100, 100 - d, 100 + d], 103, 106)
+    expect(hit?.corner?.a).toBeCloseTo(0, 3)
+    expect(hit?.corner?.b).toBeCloseTo(135, 3)
+    expect(cornerBisector(hit!.corner!)).toBeCloseTo(67.5, 3)
+  })
+  it('a point along a single wall has no corner', () => {
+    expect(at([100, 100, 200, 100], 150, 102)?.corner).toBeUndefined()
+  })
+  it('markup polygon vertices are corners too', () => {
+    const e = env({ grid: false, pdf: false }, [mk('p', 'polygon', { x: 100, y: 100, rotation: 0, points: [0, 0, 100, 0, 100, 100, 0, 100] })])
+    const inside = snapPoint(e, { x: 103, y: 103 }, 1)
+    expect(inside?.kind).toBe('endpoint')
+    expect(inside?.corner).toBeDefined()
   })
 })

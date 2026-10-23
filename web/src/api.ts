@@ -10,7 +10,10 @@ export interface Project { id: string; name: string; created_at: string; role: R
   /** Whether this person sees unit costs and labor hours in the project. */
   can_see_costs?: boolean
   /** Project setting: editors see costs (pm and admin always do). Default on. */
-  editors_see_costs?: boolean }
+  editors_see_costs?: boolean
+  /** Cable defaults: slack added to every drawn run (percent) and the drop length added at each linked end (feet). */
+  cable_slack_pct?: number
+  cable_drop_ft?: number }
 export interface DocumentSummary {
   id: string; name: string; created_at: string; device_scale?: number
   revision_id: string; revision: number; page_count: number

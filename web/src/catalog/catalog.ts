@@ -1,7 +1,7 @@
 import type { Mount } from '../markups/mount'
 import { HARDWARE_FIELDS } from '../markups/types'
 import type { FieldDef, Markup, SymbolSet } from '../markups/types'
-import type { CatalogData, DeviceType, Product } from './types'
+import type { CableType, CatalogData, DeviceType, Product } from './types'
 
 /** Lookup structure over the catalog; cheap to rebuild when the data changes. */
 export interface Catalog {
@@ -9,6 +9,10 @@ export interface Catalog {
   products: Map<string, Product>
   typesBySet: Map<string, DeviceType[]>
   productsByType: Map<string, Product[]>
+  /** Every cable type by id, archived ones included (cables drawn with them keep their name and colour). */
+  cableTypes: Map<string, CableType>
+  /** Cable types to offer in pickers: not archived, in list order. */
+  cableTypeList: CableType[]
   /** False when unit costs and labor hours were withheld from this person. */
   canSeeCosts: boolean
 }
@@ -34,7 +38,9 @@ export function buildCatalog(data: CatalogData): Catalog {
     const l = productsByType.get(p.device_type_id)
     if (l) l.push(p); else productsByType.set(p.device_type_id, [p])
   }
-  return { types, products, typesBySet, productsByType, canSeeCosts }
+  const allCables = [...(data.cable_types ?? [])].sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name))
+  const cableTypes = new Map(allCables.map(c => [c.id, c]))
+  return { types, products, typesBySet, productsByType, cableTypes, cableTypeList: allCables.filter(c => !c.archived), canSeeCosts }
 }
 
 export const EMPTY_CATALOG: Catalog = buildCatalog({ device_types: [], products: [] })

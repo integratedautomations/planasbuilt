@@ -46,6 +46,13 @@ describe('copyMarkup', () => {
     expect(camera.geometry.x).toBe(10)
     expect(camera.fields?.ip).toBe('10.0.0.4')
   })
+  it('does not lock a copied cable to the original devices', () => {
+    const cable: Markup = { id: 'c', document_id: 'doc', page: 1, type: 'cable', geometry: { x: 0, y: 0, rotation: 0, points: [0, 0, 5, 5], from: 'a', to: 'b', open: ['to'] }, style, text: '', layer_id: null, fields: { cable_type: 't' } }
+    const c = copyMarkup(cable, { dx: 10 })
+    expect(c.geometry).toEqual({ x: 10, y: 0, rotation: 0, points: [0, 0, 5, 5] })
+    expect(c.fields).toEqual({ cable_type: 't' })
+    expect(cable.geometry).toMatchObject({ from: 'a', to: 'b' })
+  })
   it('moves to another page and keeps non-device data as is', () => {
     const rect: Markup = { id: 'r', document_id: 'doc', page: 1, type: 'rect', geometry: { x: 0, y: 0, width: 5, height: 5, rotation: 0 }, style, text: 'note', layer_id: null, tag: 'x' }
     const c = copyMarkup(rect, { page: 4 })

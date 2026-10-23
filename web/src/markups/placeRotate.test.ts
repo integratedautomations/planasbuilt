@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { angleFromTo, angleLabel, faceAngle, placeAngle, rotatesCoverage, snapAngle } from './placeRotate'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { angleFromTo, angleLabel, createHoldGate, faceAngle, faceCoverageOnly, mouseHoldMs, normalizeHoldMs, placeAngle, rotatesCoverage, snapAngle, touchHoldMs } from './placeRotate'
 import { wallFacing } from './mount'
 import type { BoxGeometry } from './types'
 
@@ -71,5 +71,54 @@ describe('placeRotate', () => {
     expect(angleLabel(-90)).toBe('270\u00b0')
     expect(angleLabel(180)).toBe('180\u00b0')
     expect(angleLabel(-0.2)).toBe('0\u00b0')
+  })
+})
+
+describe('wall-aligned hold: only the coverage turns', () => {
+  it('keeps the aligned rotation and sets the cone direction', () => {
+    const g = box({ rotation: 180, fov: fov({ direction: 90 }) })
+    const out = faceCoverageOnly(g, 30)
+    expect(out.rotation).toBe(180)
+    expect(out.fov?.direction).toBe(30)
+  })
+  it('does nothing for a device without coverage or with locked coverage', () => {
+    const plain = box({ rotation: 90 })
+    expect(faceCoverageOnly(plain, 30)).toBe(plain)
+    const locked = box({ rotation: 90, fov: fov({ locked: true }) })
+    expect(faceCoverageOnly(locked, 30)).toBe(locked)
+  })
+})
+
+describe('hold before rotating', () => {
+  afterEach(() => vi.useRealTimers())
+  it('opens only after the delay (250 ms default)', () => {
+    vi.useFakeTimers()
+    const gate = createHoldGate(mouseHoldMs(null))
+    expect(gate.ready()).toBe(false)
+    vi.advanceTimersByTime(249)
+    expect(gate.ready()).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(gate.ready()).toBe(true)
+  })
+  it('a zero delay is open at once and a longer one waits', () => {
+    vi.useFakeTimers()
+    expect(createHoldGate(0).ready()).toBe(true)
+    const slow = createHoldGate(1000)
+    vi.advanceTimersByTime(999)
+    expect(slow.ready()).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(slow.ready()).toBe(true)
+  })
+  it('defaults: mouse 250 ms, touch the long-press time; settings override both', () => {
+    expect(mouseHoldMs(null)).toBe(250)
+    expect(touchHoldMs(null, 500)).toBe(500)
+    expect(mouseHoldMs(400)).toBe(400)
+    expect(touchHoldMs(0, 500)).toBe(0)
+  })
+  it('normalizes stored values to 0..1500 or null', () => {
+    expect(normalizeHoldMs(300)).toBe(300)
+    expect(normalizeHoldMs(-1)).toBeNull()
+    expect(normalizeHoldMs(1501)).toBeNull()
+    expect(normalizeHoldMs('x')).toBeNull()
   })
 })

@@ -100,13 +100,14 @@ export const loadSymbolSets = () => readThrough(
 
 export const loadCatalog = () => readThrough(
   () => api<CatalogData>('/catalog'),
-  async d => db.transaction('rw', db.deviceTypes, db.products, async () => {
+  async d => db.transaction('rw', db.deviceTypes, db.products, db.cableTypes, async () => {
     await db.deviceTypes.clear(); await db.deviceTypes.bulkPut(d.device_types)
     await db.products.clear(); await db.products.bulkPut(d.products)
+    await db.cableTypes.clear(); await db.cableTypes.bulkPut(d.cable_types ?? [])
   }),
   async () => {
-    const device_types = await db.deviceTypes.toArray(), products = await db.products.toArray()
-    return device_types.length || products.length ? { device_types, products } : undefined
+    const device_types = await db.deviceTypes.toArray(), products = await db.products.toArray(), cable_types = await db.cableTypes.toArray()
+    return device_types.length || products.length ? { device_types, products, cable_types } : undefined
   },
   'Catalog',
 )

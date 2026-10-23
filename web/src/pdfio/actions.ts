@@ -15,6 +15,8 @@ import { buildReport } from './report'
 import { DEFAULT_REPORT_OPTIONS } from './reportOptions'
 import type { ReportOptions } from './reportOptions'
 import type { ReportPhoto } from './report'
+import { cableSettings } from '../markups/cables'
+import type { Project } from '../api'
 
 export interface DocExportArgs {
   documentId: string
@@ -45,13 +47,14 @@ interface ProjectScaleRow { document_id: string; page: number; points_per_foot: 
 
 /** Builds and downloads the as-built report for a whole project. */
 export async function exportProjectReport(projectId: string, projectName: string, options: ReportOptions = DEFAULT_REPORT_OPTIONS, onProgress?: (done: number, total: number, label: string) => void) {
-  const [docs, markups, scaleRows, sets, catData] = await Promise.all([
+  const [docs, markups, scaleRows, sets, catData, project] = await Promise.all([
     // (catalog is optional: older servers / offline just report without product columns)
     api<DocumentSummary[]>(`/projects/${projectId}/documents`),
     api<Markup[]>(`/projects/${projectId}/markups`),
     api<ProjectScaleRow[]>(`/projects/${projectId}/scales`).catch(() => [] as ProjectScaleRow[]),
     api<SymbolSet[]>('/symbol-sets'),
     api<CatalogData>('/catalog').catch(() => ({ device_types: [], products: [] }) as CatalogData),
+    api<Project>(`/projects/${projectId}`).catch(() => null),
   ])
   const catalog = buildCatalog(catData)
   const symbolSets = new Map(sets.map(s => [s.id, s]))
@@ -73,6 +76,6 @@ export async function exportProjectReport(projectId: string, projectName: string
     }
     return out
   }
-  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress, options })
+  const bytes = await buildReport({ projectName, date: new Date(), sheets, markups, symbolSets, catalog, icons, photosFor, onProgress, options, cableDefaults: cableSettings(project) })
   downloadBytes(bytes, exportFileName(projectName, 'as-built-report'))
 }

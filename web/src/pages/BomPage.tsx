@@ -6,6 +6,7 @@ import { computeBom, hours, money } from '../catalog/bom'
 import type { BomDevice, BomSection } from '../catalog/bom'
 import { bomFileName, downloadBomExcel, downloadBomPdf } from '../catalog/bomExport'
 import { useCatalog } from '../catalog/useCatalog'
+import { cableSettings, cableTotals } from '../markups/cables'
 import type { Markup, SymbolSet } from '../markups/types'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { db } from '../offline/db'
@@ -24,6 +25,7 @@ export function BomPage({ user }: { user: User }) {
   const [docs, setDocs] = useState<DocumentSummary[]>([])
   const [markups, setMarkups] = useState<Markup[]>([])
   const [sets, setSets] = useState<SymbolSet[]>([])
+  const [scaleRows, setScaleRows] = useState<{ document_id: string; page: number; points_per_foot: number }[]>([])
   const [docFilter, setDocFilter] = useState('')
   const [area, setArea] = useState('')
   const [error, setError] = useState('')
@@ -35,6 +37,7 @@ export function BomPage({ user }: { user: User }) {
   useEffect(() => {
     loadProject(projectId!).then(r => setProject(r.data)).catch(e => setError(e.message))
     loadSymbolSets().then(r => setSets(r.data)).catch(() => {})
+    api<{ document_id: string; page: number; points_per_foot: number }[]>(`/projects/${projectId}/scales`).then(setScaleRows).catch(() => {})
     loadDocuments(projectId!).then(async r => {
       setDocs(r.data)
       try {
@@ -54,6 +57,11 @@ export function BomPage({ user }: { user: User }) {
   })), [rows])
   const areas = useMemo(() => areaOptions(docFilter ? rows.filter(r => r.documentId === docFilter) : rows), [rows, docFilter])
   const bom = useMemo(() => computeBom(devices, catalog, setMap, { documentId: docFilter || undefined, area: area || undefined }), [devices, catalog, setMap, docFilter, area])
+  const cables = useMemo(() => {
+    const ppf = new Map(scaleRows.map(s => [`${s.document_id}:${s.page}`, s.points_per_foot]))
+    const list = docFilter ? markups.filter(m => m.document_id === docFilter) : markups
+    return cableTotals(list, (d, p) => ppf.get(`${d}:${p}`) ?? null, catalog.cableTypes, cableSettings(project))
+  }, [markups, scaleRows, docFilter, catalog, project])
   const scope = [docFilter ? docs.find(d => d.id === docFilter)?.name : 'All plans', area || 'all areas'].join(', ')
   const deviceCount = devices.filter(d => (!docFilter || d.documentId === docFilter)).length
 
@@ -61,8 +69,8 @@ export function BomPage({ user }: { user: User }) {
     if (!project) return
     setBusy(kind); setError('')
     try {
-      if (kind === 'xlsx') await downloadBomExcel(bom, bomFileName(project.name, 'xlsx'), costs)
-      else await downloadBomPdf(bom, { projectName: project.name, scope, date: new Date(), costs }, bomFileName(project.name, 'pdf'))
+      if (kind === 'xlsx') await downloadBomExcel(bom, bomFileName(project.name, 'xlsx'), costs, cables)
+      else await downloadBomPdf(bom, { projectName: project.name, scope, date: new Date(), costs, cables }, bomFileName(project.name, 'pdf'))
     } catch (e) { setError(`Export failed: ${(e as Error).message}`) } finally { setBusy('') }
   }
 
@@ -100,6 +108,24 @@ export function BomPage({ user }: { user: User }) {
         </div>
         {error && <div className="error">{error}</div>}
         <p className="muted small">{deviceCount} placed device{deviceCount === 1 ? '' : 's'} in scope. Each device in a stack counts. Accessories are multiplied by device count and merged by product.</p>
+        {cables.length > 0 && (
+          <div className="table-scroll">
+            <h3>Cables</h3>
+            <table className="bom-table">
+              <thead><tr><th>Cable type</th><th className="num">Cables</th><th className="num">Runs</th><th className="num">Length</th></tr></thead>
+              <tbody>
+                {cables.map(c => (
+                  <tr key={c.typeId || 'none'}>
+                    <td><span className="dot" style={{ background: c.color }} /> {c.name}</td>
+                    <td className="num">{c.cables}</td><td className="num">{c.runs}</td>
+                    <td className="num">{(Math.round(c.lengthFt * 10) / 10).toLocaleString('en-US')} ft{c.unscaled > 0 && <span className="muted small"> (+{c.unscaled} on pages without a scale)</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="muted small">Length = drawn x (1 + slack) + drop x linked ends, times runs. Slack and drop come from the project's cable defaults unless a cable overrides them.</p>
+          </div>
+        )}
         {bom.lines.length === 0 ? <p className="muted">No devices to list.</p> : (
           <div className="table-scroll">
             <table className="bom-table">

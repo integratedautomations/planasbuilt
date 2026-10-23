@@ -3,6 +3,8 @@ import { api } from '../api'
 
 /** What the server reports for the Standard device library (preview and result share this shape). */
 export interface LibrarySummary {
+  /** Cable types added (absent from older servers). */
+  cableTypesAdded?: number
   setsCreated: number
   typesAdded: number
   typesUpdated: number
@@ -35,7 +37,7 @@ export function StandardLibraryDialog({ onClose, onDone }: { onClose: () => void
   }
 
   const s = result ?? preview
-  const nothing = !!s && !s.setsCreated && !s.typesAdded && !s.typesUpdated
+  const nothing = !!s && !s.setsCreated && !s.typesAdded && !s.typesUpdated && !s.cableTypesAdded
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="card modal wide" role="dialog" aria-label="Standard device library" onClick={e => e.stopPropagation()}>
@@ -49,7 +51,7 @@ export function StandardLibraryDialog({ onClose, onDone }: { onClose: () => void
         {!s && !error && <p className="muted">Checking the catalog…</p>}
         {s && (
           <div className="stack" aria-live="polite">
-            <strong>{result ? 'Done' : 'This will'}: {plural(s.setsCreated, 'symbol set')} created, {plural(s.typesAdded, 'device type')} added, {plural(s.typesUpdated, 'device type')} updated.</strong>
+            <strong>{result ? 'Done' : 'This will'}: {plural(s.setsCreated, 'symbol set')} created, {plural(s.typesAdded, 'device type')} added, {plural(s.typesUpdated, 'device type')} updated{s.cableTypesAdded ? `, ${plural(s.cableTypesAdded, 'cable type')} added` : ''}.</strong>
             {nothing && <p className="muted">The catalog already has the whole library.</p>}
             {s.newSets.length > 0 && <p className="small">New sets: {s.newSets.join(', ')}</p>}
             {s.updatedTypes.length > 0 && (

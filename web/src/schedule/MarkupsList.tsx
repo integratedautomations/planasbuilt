@@ -13,6 +13,7 @@ import { ImportDialog } from './ImportDialog'
 import { areaOptions, buildRows, cellText, exportFileName, exportTables, filterRows, listColumns, NO_FILTER, sortRows } from './rows'
 import type { ColumnDef, RowFilter, ScheduleRow } from './rows'
 import { clearTextSelection, clickSelect, guardRangeMouseDown, keySelect } from '../ui/listSelection'
+import type { CableSettings } from '../markups/cables'
 import './schedule.css'
 
 export type Scope = 'sheet' | 'document' | 'project'
@@ -41,6 +42,8 @@ interface Props {
   onVisibleColumns?: (ids: string[] | null) => void
   onJump: (t: JumpTarget) => void
   onClose: () => void
+  /** Project cable defaults, so a cable's value is its total length. */
+  cableDefaults?: CableSettings
 }
 
 const HEIGHT_KEY = 'planmark.list.height'
@@ -89,8 +92,8 @@ export function MarkupsList(p: Props) {
   [documentId, p.localScales, projectScales])
 
   const allRows = useMemo(
-    () => buildRows(source, { symbolSets: sets, catalog, docNames, photoCounts, scaleFor, showAll }),
-    [source, sets, catalog, docNames, photoCounts, scaleFor, showAll])
+    () => buildRows(source, { symbolSets: sets, catalog, docNames, photoCounts, scaleFor, showAll, cableDefaults: p.cableDefaults }),
+    [source, sets, catalog, docNames, photoCounts, scaleFor, showAll, p.cableDefaults])
   const allColumns = useMemo(() => listColumns(allRows, sets, filter.setId, showAll), [allRows, sets, filter.setId, showAll])
   const columns = useMemo(() => p.visibleColumns ? allColumns.filter(c => c.id === 'tag' || p.visibleColumns!.includes(c.id)) : allColumns, [allColumns, p.visibleColumns])
   const rows = useMemo(() => sortRows(filterRows(allRows, filter), allColumns, sort.col, sort.dir), [allRows, filter, allColumns, sort])
@@ -113,7 +116,7 @@ export function MarkupsList(p: Props) {
   async function exportExcel() {
     setBusy(true); setExportError('')
     try {
-      const all = buildRows(source, { symbolSets: sets, catalog, docNames, photoCounts, scaleFor, showAll: true })
+      const all = buildRows(source, { symbolSets: sets, catalog, docNames, photoCounts, scaleFor, showAll: true, cableDefaults: p.cableDefaults })
       const { downloadWorkbook } = await import('./xlsxIO')
       await downloadWorkbook(exportTables(all, setList), exportFileName(p.projectName))
     } catch (e) { setExportError((e as Error).message) } finally { setBusy(false) }

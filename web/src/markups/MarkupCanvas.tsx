@@ -22,15 +22,19 @@ import type { Catalog } from '../catalog/catalog'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 import { initialCoverage } from './coverage'
-import { PLACE_ROTATE_SLOP_PX, angleLabel, faceAngle, placeAngle } from './placeRotate'
+import { PLACE_ROTATE_SLOP_PX, angleLabel, faceAngle, faceCoverageOnly, createHoldGate, mouseHoldMs, placeAngle, rotatesCoverage, touchHoldMs } from './placeRotate'
+import type { HoldGate } from './placeRotate'
 import type { Peer } from '../realtime/presence'
 import { REDLINE } from './canvasFonts'
 import { createTouchArbiter, isDoubleTap, LONG_PRESS_MS } from '../viewer/touchGesture'
 import { usePrefs } from '../prefs/store'
 import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } from './snap'
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
-import { GRID_DRAW_MIN_PX, gridStep as gridStepOf } from './snapConfig'
+import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
 import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
+import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, danglingEnds, deviceCentreOf, nearestDevice, relinkEnds } from './cables'
+import type { CableSettings } from './cables'
+import { formatFeetInches } from './measure'
 
 // Only the left button drags markups: middle pans the plan and right box-selects.
 Konva.dragButtons = [0]
@@ -108,6 +112,8 @@ interface Props {
   onDeviceOverlap?: (target: Markup, placed: Markup) => boolean
   /** Vector lines of the PDF page, indexed for snapping (null while loading / switched off / scanned pages). */
   pdfLines?: SegIndex | null
+  /** Project cable defaults (slack %, drop ft) for the length shown on a cable. */
+  cableDefaults?: CableSettings
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-radius']
@@ -119,7 +125,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-ra
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap, pdfLines } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap, pdfLines, cableDefaults } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -169,6 +175,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const [ghostGeo, setGhostGeo] = useState<BoxGeometry | null>(null)
   // Snapping: settings from the user's prefs, an index of this page's markups, and the PDF line index from the viewer.
   const snapSettings = usePrefs().snap
+  const holdPref = usePrefs().holdRotateMs
   const markupIndex = useMemo(() => (snapSettings.on && (snapSettings.markups || snapSettings.devices) ? buildMarkupIndex(markups) : null),
     [markups, snapSettings.on, snapSettings.markups, snapSettings.devices])
   const snapEnv: SnapEnv = { settings: snapSettings, pdf: pdfLines ?? null, markups: markupIndex, gridStep: gridStepOf(snapSettings, scale) }
@@ -188,7 +195,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const [touchUi, setTouchUi] = useState(false)
   const latest = useRef<Record<string, (...a: never[]) => unknown>>({})
   /** Device placement held open until release: the pointer may turn it first. `base` is the geometry as placed; `m` is what commits. */
-  const placeRef = useRef<{ m: Markup; base: BoxGeometry; c: Pt; cx: number; cy: number; moved: boolean } | null>(null)
+  const placeRef = useRef<{ m: Markup; base: BoxGeometry; c: Pt; cx: number; cy: number; moved: boolean; aligned: boolean; gate: HoldGate } | null>(null)
   const [placeView, setPlaceView] = useState<{ m: Markup; to: Pt | null; angle: number | null } | null>(null)
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
   // Plex arrives from Google Fonts after the first draw: re-measure canvas text once it has loaded.
@@ -237,6 +244,20 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     return hit
   }
 
+  /**
+   * Cable points snap to a device centre first (so the end can lock to it). Not with Shift or Ctrl held. Shows the snap marker when
+   * `mark` is set. The device to lock is found again from the point when the cable is finished.
+   */
+  function cableDeviceSnap(p: Pt, ev: unknown, mark = true): SnapHit | null {
+    const e = ev as { shiftKey?: boolean } | null | undefined
+    if (e?.shiftKey || ctrlOf(ev)) return null
+    const d = nearestDevice(markups, p, SNAP_RADIUS_PX / liveZoom())
+    const c = d && deviceCentreOf(d)
+    const hit: SnapHit | null = c ? { point: c, kind: 'device' } : null
+    if (mark) showMark(hit)
+    return hit
+  }
+
   const newMarkup = (type: MarkupType, geometry: BoxGeometry | PathGeometry): Markup => ({
     id: uuid(), document_id: newBase.document_id, page: newBase.page, type, geometry,
     style: type === 'area' ? { ...AREA_STYLE } : { ...newBase.style }, text: type === 'stamp' ? newBase.stampText : '', layer_id: newBase.layer_id,
@@ -263,7 +284,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     // Drop the rubber-band point and any double-click duplicate
     const pts = clickPts.current.filter((p, i, a) => i === 0 || Math.hypot(p.x - a[i - 1].x, p.y - a[i - 1].y) > 0.5)
     const min = CLOSED.includes(draft.type) ? 3 : 2
-    finish(pts.length >= min ? newMarkup(draft.type, pathFromPoints(pts)) : null)
+    const geometry = pts.length >= min ? pathFromPoints(pts) : null
+    // A cable end that sits on a device centre locks to that device
+    finish(geometry ? newMarkup(draft.type, draft.type === 'cable' ? relinkEnds(geometry, byId, newBase.page) : geometry) : null)
   }
 
   const cancelMarquee = () => { marqueeStart.current = null; marqueeRect.current = null; setMarquee(null) }
@@ -299,8 +322,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }
 
   /** Open a held placement at `c`: nothing commits until commitPlace. */
-  function beginPlace(m: Markup, c: Pt, cx: number, cy: number) {
-    placeRef.current = { m, base: m.geometry as BoxGeometry, c, cx, cy, moved: false }
+  function beginPlace(m: Markup, c: Pt, cx: number, cy: number, aligned = false, holdMs = 0) {
+    placeRef.current = { m, base: m.geometry as BoxGeometry, c, cx, cy, moved: false, aligned, gate: createHoldGate(holdMs) }
     setDevGhost(null); setSnapHint(null)
     setPlaceView({ m, to: null, angle: null })
   }
@@ -309,15 +332,16 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
    * Where and how a new device goes for a pointer position: snapped to a line / corner / grid and, with Align to walls, turned
    * to the line it snapped to (a wall D sits with its flat side on the line, facing away from it toward the pointer).
    */
-  function placement(p: Pt, set: SymbolSet, ev: unknown, mark = true): { geometry: BoxGeometry; at: Pt; c: Pt } {
+  function placement(p: Pt, set: SymbolSet, ev: unknown, mark = true): { geometry: BoxGeometry; at: Pt; c: Pt; aligned: boolean } {
     const size = 24 * (props.deviceScale ?? 1)
     const typeCov = newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null
     const covFov = initialCoverage(set, typeCov, scale ?? null)
     const hit = snapAt(p, ev, {}, mark)
     const at = hit?.point ?? p
     let geometry: BoxGeometry = { x: at.x - size / 2, y: at.y - size / 2, width: size, height: size, rotation: 0, ...(covFov ? { fov: covFov } : {}) }
-    if (hit && snapSettings.align && alignable(hit)) geometry = alignDevice(geometry, hit, p, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined)
-    return { geometry, at, c: deviceCenter(geometry) }
+    const aligned = !!hit && snapSettings.align && alignable(hit)
+    if (hit && aligned) geometry = alignDevice(geometry, hit as typeof hit & { angle: number }, p, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined)
+    return { geometry, at, c: deviceCenter(geometry), aligned }
   }
 
   /** Touch long-press on empty space with the device tool: place a device and let the finger turn it. False = not applicable (stack / overlap / no set). */
@@ -327,7 +351,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)) return false
     const pl = placement(p, set, null, false)
     if (onDeviceOverlap && findOverlapTarget(markups, pl.at, set.id, newBase.deviceTypeId ?? null)) return false
-    beginPlace(newMarkup('device', pl.geometry), pl.c, cx, cy)
+    beginPlace(newMarkup('device', pl.geometry), pl.c, cx, cy, pl.aligned, 0) // the long press itself was the hold
     return true
   }
 
@@ -337,11 +361,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (!pl) return
     if (!pl.moved) {
       if (Math.hypot(cx - pl.cx, cy - pl.cy) <= PLACE_ROTATE_SLOP_PX) return
+      if (!pl.gate.ready()) return // released early = plain placement; moving before the hold time does nothing
       pl.moved = true
     }
     const angle = placeAngle(pl.c, ptr, free)
     if (angle === null) return
-    pl.m = { ...pl.m, geometry: withCenter(faceAngle(pl.base, angle), pl.c) }
+    // Locked to a wall or corner: only the coverage turns; the device keeps its aligned rotation
+    if (pl.aligned && !rotatesCoverage(pl.base)) return
+    pl.m = { ...pl.m, geometry: pl.aligned ? faceCoverageOnly(pl.base, angle) : withCenter(faceAngle(pl.base, angle), pl.c) }
     setPlaceView({ m: pl.m, to: ptr, angle })
   }
 
@@ -428,7 +455,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (over && onDeviceOverlap!(over, placed)) { finish(null); return }
       // Mouse / pen: keep the placement open until release so the pointer can turn it. Touch taps place at once.
       if (e.evt.pointerType === 'touch') finish(placed)
-      else beginPlace(placed, pl.c, e.evt.clientX, e.evt.clientY)
+      else beginPlace(placed, pl.c, e.evt.clientX, e.evt.clientY, pl.aligned, mouseHoldMs(holdPref))
       return
     }
     if (t === 'count') {
@@ -440,7 +467,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
     if (CLICK_PATHS.includes(t)) {
       const pts = clickPts.current
-      const sp = e.evt.shiftKey ? p : snapAt(p, e.evt, { extra: pts.slice(0, -1) }, false)?.point ?? p
+      const sp = (t === 'cable' ? cableDeviceSnap(p, e.evt, false)?.point : undefined) ?? (e.evt.shiftKey ? p : snapAt(p, e.evt, { extra: pts.slice(0, -1) }, false)?.point ?? p)
       if (!pts.length) {
         clickPts.current = [sp, sp]
       } else {
@@ -496,13 +523,16 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
     if (!draft) {
       // Hovering with a drawing tool: show where the first point would snap
-      if (isDrawTool && e.evt.pointerType !== 'touch' && !['freehand', 'stamp', 'legend', 'device'].includes(tool)) snapAt(pointer(), e.evt)
+      if (isDrawTool && e.evt.pointerType !== 'touch' && !['freehand', 'stamp', 'legend', 'device'].includes(tool)) {
+        if (!(tool === 'cable' && cableDeviceSnap(pointer(), e.evt))) snapAt(pointer(), e.evt)
+      }
       return
     }
     const raw = pointer()
     const shift = e.evt.shiftKey
     const clickPath = CLICK_PATHS.includes(draft.type) && !dragStart.current
-    const hit = shift || draft.type === 'freehand' ? null : snapAt(raw, e.evt, clickPath ? { extra: clickPts.current.slice(0, -1) } : {})
+    const hit = (draft.type === 'cable' ? cableDeviceSnap(raw, e.evt) : null)
+      ?? (shift || draft.type === 'freehand' ? null : snapAt(raw, e.evt, clickPath ? { extra: clickPts.current.slice(0, -1) } : {}))
     if (!hit) showMark(null)
     const p = hit?.point ?? raw
     if (clickPath) {
@@ -642,7 +672,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
         }
         onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt })
-      }, LONG_PRESS_MS)
+      }, tool === 'device' ? touchHoldMs(holdPref, LONG_PRESS_MS) : LONG_PRESS_MS)
     }
     if (!t.unlisten) {
       const mv = (ev: PointerEvent) => {
@@ -754,13 +784,19 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   /** A point handle of a selected path is being dragged: its snapped position in the markup's local space, or null. */
   function snapHandle(m: Markup, _index: number, lx: number, ly: number, ev: Event): { x: number; y: number } | null {
     const g = m.geometry
-    if (!('points' in g) || !snapActive(snapEnv, ctrlOf(ev))) { showMark(null); return null }
+    if (!('points' in g)) { showMark(null); return null }
     const a = (g.rotation * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a)
+    const toLocal = (q: Pt) => { const dx = q.x - g.x, dy = q.y - g.y; return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos } }
+    // The two ends of a cable snap to device centres first: dropping an end there locks it, dragging it off unlocks it
+    if (m.type === 'cable' && (_index === 0 || _index === g.points.length / 2 - 1)) {
+      const hit = cableDeviceSnap({ x: g.x + lx * cos - ly * sin, y: g.y + lx * sin + ly * cos }, ev)
+      if (hit) return toLocal(hit.point)
+    }
+    if (!snapActive(snapEnv, ctrlOf(ev))) { showMark(null); return null }
     const hit = snapPoint(snapEnv, { x: g.x + lx * cos - ly * sin, y: g.y + lx * sin + ly * cos }, liveZoom(), { skip: new Set([m.id]) })
     showMark(hit)
     if (!hit) return null
-    const dx = hit.point.x - g.x, dy = hit.point.y - g.y
-    return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos }
+    return toLocal(hit.point)
   }
 
   /** The markups a Ctrl+drag of `id` copies (one device when dragging out of a stack). */
@@ -929,8 +965,13 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const editable = single?.id === m.id && !readOnly && tool === 'select'
             && 'points' in m.geometry && m.type !== 'freehand' && !lockedIds.has(m.id) && !isSheetArea(m)
           const stk = stacks.byId.get(m.id)
+          const isCable = m.type === 'cable'
+          const len = isCable && scale ? cableLength(m, scale, cableDefaults ?? DEFAULT_CABLE_SETTINGS, byId) : null
+          const drawn = isCable ? { ...shown, style: { ...shown.style, stroke: cableColor(m, catalog?.cableTypes) } } : shown
           return (
-            <MarkupShape key={m.id} markup={shown}
+            <MarkupShape key={m.id} markup={drawn}
+              dangling={isCable ? danglingEnds(m, byId) : undefined}
+              cableLabel={len ? `${formatFeetInches(len.runFt)}${len.count > 1 ? ` x${len.count}` : ''}` : undefined}
               ghost={!!stk && stackTop(stk).id !== m.id}
               stack={stk && stackTop(stk).id === m.id ? { count: stk.members.length, label: tagRange(stk.members.map(x => x.tag ?? '')), statuses: stk.members.map(x => x.status ?? '') } : undefined} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
               areaPath={m.type === 'area' ? areaPaths.get(m.id) : undefined}
@@ -955,7 +996,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
                 setPointOverride(null)
                 setSnapMark(null)
                 if (touch.current.cancelled) return
-                commit([{ before: m, after: { ...m, geometry: { ...(m.geometry as PathGeometry), points } } }])
+                const moved = { ...(m.geometry as PathGeometry), points }
+                commit([{ before: m, after: { ...m, geometry: m.type === 'cable' ? relinkEnds(moved, byId, m.page) : moved } }])
               }}
               onDragStart={onDragStart} onDragMove={canDrag(m) ? onShapeDragMove : undefined} onDragEnd={onDragEnd} />
           )

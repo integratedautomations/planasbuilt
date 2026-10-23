@@ -44,7 +44,7 @@ export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: P
   const toggle = <T,>(s: Set<T>, v: T) => { const n = new Set(s); if (n.has(v)) n.delete(v); else n.add(v); return n }
   const rangeErrors = useMemo(() => Object.fromEntries(docs.map(d => [d.id, pageRangeError(o.pageRanges[d.id] ?? '', d.page_count)])), [docs, o.pageRanges])
   const hasError = Object.entries(rangeErrors).some(([id, e]) => e && docOn.has(id))
-  const nothing = docOn.size === 0 || (!o.includeSheets && !o.includeDevices && !o.titlePage)
+  const nothing = docOn.size === 0 || (!o.includeSheets && !o.includeDevices && !o.titlePage && !o.includeWiring)
 
   function submit() {
     const final: ReportOptions = {
@@ -96,6 +96,7 @@ export function ReportDialog({ projectName, docs, busy, onGenerate, onClose }: P
           <label className="check"><input type="checkbox" checked={o.includeDevices} onChange={e => patch({ includeDevices: e.target.checked })} /> Device pages</label>
           <label className="check"><input type="checkbox" checked={o.includeLegend} onChange={e => patch({ includeLegend: e.target.checked })} /> Legend summary (device counts)</label>
           <label className="check"><input type="checkbox" checked={o.includeBom} onChange={e => patch({ includeBom: e.target.checked })} /> Bill of materials summary</label>
+          <label className="check"><input type="checkbox" checked={o.includeWiring} onChange={e => patch({ includeWiring: e.target.checked })} /> Wiring riser (tabloid pages, from the cable runs)</label>
         </fieldset>
 
         {o.includeDevices && (
