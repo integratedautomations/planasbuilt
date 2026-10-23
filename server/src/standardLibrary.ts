@@ -195,48 +195,48 @@ function addOf(std: StdSet, live: SetRow | null, d: StdDevice): PlanTypeAdd {
 
 // ---- Database
 
-export async function loadPlanInput(q: Db['query']): Promise<{ sets: SetRow[]; types: TypeRow[]; cableNames: string[] }> {
-  const sets = await q<SetRow>('SELECT id, name, archived FROM symbol_sets ORDER BY sort, created_at')
-  const types = await q<TypeRow>('SELECT id, symbol_set_id, name, icon, tag_prefix, coverage, mount, archived FROM device_types ORDER BY sort, created_at')
-  const cableNames = (await q<{ name: string }>('SELECT name FROM cable_types')).map(r => r.name)
+export async function loadPlanInput(q: Db['query'], companyId: string): Promise<{ sets: SetRow[]; types: TypeRow[]; cableNames: string[] }> {
+  const sets = await q<SetRow>('SELECT id, name, archived FROM symbol_sets WHERE company_id = $1 ORDER BY sort, created_at', [companyId])
+  const types = await q<TypeRow>('SELECT id, symbol_set_id, name, icon, tag_prefix, coverage, mount, archived FROM device_types WHERE company_id = $1 ORDER BY sort, created_at', [companyId])
+  const cableNames = (await q<{ name: string }>('SELECT name FROM cable_types WHERE company_id = $1', [companyId])).map(r => r.name)
   return { sets, types, cableNames }
 }
 
-export async function previewLibrary(db: Db): Promise<LibrarySummary> {
-  const { sets, types, cableNames } = await loadPlanInput(db.query.bind(db))
+export async function previewLibrary(db: Db, companyId: string): Promise<LibrarySummary> {
+  const { sets, types, cableNames } = await loadPlanInput(db.query, companyId)
   return summarize(planLibrary(sets, types, cableNames))
 }
 
 /** Applies the plan in one transaction. A second run finds nothing to do. */
-export async function installLibrary(db: Db): Promise<LibrarySummary> {
+export async function installLibrary(db: Db, companyId: string): Promise<LibrarySummary> {
   return db.transaction(async q => {
-    const { sets, types, cableNames } = await loadPlanInput(q)
+    const { sets, types, cableNames } = await loadPlanInput(q, companyId)
     const plan = planLibrary(sets, types, cableNames)
     const ids = new Map<string, string>() // folder -> id of the set created in this run
     for (const s of plan.setsToCreate) {
       const [row] = await q<{ id: string }>(
-        `INSERT INTO symbol_sets (name, color, tag_prefix, icon, fields, has_fov, sort)
-         VALUES ($1,$2,$3,$4,'[]',$5,(SELECT coalesce(max(sort),0)+1 FROM symbol_sets)) RETURNING id`,
-        [s.name, s.color, s.tag_prefix, s.icon, s.has_fov])
+        `INSERT INTO symbol_sets (company_id, name, color, tag_prefix, icon, fields, has_fov, sort)
+         VALUES ($6,$1,$2,$3,$4,'[]',$5,(SELECT coalesce(max(sort),0)+1 FROM symbol_sets WHERE company_id = $6)) RETURNING id`,
+        [s.name, s.color, s.tag_prefix, s.icon, s.has_fov, companyId])
       ids.set(s.folder, row.id)
     }
     for (const t of plan.typesToAdd) {
       const setId = t.setId ?? ids.get(t.folder)!
       await q(
-        `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, coverage, mount, sort)
-         VALUES ($1,$2,$3,$4,'[]',$5,$6,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1))`,
-        [setId, t.name, t.icon, t.tag_prefix, t.coverage ? JSON.stringify(t.coverage) : null, t.mount])
+        `INSERT INTO device_types (company_id, symbol_set_id, name, icon, tag_prefix, fields, coverage, mount, sort)
+         VALUES ($7,$1,$2,$3,$4,'[]',$5,$6,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1))`,
+        [setId, t.name, t.icon, t.tag_prefix, t.coverage ? JSON.stringify(t.coverage) : null, t.mount, companyId])
     }
     for (const u of plan.typesToUpdate) {
       // Only the blanks the plan found are written; COALESCE keeps every other column as it is
       await q(
         `UPDATE device_types SET icon = coalesce($2, icon), mount = coalesce($3, mount), tag_prefix = coalesce($4, tag_prefix),
-           coverage = coalesce($5::jsonb, coverage) WHERE id = $1`,
-        [u.id, u.set.icon ?? null, u.set.mount ?? null, u.set.tag_prefix ?? null, u.set.coverage ? JSON.stringify(u.set.coverage) : null])
+           coverage = coalesce($5::jsonb, coverage) WHERE id = $1 AND company_id = $6`,
+        [u.id, u.set.icon ?? null, u.set.mount ?? null, u.set.tag_prefix ?? null, u.set.coverage ? JSON.stringify(u.set.coverage) : null, companyId])
     }
     for (const name of plan.cableTypesToAdd) {
       const c = STD_CABLE_TYPES.find(x => x.name === name)!
-      await q('INSERT INTO cable_types (name, color, sort) VALUES ($1,$2,(SELECT coalesce(max(sort),0)+1 FROM cable_types))', [c.name, c.color])
+      await q('INSERT INTO cable_types (company_id, name, color, sort) VALUES ($3,$1,$2,(SELECT coalesce(max(sort),0)+1 FROM cable_types WHERE company_id = $3))', [c.name, c.color, companyId])
     }
     return summarize(plan)
   })

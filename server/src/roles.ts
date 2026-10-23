@@ -59,7 +59,15 @@ export function normalizeScope(v: unknown): Scope {
 }
 
 /** Who someone is in one project. */
-export interface Access { role: Role; scope: Scope; editorsSeeCosts: boolean; /** The project is locked: only admins may change anything. */ locked?: boolean }
+export interface Access {
+  role: Role; scope: Scope; editorsSeeCosts: boolean
+  /** The project is locked: only admins may change anything. */
+  locked?: boolean
+  /** The company that owns the project. */
+  companyId?: string
+  /** Not a project member: admin access granted by being an owner/admin of the project's company (or a platform admin). */
+  implicit?: boolean
+}
 
 /** Capabilities that change data; a locked project allows them to admins only. */
 export const WRITE_CAPS: ReadonlySet<Cap> = new Set<Cap>([

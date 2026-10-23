@@ -25,6 +25,8 @@ export interface Peer {
 export interface Conn extends Peer {
   socket: WebSocket
   documentId: string | null
+  /** The company this socket works in (decides which catalog events it gets). null = none (removed from it). */
+  companyId: string | null
   /** Role and scope in the project of the joined document: decides which markups this socket is sent. Unset = unrestricted. */
   access: Pick<Access, 'role' | 'scope'> | null
   alive: boolean
@@ -59,9 +61,9 @@ export class Realtime {
 
   close() { clearInterval(this.timer) }
 
-  add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null }): Conn {
+  add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null; companyId?: string | null }): Conn {
     const c: Conn = {
-      socket, ...info, avatar: info.avatar ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
+      socket, ...info, avatar: info.avatar ?? null, companyId: info.companyId ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
       documentId: null, access: null, alive: true, windowStart: 0, windowCount: 0, joinWindowStart: 0, joinCount: 0,
     }
     this.conns.add(c)
@@ -92,6 +94,19 @@ export class Realtime {
   /** Closes every socket of a user (deactivated, password changed, role changed). */
   kickUser(userId: string) {
     for (const c of [...this.conns]) if (c.userId === userId) { try { c.socket.close(4401, 'Signed out') } catch { /* going away */ } this.remove(c) }
+  }
+
+  /** The socket now works in another company (the user switched). */
+  setCompany(c: Conn, companyId: string | null) { c.companyId = companyId }
+
+  /** A person was removed from a company: their sockets leave its document rooms and stop getting its catalog events. */
+  dropUserFromCompany(userId: string, companyId: string, documentIds: string[]) {
+    const ids = new Set(documentIds)
+    for (const c of [...this.conns]) {
+      if (c.userId !== userId) continue
+      if (c.documentId && ids.has(c.documentId)) this.leave(c)
+      if (c.companyId === companyId) c.companyId = null
+    }
   }
 
   /** Takes a user out of the given documents' rooms (removed from a project). */
@@ -219,7 +234,8 @@ export class Realtime {
   layersChanged(documentIds: string[], by: string, clientId?: string | null) {
     for (const id of documentIds) this.toRoom(id, { type: 'layers', by }, clientId)
   }
-  symbolSetsChanged(by: string, clientId?: string | null) {
-    for (const c of this.conns) if (!(clientId && c.clientId === clientId)) this.send(c, { type: 'symbol_sets', by })
+  /** The catalog of a company changed: only that company's sockets hear about it. */
+  symbolSetsChanged(by: string, clientId: string | null | undefined, companyId: string) {
+    for (const c of this.conns) if (c.companyId === companyId && !(clientId && c.clientId === clientId)) this.send(c, { type: 'symbol_sets', by, companyId })
   }
 }

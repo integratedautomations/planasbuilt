@@ -1,5 +1,6 @@
 // Off-site backups: admin API + rclone config generation.
-// Settings live in the settings table under key 'backups' (secrets AES-256-GCM encrypted with BACKUP_ENCRYPTION_KEY).
+// Each company keeps its own targets in its settings row 'backups' (secrets AES-256-GCM encrypted with BACKUP_ENCRYPTION_KEY),
+// managed by that company's admins. The shared rclone.conf + targets.json hold every company's targets (each tagged with its company).
 // The server writes rclone.conf + targets.json into a directory shared with the `backup` service (RCLONE_DIR);
 // deploy/backup.sh uploads after each local backup, applies remote retention and writes status.json there.
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
@@ -8,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import path from 'node:path'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Db } from './db.js'
+import type { CompanyCtx, CompanyRole } from './companies.js'
 
 // ---------- rclone "obscure" ----------
 // rclone stores passwords in its config as base64url(iv || AES-256-CTR(plaintext)) with a fixed, public key.
@@ -165,6 +167,8 @@ export interface BackupsContext {
   app: FastifyInstance
   db: Db
   auth: Auth
+  /** The request's company, checked against `min` (answers 403 and returns null otherwise). */
+  requireCompany: (req: FastifyRequest, reply: FastifyReply, min?: CompanyRole) => Promise<CompanyCtx | null>
   /** Shared config directory (default $RCLONE_DIR or /backups/.rclone). */
   dir?: string
   env?: NodeJS.ProcessEnv
@@ -194,31 +198,36 @@ async function realResolveOneDrive(token: string) {
 }
 
 export async function registerBackups(ctx: BackupsContext) {
-  const { app, db, auth } = ctx
+  const { app, db, auth, requireCompany } = ctx
   const env = ctx.env ?? process.env
   const dir = ctx.dir ?? env.RCLONE_DIR ?? '/backups/.rclone'
   const rclone = ctx.rclone ?? realRclone
   const resolveOneDrive = ctx.resolveOneDrive ?? realResolveOneDrive
   const confPath = path.join(dir, 'rclone.conf')
 
-  const adminOnly = async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.user.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return false }
-    return true
-  }
   const hasKey = () => { try { keyOf(env); return true } catch { return false } }
 
-  async function load(): Promise<Target[]> {
-    const [row] = await db.query('SELECT value FROM settings WHERE key = $1', ['backups'])
+  async function load(companyId: string): Promise<Target[]> {
+    const [row] = await db.query('SELECT value FROM settings WHERE company_id = $1 AND key = $2', [companyId, 'backups'])
     return Array.isArray(row?.value?.targets) ? row.value.targets : []
   }
-  async function store(targets: Target[]) {
-    await db.query(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      ['backups', JSON.stringify({ targets })])
+  async function store(companyId: string, targets: Target[]) {
+    await db.query(
+      `INSERT INTO settings (company_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value`,
+      [companyId, 'backups', JSON.stringify({ targets })])
   }
-  /** Writes rclone.conf (mode 600) and targets.json. Returns an error message instead of throwing. */
-  function writeFiles(targets: Target[]): string | null {
+  /** Every company's targets, for the shared config. */
+  async function loadEvery(): Promise<{ companyId: string; company: string; t: Target }[]> {
+    const rows = await db.query<any>(
+      `SELECT s.company_id, c.name, s.value FROM settings s JOIN companies c ON c.id = s.company_id WHERE s.key = 'backups' ORDER BY c.created_at, c.id`)
+    return rows.flatMap(r => (Array.isArray(r.value?.targets) ? r.value.targets : []).map((t: Target) => ({ companyId: r.company_id as string, company: r.name as string, t })))
+  }
+  /** Writes rclone.conf (mode 600) and targets.json for all companies. Returns an error message instead of throwing. */
+  async function writeFiles(): Promise<string | null> {
     try {
-      const { conf, targets: list } = buildConfig(targets, b => decryptSecret(b, env))
+      const every = await loadEvery()
+      const { conf, targets: built } = buildConfig(every.map(e => e.t), b => decryptSecret(b, env))
+      const list = built.map((e, i) => ({ ...e, company_id: every[i].companyId, company: every[i].company }))
       mkdirSync(dir, { recursive: true, mode: 0o755 })
       const put = (file: string, data: string, mode: number) => {
         const p = path.join(dir, file), tmp = `${p}.${process.pid}.tmp`
@@ -320,8 +329,9 @@ export async function registerBackups(ctx: BackupsContext) {
   const guard = { preHandler: auth }
 
   app.get('/api/admin/backups', guard, async (req, reply) => {
-    if (!(await adminOnly(req, reply))) return
-    const targets = await load()
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const targets = await load(company.id)
     return {
       encryption_ready: hasKey(),
       types: Object.fromEntries(TYPES.map(k => [k, { label: SPECS[k].label, oauth: SPECS[k].oauth ?? null }])),
@@ -332,44 +342,52 @@ export async function registerBackups(ctx: BackupsContext) {
   })
 
   app.get('/api/admin/backups/status', guard, async (req, reply) => {
-    if (!(await adminOnly(req, reply))) return
-    const status = statusView(await load())
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const status = statusView(await load(company.id))
     return { status, failed: status.filter(s => s.enabled && s.ok === false) }
   })
 
   const save = async (req: FastifyRequest, reply: FastifyReply, id: string | null) => {
-    if (!(await adminOnly(req, reply))) return
-    const targets = await load()
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const targets = await load(company.id)
     const cur = id ? targets.find(t => t.id === id) ?? null : null
     if (id && !cur) return reply.code(404).send({ error: 'Target not found' })
     const r = await merge(req.body, cur)
     if ('error' in r) return reply.code(400).send({ error: r.error })
+    if (!cur) { // target ids are unique across companies (they name the shared rclone sections)
+      const taken = new Set((await loadEvery()).map(e => e.t.id))
+      while (taken.has(r.t.id)) r.t.id = randomBytes(4).toString('hex')
+    }
     const next = cur ? targets.map(t => (t.id === cur.id ? r.t : t)) : [...targets, r.t]
-    await store(next)
-    const warning = writeFiles(next)
+    await store(company.id, next)
+    const warning = await writeFiles()
     return reply.code(cur ? 200 : 201).send({ ...view(r.t), warning })
   }
   app.post('/api/admin/backups/targets', guard, (req, reply) => save(req, reply, null))
   app.put('/api/admin/backups/targets/:id', guard, (req, reply) => save(req, reply, (req.params as any).id))
 
   app.delete('/api/admin/backups/targets/:id', guard, async (req, reply) => {
-    if (!(await adminOnly(req, reply))) return
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const id = (req.params as any).id
-    const targets = await load()
+    const targets = await load(company.id)
     if (!targets.some(t => t.id === id)) return reply.code(404).send({ error: 'Target not found' })
     const next = targets.filter(t => t.id !== id)
-    await store(next)
-    return { ok: true, warning: writeFiles(next) }
+    await store(company.id, next)
+    return { ok: true, warning: await writeFiles() }
   })
 
   app.post('/api/admin/backups/targets/:id/test', guard, async (req, reply) => {
-    if (!(await adminOnly(req, reply))) return
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const id = (req.params as any).id
     if (!ID_RE.test(id)) return reply.code(404).send({ error: 'Target not found' })
-    const targets = await load()
+    const targets = await load(company.id)
     const t = targets.find(x => x.id === id)
     if (!t) return reply.code(404).send({ error: 'Target not found' })
-    const warn = writeFiles(targets)
+    const warn = await writeFiles()
     if (warn) return reply.code(500).send({ ok: false, error: `Could not write the rclone config: ${warn}` })
     const remote = buildConfig([t], b => decryptSecret(b, env)).targets[0].remote
     const base = ['--config', confPath, '--contimeout', '15s', '--timeout', '30s', '--retries', '1', '--low-level-retries', '2']
@@ -380,10 +398,11 @@ export async function registerBackups(ctx: BackupsContext) {
   })
 
   app.post('/api/admin/backups/run-now', guard, async (req, reply) => {
-    if (!(await adminOnly(req, reply))) return
-    const targets = await load()
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const targets = await load(company.id)
     if (!targets.some(t => t.enabled)) return reply.code(400).send({ error: 'Enable at least one target first' })
-    const warn = writeFiles(targets)
+    const warn = await writeFiles()
     if (warn) return reply.code(500).send({ error: `Could not write the rclone config: ${warn}` })
     try { writeFileSync(path.join(dir, 'run-now'), new Date().toISOString(), { mode: 0o644 }) }
     catch (e) { return reply.code(500).send({ error: `Could not request a backup: ${(e as Error).message}` }) }

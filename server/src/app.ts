@@ -9,12 +9,14 @@ import bcrypt from 'bcryptjs'
 import websocket from '@fastify/websocket'
 import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
-import { Db } from './db.js'
+import { Db, createCompanyRow } from './db.js'
 import { Realtime } from './realtime.js'
 import type { Conn } from './realtime.js'
 import { Storage, validateS3Config } from './storage.js'
 import type { S3Factory } from './storage.js'
-import { getSection, storageConfigOf } from './settings.js'
+import { DEFAULTS, getSection, storageConfigOf } from './settings.js'
+import { registerCompanies, roleRank } from './companies.js'
+import type { CompanyCtx, CompanyRole } from './companies.js'
 import { defaultsPart, formatTag, missingRequired, nextNumber, publicProjectSettings, readProjectSettings, tagNumber, tagPrefixFromTag } from './projectSettings.js'
 import type { ProjectSettings } from './projectSettings.js'
 import { registerProjectSettings } from './projectSettingsRoutes.js'
@@ -83,23 +85,44 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     console.warn('[config] PUBLIC_URL is not set: invite and reset links will use the request Host header and cross-origin API access is disabled. Set PUBLIC_URL (e.g. https://pab.example.com).')
   mkdirSync(filesDir, { recursive: true })
   // Organization settings the hot paths need synchronously (session length, lockout, upload size). Reloaded when an admin saves them.
-  const runtime = { sessionDays: 30, lockoutLimit: RL_MAX, lockBaseMs: 60_000, lockCapMs: 15 * 60_000, maxUploadMb: 200, maxUploadBytes: 200 * 1024 * 1024 }
+  // Sign-in happens before any company is chosen, so the sign-in rules (session length, lockout) are the strictest of all
+  // companies' security settings. The upload limit is each company's own (uploadMb / uploadBytes).
+  const runtime = {
+    sessionDays: 30, lockoutLimit: RL_MAX, lockBaseMs: 60_000, lockCapMs: 15 * 60_000, maxUploadMb: 200, maxUploadBytes: 200 * 1024 * 1024,
+    uploadMbByCompany: new Map<string, number>(),
+  }
+  const uploadMb = (companyId?: string | null) => (companyId && runtime.uploadMbByCompany.get(companyId)) || DEFAULTS.uploads.max_upload_mb
+  const uploadBytes = (companyId?: string | null) => uploadMb(companyId) * 1024 * 1024
   const reloadRuntime = async () => {
     try {
-      const [sec, up] = await Promise.all([getSection(db, 'security'), getSection(db, 'uploads')])
-      runtime.sessionDays = sec.session_days
-      runtime.lockoutLimit = sec.lockout_limit > 0 ? sec.lockout_limit : RL_MAX
-      runtime.lockBaseMs = sec.lockout_base_min * 60_000
-      runtime.lockCapMs = Math.max(sec.lockout_cap_min, sec.lockout_base_min) * 60_000
-      runtime.maxUploadMb = up.max_upload_mb
-      runtime.maxUploadBytes = up.max_upload_mb * 1024 * 1024
+      const secs = (await db.query<{ value: any }>("SELECT value FROM settings WHERE key = 'security'")).map(r => ({ ...DEFAULTS.security, ...(r.value ?? {}) }))
+      if (!secs.length) secs.push({ ...DEFAULTS.security })
+      runtime.sessionDays = Math.min(...secs.map(s => s.session_days))
+      runtime.lockoutLimit = Math.min(...secs.map(s => (s.lockout_limit > 0 ? s.lockout_limit : RL_MAX)))
+      runtime.lockBaseMs = Math.max(...secs.map(s => s.lockout_base_min)) * 60_000
+      runtime.lockCapMs = Math.max(...secs.map(s => Math.max(s.lockout_cap_min, s.lockout_base_min))) * 60_000
+      const ups = await db.query<{ company_id: string; value: any }>("SELECT company_id, value FROM settings WHERE key = 'uploads'")
+      runtime.uploadMbByCompany = new Map(ups.map(r => [r.company_id, { ...DEFAULTS.uploads, ...(r.value ?? {}) }.max_upload_mb]))
+      runtime.maxUploadMb = Math.max(DEFAULTS.uploads.max_upload_mb, ...runtime.uploadMbByCompany.values())
+      runtime.maxUploadBytes = runtime.maxUploadMb * 1024 * 1024
     } catch { /* settings table not ready: keep the defaults */ }
   }
   await reloadRuntime()
+  /** The install's first company: where a request with no company of its own (avatars, legacy callers) is stored. */
+  let primaryCompany: string | null = null
+  const primaryCompanyId = async () => {
+    primaryCompany ??= (await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1'))[0]?.id ?? null
+    return primaryCompany
+  }
   const storage = new Storage(filesDir,
-    async () => storageConfigOf(await getSection(db, 'storage')),
+    async companyId => {
+      const id = companyId ?? (await primaryCompanyId())
+      return storageConfigOf(id ? await getSection(db, id, 'storage') : DEFAULTS.storage)
+    },
     s3Factory,
-    async () => { const s = (await getSection(db, 'storage')).s3; return validateS3Config(s) ? null : s })
+    async () => (await db.query<{ value: any }>("SELECT value->'s3' AS value FROM settings WHERE key = 'storage'"))
+      .map(r => ({ ...DEFAULTS.storage.s3, ...(r.value ?? {}) }))
+      .filter(s => !validateS3Config(s)))
   const app = Fastify({
     logger: false,
     // Forwarding headers (X-Forwarded-For/Proto/Host) are honoured only from private/loopback peers, i.e. the cloudflared
@@ -110,7 +133,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof HttpError) return reply.code(err.statusCode).send({ ...err.extra, error: err.message })
     const code = Number(err?.statusCode)
-    if (err?.code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(413).send({ error: `File too large (${runtime.maxUploadMb} MB max)` })
+    if (err?.code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(413).send({ error: `File too large (${(req as any).uploadMb ?? runtime.maxUploadMb} MB max)` })
     if (code >= 400 && code < 500) return reply.code(code).send({ error: err.message })
     console.error(`[error] ${req.method} ${req.url.split('?')[0]}:`, err)
     return reply.code(500).send({ error: 'Something went wrong' })
@@ -161,7 +184,19 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // is_admin, status and token_version are never trusted from the token.
   interface UserState { at: number; ok: boolean; isAdmin: boolean; tv: number; email: string }
   const userCache = new Map<string, UserState>()
-  const forgetUser = (id: string) => { userCache.delete(id) }
+  // Company membership of a user, cached like the identity above: dropped at once when memberships change (forgetUser).
+  const companyCache = new Map<string, { at: number; ctx: CompanyCtx | null }>() // key: userId|companyId
+  const defaultCompanyCache = new Map<string, { at: number; id: string | null }>() // key: userId
+  const forgetUser = (id: string) => {
+    userCache.delete(id)
+    defaultCompanyCache.delete(id)
+    for (const k of [...companyCache.keys()]) if (k.startsWith(`${id}|`)) companyCache.delete(k)
+  }
+  /** Drops every cached membership of a company (renamed, archived). */
+  const forgetCompany = (companyId: string) => {
+    defaultCompanyCache.clear()
+    for (const k of [...companyCache.keys()]) if (k.endsWith(`|${companyId}`)) companyCache.delete(k)
+  }
   async function userState(id: string): Promise<UserState | null> {
     if (!UUID_RE.test(String(id))) return null
     const hit = userCache.get(id), now = Date.now()
@@ -214,8 +249,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.addHook('preValidation', async (req, reply) => {
     const p = req.params as Record<string, string> | undefined
     if (!p) return
+    // (backup targets have short hex ids of their own, checked by their routes)
+    const own = req.url.startsWith('/api/admin/backups/targets/')
     for (const k of ['id', 'rid', 'markupId', 'userId'])
-      if (k in p && !UUID_RE.test(String(p[k]))) return reply.code(404).send({ error: 'Not found' })
+      if (k in p && !(own && k === 'id') && !UUID_RE.test(String(p[k]))) return reply.code(404).send({ error: 'Not found' })
   })
 
   const realtime = new Realtime()
@@ -238,13 +275,127 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const userCount = async () =>
     (await db.query<{ count: number }>('SELECT count(*)::int AS count FROM users'))[0].count
 
-  /** Someone's role, scope and the project's cost setting; null when they are not a member. */
+  // ---- Companies: which company a request works in ----
+  const COMPANY_TTL = 60_000
+
+  /** A user's standing in one company, or null when they have none (platform admins may enter any company). */
+  async function companyCtx(user: { id: string; isAdmin: boolean }, companyId: string): Promise<CompanyCtx | null> {
+    if (!UUID_RE.test(String(companyId))) return null
+    const key = `${user.id}|${companyId}`, now = Date.now()
+    const hit = companyCache.get(key)
+    if (hit && now - hit.at < COMPANY_TTL) return hit.ctx
+    const [c] = await db.query<any>(
+      `SELECT c.id, c.name, c.archived, m.role, m.can_create_projects FROM companies c
+       LEFT JOIN company_members m ON m.company_id = c.id AND m.user_id = $2 WHERE c.id = $1`, [companyId, user.id])
+    let ctx: CompanyCtx | null = null
+    if (c && (c.role || user.isAdmin)) {
+      const role: CompanyRole = c.role ?? 'owner'
+      const admin = role === 'owner' || role === 'admin' || user.isAdmin
+      ctx = {
+        id: c.id, name: c.name, role, member: !!c.role, platform: user.isAdmin, isAdmin: admin, archived: !!c.archived,
+        canCreateProjects: admin || (role === 'member' && !!c.can_create_projects),
+      }
+    }
+    companyCache.set(key, { at: now, ctx })
+    return ctx
+  }
+
+  /** The company a request with no X-Company-Id works in: the last one the user used, else their oldest membership. */
+  async function defaultCompanyId(user: { id: string; isAdmin: boolean }): Promise<string | null> {
+    const hit = defaultCompanyCache.get(user.id), now = Date.now()
+    if (hit && now - hit.at < COMPANY_TTL) return hit.id
+    let id: string | null = null
+    const [p] = await db.query<{ last_company_id: string | null }>('SELECT last_company_id FROM user_prefs WHERE user_id = $1', [user.id])
+    if (p?.last_company_id) {
+      const c = await companyCtx(user, p.last_company_id)
+      if (c && !c.archived) id = c.id
+    }
+    if (!id) {
+      const [m] = await db.query<{ id: string }>(
+        `SELECT c.id FROM company_members m JOIN companies c ON c.id = m.company_id
+         WHERE m.user_id = $1 AND NOT c.archived ORDER BY c.created_at, c.id LIMIT 1`, [user.id])
+      id = m?.id ?? null
+      if (!id && user.isAdmin) id = (await db.query<{ id: string }>('SELECT id FROM companies WHERE NOT archived ORDER BY created_at, id LIMIT 1'))[0]?.id ?? null
+    }
+    defaultCompanyCache.set(user.id, { at: now, id })
+    return id
+  }
+
+  const lastRemembered = new Map<string, string>()
+  async function rememberCompany(userId: string, companyId: string) {
+    if (lastRemembered.get(userId) === companyId) return
+    await db.query(
+      `INSERT INTO user_prefs (user_id, last_company_id) VALUES ($1,$2)
+       ON CONFLICT (user_id) DO UPDATE SET last_company_id = EXCLUDED.last_company_id`, [userId, companyId])
+    lastRemembered.set(userId, companyId)
+    defaultCompanyCache.delete(userId)
+  }
+
+  const companyByReq = new WeakMap<FastifyRequest, CompanyCtx>()
+
+  /**
+   * The company this request works in: the X-Company-Id header (or ?company= for plain file URLs that cannot send headers),
+   * else the user's last/oldest company. Membership is checked here; platform admins may enter any company.
+   */
+  async function resolveCompany(req: FastifyRequest): Promise<{ ctx: CompanyCtx } | { status: number; error: string }> {
+    const cached = companyByReq.get(req)
+    if (cached) return { ctx: cached }
+    const h = req.headers['x-company-id'], qc = (req.query as any)?.company
+    const given = typeof h === 'string' && h ? h : typeof qc === 'string' && qc ? qc : null
+    const id = given ?? (await defaultCompanyId(req.user))
+    if (!id) return { status: 403, error: 'You do not belong to a company' }
+    const ctx = await companyCtx(req.user, id)
+    if (!ctx) return { status: 403, error: given ? 'Not a member of that company' : 'You do not belong to a company' }
+    if (ctx.archived && !req.user.isAdmin) return { status: 403, error: 'This company is archived' }
+    companyByReq.set(req, ctx)
+    if (given) await rememberCompany(req.user.id, ctx.id)
+    return { ctx }
+  }
+
+  /** Answers 403 unless the user belongs to the request's company with at least `min` (platform admins always pass). */
+  async function requireCompany(req: FastifyRequest, reply: FastifyReply, min: CompanyRole = 'guest'): Promise<CompanyCtx | null> {
+    const r = await resolveCompany(req)
+    if ('error' in r) { reply.code(r.status).send({ error: r.error }); return null }
+    const rank = req.user.isAdmin ? roleRank.owner : roleRank[r.ctx.role]
+    if (rank < roleRank[min]) { reply.code(403).send({ error: roleRank[min] >= roleRank.admin ? 'Admins only' : 'Not allowed' }); return null }
+    return r.ctx
+  }
+
+  /** The user as the web app receives them at sign-in: `is_admin` is "admin of the company they land in" (platform admins too). */
+  async function sessionUser(u: any) {
+    const who = { id: u.id as string, isAdmin: !!u.is_admin }
+    const id = await defaultCompanyId(who)
+    const ctx = id ? await companyCtx(who, id) : null
+    const { token_version: _tv, password_hash: _ph, can_create_projects: _cc, avatar_key, avatar_version, ...rest } = u
+    return {
+      ...rest,
+      is_admin: ctx ? ctx.isAdmin : who.isAdmin,
+      platform_admin: who.isAdmin,
+      can_create_projects: ctx ? ctx.canCreateProjects : who.isAdmin,
+      ...(avatar_key !== undefined ? { avatar: avatar_key ? avatar_version : null } : {}),
+      company: ctx ? { id: ctx.id, name: ctx.name, role: ctx.role } : null,
+    }
+  }
+
+  /** Someone's role, scope and the project's cost setting; null when they cannot open the project. */
   async function projectAccess(userId: string, projectId: string): Promise<Access | null> {
-    const rows = await db.query<{ role: Role; scope: unknown; editors_see_costs: boolean; locked: boolean }>(
-      `SELECT m.role, m.scope, p.editors_see_costs, (p.settings->>'locked') = 'true' AS locked FROM project_members m JOIN projects p ON p.id = m.project_id
-       WHERE m.project_id = $1 AND m.user_id = $2`, [projectId, userId])
+    const rows = await db.query<any>(
+      `SELECT p.company_id, m.role, m.scope, p.editors_see_costs, (p.settings->>'locked') = 'true' AS locked,
+              cm.role AS company_role, u.is_admin AS platform, c.archived
+       FROM projects p
+       JOIN companies c ON c.id = p.company_id
+       JOIN users u ON u.id = $2
+       LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = $2
+       LEFT JOIN company_members cm ON cm.company_id = p.company_id AND cm.user_id = $2
+       WHERE p.id = $1`, [projectId, userId])
     const r = rows[0]
-    return r ? { role: r.role, scope: normalizeScope(r.scope), editorsSeeCosts: r.editors_see_costs !== false, locked: !!r.locked } : null
+    // The project's company decides: someone who is not in it (or left it) has no access whatever their project role says.
+    if (!r || (!r.company_role && !r.platform) || (r.archived && !r.platform)) return null
+    const base = { editorsSeeCosts: r.editors_see_costs !== false, locked: !!r.locked, companyId: r.company_id as string }
+    if (r.role) return { role: r.role, scope: normalizeScope(r.scope), ...base }
+    // Owners and admins of the company (and platform admins) work in every project of it without being added to each.
+    if (r.platform || r.company_role === 'owner' || r.company_role === 'admin') return { role: 'admin', scope: normalizeScope(null), implicit: true, ...base }
+    return null
   }
 
   /** What requireCap resolved for a request, for handlers that need the role or scope afterwards. */
@@ -254,6 +405,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   /** Answers 403 unless the user is a member of the project whose role has the capability. Returns their access. */
   async function requireCap(req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) {
     const access = await projectAccess(req.user.id, projectId)
+    if (!access) {
+      // A project of a company the user is not in does not exist as far as they can tell.
+      const [p] = UUID_RE.test(String(projectId))
+        ? await db.query<{ member: string | null }>(
+          'SELECT cm.user_id AS member FROM projects p LEFT JOIN company_members cm ON cm.company_id = p.company_id AND cm.user_id = $2 WHERE p.id = $1', [projectId, req.user.id])
+        : []
+      if (!p || (!p.member && !req.user.isAdmin)) { reply.code(404).send({ error: 'Not found' }); return null }
+    }
     if (!accessCan(access, cap)) {
       reply.code(403).send({ error: access?.locked && can(access.role, cap, { editorsSeeCosts: access.editorsSeeCosts }) ? 'This project is locked. Only admins can make changes.' : 'Not allowed' })
       return null
@@ -262,24 +421,29 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return access!
   }
 
-  /** What a user may see across the whole organization (catalog and symbol sets are shared by all projects). */
-  async function orgVisibility(user: { id: string; isAdmin: boolean }) {
-    if (user.isAdmin) return { costs: true, internal: true }
+  /**
+   * What a user may see across one company (its catalog and symbol sets are shared by all its projects). Company owners and
+   * admins see everything; guests never see costs or internal fields; everyone else by their roles in the company's projects.
+   */
+  async function orgVisibility(user: { id: string }, company: CompanyCtx) {
+    if (company.isAdmin) return { costs: true, internal: true }
+    if (company.role === 'guest') return { costs: false, internal: false }
     const rows = await db.query<{ role: Role; editors_see_costs: boolean }>(
-      'SELECT m.role, p.editors_see_costs FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = $1', [user.id])
+      'SELECT m.role, p.editors_see_costs FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = $1 AND p.company_id = $2',
+      [user.id, company.id])
     return {
       costs: rows.some(r => can(r.role, 'costs.view', { editorsSeeCosts: r.editors_see_costs })),
       internal: rows.some(r => can(r.role, 'internal.view')),
     }
   }
 
-  /** Keys of fields flagged `internal` in any symbol set or device type (clients never see their values). */
-  async function internalFieldKeys(): Promise<Set<string>> {
+  /** Keys of fields flagged `internal` in any symbol set or device type of the company (clients never see their values). */
+  async function internalFieldKeys(companyId: string): Promise<Set<string>> {
     const rows = await db.query<{ key: string }>(
       `SELECT DISTINCT f->>'key' AS key FROM (
-         SELECT jsonb_array_elements(fields) AS f FROM symbol_sets
-         UNION ALL SELECT jsonb_array_elements(fields) FROM device_types) x
-       WHERE f->>'internal' = 'true'`)
+         SELECT jsonb_array_elements(fields) AS f FROM symbol_sets WHERE company_id = $1
+         UNION ALL SELECT jsonb_array_elements(fields) FROM device_types WHERE company_id = $1) x
+       WHERE f->>'internal' = 'true'`, [companyId])
     return new Set(rows.map(r => r.key).filter(Boolean))
   }
   const withoutInternalDefs = (defs: any) => (Array.isArray(defs) ? defs.filter((d: any) => !d?.internal) : defs)
@@ -288,7 +452,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   async function visibleMarkups<T extends { symbol_set_id?: string | null; layer_id?: string | null; fields?: Record<string, any> }>(access: Access, list: T[]) {
     const out = filterMarkups(access, list)
     if (can(access.role, 'internal.view')) return out
-    const keys = await internalFieldKeys()
+    const keys = await internalFieldKeys(access.companyId!)
     return out.map(m => stripInternalValues(m, keys))
   }
 
@@ -298,6 +462,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   // ---- Realtime ----
+  /** The company a socket should work in: the one asked for when the user may use it, else (when `fallback`) their default. */
+  async function socketCompany(user: AuthUser, wanted: string | null, fallback = true): Promise<string | null> {
+    const who = { id: user.id, isAdmin: user.isAdmin }
+    if (wanted) {
+      const c = await companyCtx(who, wanted)
+      if (c && (!c.archived || who.isAdmin)) return c.id
+      if (!fallback) return null
+    }
+    return fallback ? defaultCompanyId(who) : null
+  }
   app.get('/api/ws', { websocket: true }, (socket, req) => {
     const q = (req.query ?? {}) as any
     let closed = false
@@ -312,9 +486,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (!u) { socket.close(4401, 'Invalid token'); return null }
       if (closed) return null
       if (realtime.countFor(user.id) >= MAX_SOCKETS) { socket.close(4429, 'Too many connections'); return null }
+      // The socket works in one company at a time (?company=, else the user's default): only that company's catalog events reach it.
+      const companyId = await socketCompany(user, typeof q.company === 'string' ? q.company : null)
+      if (closed) return null
       conn = realtime.add(socket, {
         clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
-        userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null,
+        userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null, companyId,
       })
       return { user, conn }
     })().catch(() => { try { socket.close(4401, 'Invalid token') } catch { /* going away */ } return null })
@@ -330,7 +507,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         if (!m || typeof m !== 'object') return realtime.error(conn, 'Bad message')
         if (m.type === 'ping') realtime.pong(conn)
         else if (m.type === 'presence') realtime.presence(conn, m)
-        else if (m.type === 'join') {
+        else if (m.type === 'company') {
+          // The user switched company in the app: catalog events now come from the new one (membership is checked).
+          const id = await socketCompany(user, String(m.companyId ?? ''), false)
+          if (!id) return realtime.error(conn, 'Not allowed')
+          realtime.setCompany(conn, id)
+        } else if (m.type === 'join') {
           if (!realtime.allowJoin(conn)) return realtime.error(conn, 'Too many join requests')
           try {
             const id = String(m.documentId ?? '')
@@ -380,11 +562,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         `INSERT INTO users (email, name, password_hash, is_admin)
          SELECT $1::text, $2::text, $3::text, true WHERE NOT EXISTS (SELECT 1 FROM users)
          RETURNING id, email, name, is_admin, token_version`, [String(email).toLowerCase(), String(name), hash])
+      if (u) {
+        // The first person owns the install's first company (and is a platform admin: users.is_admin).
+        const c = (await q<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1'))[0] ?? await createCompanyRow(q, 'My Company')
+        await q(`INSERT INTO company_members (company_id, user_id, role, can_create_projects) VALUES ($1,$2,'owner',true)`, [c.id, u.id])
+      }
       return u
     })
     if (!user) return reply.code(409).send({ error: 'Already set up' })
     setupCode = null
-    return { token: sign(user), user: publicUser(user) }
+    return { token: sign(user), user: await sessionUser(user) }
   })
 
   // Failed-login bookkeeping per email (the route-level limiter above covers per-IP). Accounts that exist and emails
@@ -419,14 +606,21 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     accountFailures.delete(key)
     if (user.status === 'deactivated')
       return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
-    return { token: sign(user), user: { id: user.id, email: user.email, name: user.name, is_admin: user.is_admin, can_create_projects: user.is_admin || !!user.can_create_projects, avatar: user.avatar_key ? user.avatar_version : null } }
+    const { id, email: mail, name, is_admin, avatar, can_create_projects, platform_admin, company } = await sessionUser(user) as any
+    return { token: sign(user), user: { id, email: mail, name, is_admin, platform_admin, can_create_projects, avatar, company } }
   })
 
+  // is_admin = admin of the active company (or platform admin); platform_admin = may create companies and enter any of them.
   app.get('/api/me', { preHandler: auth }, async (req) => {
     const [user] = await db.query(
-      `SELECT id, email, name, is_admin, (is_admin OR can_create_projects) AS can_create_projects,
-         CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar FROM users WHERE id = $1`, [req.user.id])
-    return user
+      `SELECT id, email, name, is_admin, CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar FROM users WHERE id = $1`, [req.user.id])
+    const r = await resolveCompany(req)
+    const c = 'ctx' in r ? r.ctx : null
+    return {
+      ...user, is_admin: c ? c.isAdmin : !!user.is_admin, platform_admin: !!user.is_admin,
+      can_create_projects: c ? c.canCreateProjects : !!user.is_admin,
+      company: c ? { id: c.id, name: c.name, role: c.role, archived: c.archived } : null,
+    }
   })
 
   // ---- Per-user preferences (hotkeys, layout, favorites...): any signed-in user, their own row only ----
@@ -448,41 +642,52 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return row
   })
 
-  // ---- Users (app admins) ----
+  // ---- Users (company admins add people to their company; an existing email is invited instead, see /api/invites) ----
+  // isAdmin makes the person an admin of the active company; only a platform admin can also pass platformAdmin.
   app.post('/api/users', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     if (!validNewUser(req.body))
       return reply.code(400).send({ error: 'Email, name and an 8+ character password are required' })
-    const { email, name, password, isAdmin, canCreateProjects } = req.body as any
+    const { email, name, password, isAdmin, canCreateProjects, platformAdmin } = req.body as any
     const exists = await db.query('SELECT 1 FROM users WHERE email = $1', [String(email).toLowerCase()])
     if (exists.length) return reply.code(409).send({ error: 'Email already in use' })
-    const [user] = await db.query(
-      'INSERT INTO users (email, name, password_hash, is_admin, can_create_projects) VALUES ($1,$2,$3,$4,$5) RETURNING id, email, name, is_admin, can_create_projects',
-      [String(email).toLowerCase(), name, await bcrypt.hash(password, 10), !!isAdmin, !!canCreateProjects])
-    return user
+    const hash = await bcrypt.hash(password, 10)
+    const role: CompanyRole = isAdmin ? 'admin' : 'member'
+    const user = await db.transaction(async q => {
+      const [u] = await q(
+        'INSERT INTO users (email, name, password_hash, is_admin, can_create_projects) VALUES ($1,$2,$3,$4,$5) RETURNING id, email, name, can_create_projects',
+        [String(email).toLowerCase(), name, hash, req.user.isAdmin && !!platformAdmin, !!canCreateProjects])
+      await q('INSERT INTO company_members (company_id, user_id, role, can_create_projects) VALUES ($1,$2,$3,$4)', [company.id, u.id, role, !!canCreateProjects])
+      return u
+    })
+    return { ...user, is_admin: role === 'admin', platform_admin: req.user.isAdmin && !!platformAdmin, company_role: role }
   })
 
   // ---- Projects ----
-  app.get('/api/projects', { preHandler: auth }, async (req) =>
-    db.query(
-      `SELECT p.id, p.name, p.created_at, p.status, p.completed_at, m.role,
+  // The active company's projects the user is a member of; owners and admins of the company see all of them (role 'admin', is_member false).
+  app.get('/api/projects', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply)
+    if (!company) return
+    return db.query(
+      `SELECT p.id, p.company_id, p.name, p.created_at, p.status, p.completed_at, coalesce(m.role, 'admin') AS role, (m.user_id IS NOT NULL) AS is_member,
          (SELECT count(*)::int FROM documents d WHERE d.project_id = p.id) AS document_count
-       FROM projects p JOIN project_members m ON m.project_id = p.id
-       WHERE m.user_id = $1 ORDER BY p.created_at DESC`, [req.user.id]))
+       FROM projects p LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = $1
+       WHERE p.company_id = $2 AND (m.user_id IS NOT NULL OR $3::boolean) ORDER BY p.created_at DESC`, [req.user.id, company.id, company.isAdmin])
+  })
 
-  // Creating a project makes you its admin (members, invites, uploads), so it is limited to app admins and to users an
-  // admin has granted can_create_projects.
+  // Creating a project makes you its admin (members, invites, uploads), so it is limited to company owners/admins and to
+  // members an admin has granted can_create_projects.
   app.post('/api/projects', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) {
-      const [u] = await db.query('SELECT can_create_projects FROM users WHERE id = $1', [req.user.id])
-      if (!u?.can_create_projects) return reply.code(403).send({ error: 'Ask an admin to create projects for you' })
-    }
+    const company = await requireCompany(req, reply)
+    if (!company) return
+    if (!company.canCreateProjects) return reply.code(403).send({ error: 'Ask an admin to create projects for you' })
     const name = String((req.body as any)?.name ?? '').trim()
     if (!name) return reply.code(400).send({ error: 'Project name is required' })
-    // New projects start from the organization's defaults (a copy: later changes to the defaults do not touch existing projects).
-    const defaults = defaultsPart(readProjectSettings(await getSection(db, 'project_defaults')))
+    // New projects start from the company's defaults (a copy: later changes to the defaults do not touch existing projects).
+    const defaults = defaultsPart(readProjectSettings(await getSection(db, company.id, 'project_defaults')))
     const [project] = await db.query(
-      'INSERT INTO projects (name, created_by, settings) VALUES ($1,$2,$3) RETURNING *', [name, req.user.id, JSON.stringify(defaults)])
+      'INSERT INTO projects (company_id, name, created_by, settings) VALUES ($1,$2,$3,$4) RETURNING *', [company.id, name, req.user.id, JSON.stringify(defaults)])
     await db.query('INSERT INTO project_members VALUES ($1,$2,$3)', [project.id, req.user.id, 'admin'])
     return { ...shapeProject(project), role: 'admin' }
   })
@@ -541,10 +746,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   app.put('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireCap(req, reply, id, 'members.manage'))) return
+    const access = await requireCap(req, reply, id, 'members.manage')
+    if (!access) return
     const { email, role } = (req.body ?? {}) as any
     if (!isRole(role)) return reply.code(400).send({ error: 'Bad role' })
-    const [user] = await db.query("SELECT id FROM users WHERE email = $1 AND status <> 'deactivated'", [String(email ?? '').toLowerCase()])
+    // Only people who belong to the project's company can be added (a company admin adds or invites them to the company first).
+    const [user] = await db.query(
+      `SELECT u.id FROM users u JOIN company_members cm ON cm.user_id = u.id AND cm.company_id = $2
+       WHERE u.email = $1 AND u.status <> 'deactivated'`, [String(email ?? '').toLowerCase(), access.companyId])
     if (!user) return reply.code(404).send({ error: 'No active user with that email' })
     if (role !== 'admin' && !(await keepsAnAdmin(id, user.id))) return reply.code(400).send({ error: 'A project needs at least one admin' })
     // The scope only matters for a sub. Not sent = keep the stored one; a non-sub role resets it to empty.
@@ -593,12 +802,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   /** Reads an uploaded PDF fully, checks it is one, and counts its pages on the server (the client's count is not trusted). */
-  async function readPdfUpload(file: any, reply: FastifyReply) {
+  async function readPdfUpload(file: any, reply: FastifyReply, mb: number) {
     if (file.mimetype !== 'application/pdf' && !file.filename.toLowerCase().endsWith('.pdf')) {
       file.file.resume(); reply.code(400).send({ error: 'Only PDF files are supported' }); return null
     }
     const bytes = new Uint8Array(await file.toBuffer())
-    if (file.file.truncated) { reply.code(413).send({ error: `File too large (${runtime.maxUploadMb} MB max)` }); return null }
+    if (file.file.truncated) { reply.code(413).send({ error: `File too large (${mb} MB max)` }); return null }
     if (!isPdf(bytes)) { reply.code(400).send({ error: 'That is not a PDF file' }); return null }
     let pageCount: number
     try { pageCount = await countPages(bytes) } catch { reply.code(400).send({ error: 'That is not a readable PDF' }); return null }
@@ -617,15 +826,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   app.post('/api/projects/:id/documents', { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await requireCap(req, reply, id, 'plans.edit'))) return
-    const file = await req.file({ limits: { fileSize: runtime.maxUploadBytes } })
+    const access = await requireCap(req, reply, id, 'plans.edit')
+    if (!access) return
+    ;(req as any).uploadMb = uploadMb(access.companyId)
+    const file = await req.file({ limits: { fileSize: uploadBytes(access.companyId) } })
     if (!file) return reply.code(400).send({ error: 'No file' })
-    const up = await readPdfUpload(file, reply)
+    const up = await readPdfUpload(file, reply, uploadMb(access.companyId))
     if (!up) return
     const pageCount = up.pageCount
     const fields = file.fields as any
     const name = String(fields.name?.value || file.filename.replace(/\.pdf$/i, ''))
-    const fileKey = await storage.save('pdf', up.bytes)
+    const fileKey = await storage.save('pdf', up.bytes, access.companyId)
     try {
       const { doc, rev } = await db.transaction(async q => {
         const [doc] = await q('INSERT INTO documents (project_id, name) VALUES ($1,$2) RETURNING *', [id, name])
@@ -755,12 +966,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/documents/:id/revisions', { preHandler: auth }, async (req, reply) => {
     const doc = await documentWithAccess(req, reply, 'plans.edit')
     if (!doc) return
-    const file = await req.file({ limits: { fileSize: runtime.maxUploadBytes } })
+    const companyId = accessOf(req).companyId!
+    ;(req as any).uploadMb = uploadMb(companyId)
+    const file = await req.file({ limits: { fileSize: uploadBytes(companyId) } })
     if (!file) return reply.code(400).send({ error: 'No file' })
-    const up = await readPdfUpload(file, reply)
+    const up = await readPdfUpload(file, reply, uploadMb(companyId))
     if (!up) return
     const pageCount = up.pageCount
-    const fileKey = await storage.save('pdf', up.bytes)
+    const fileKey = await storage.save('pdf', up.bytes, companyId)
     const label = String((file.fields as any).label?.value ?? '').slice(0, 200)
     const note = String((file.fields as any).note?.value ?? '').slice(0, 2000)
     let rev: any
@@ -827,10 +1040,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       await q('UPDATE document_revisions SET label = $2 WHERE id = $1', [created.id, label])
 
       // References that may have been deleted since the snapshot was taken fall back to null
-      const known = async (table: string, ids: string[]) => new Set(ids.length
-        ? (await q<{ id: string }>(`SELECT id FROM ${table} WHERE id = ANY($1::uuid[])`, [ids])).map(r => r.id) : [])
+      const companyId = accessOf(req).companyId!
+      const known = async (table: string, ids: string[], inCompany = true) => new Set(ids.length
+        ? (await q<{ id: string }>(`SELECT id FROM ${table} WHERE id = ANY($1::uuid[])${inCompany ? ' AND company_id = $2' : ''}`, inCompany ? [ids, companyId] : [ids])).map(r => r.id) : [])
       const uniq = (k: string) => [...new Set(snapMarkups.map(m => m[k]).filter(Boolean))] as string[]
-      const layers = await known('layers', uniq('layer_id'))
+      const layers = await known('layers', uniq('layer_id'), false)
       const sets = await known('symbol_sets', uniq('symbol_set_id'))
       const types = await known('device_types', uniq('device_type_id'))
       const products = await known('products', uniq('product_id'))
@@ -928,7 +1142,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (e instanceof PageOpError) return reply.code(400).send({ error: e.message })
       return reply.code(400).send({ error: `Could not edit that PDF: ${(e as Error).message}` })
     }
-    const fileKey = await storage.save('pdf', edited.bytes)
+    const fileKey = await storage.save('pdf', edited.bytes, accessOf(req).companyId)
     let deletedMarkups = 0
     let rev: any
     try { rev = await db.transaction(async q => {
@@ -984,10 +1198,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   /** Reads the uploaded PDF of a multipart page-tool request. Text fields must come before the file part. */
   async function pageToolUpload(req: FastifyRequest, reply: FastifyReply) {
-    const file = await req.file({ limits: { fileSize: runtime.maxUploadBytes } })
+    const companyId = accessOf(req).companyId!
+    ;(req as any).uploadMb = uploadMb(companyId)
+    const file = await req.file({ limits: { fileSize: uploadBytes(companyId) } })
     if (!file) { reply.code(400).send({ error: 'No file' }); return null }
     const bytes = new Uint8Array(await file.toBuffer())
-    if (file.file.truncated) { reply.code(413).send({ error: `File too large (${runtime.maxUploadMb} MB max)` }); return null }
+    if (file.file.truncated) { reply.code(413).send({ error: `File too large (${uploadMb(companyId)} MB max)` }); return null }
     if (!isPdf(bytes)) { reply.code(400).send({ error: 'That is not a PDF file' }); return null }
     return { bytes, fields: file.fields as any }
   }
@@ -1171,40 +1387,46 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return { name, tag_prefix, fields, icon, color: String(b.color || '#868e96'), has_fov: !!b.has_fov }
   }
 
-  app.get('/api/symbol-sets', { preHandler: auth }, async (req) => {
-    const rows = await db.query('SELECT * FROM symbol_sets WHERE NOT archived ORDER BY sort, created_at')
-    return (await orgVisibility(req.user)).internal ? rows : rows.map((r: any) => ({ ...r, fields: withoutInternalDefs(r.fields) }))
+  app.get('/api/symbol-sets', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply)
+    if (!company) return
+    const rows = await db.query('SELECT * FROM symbol_sets WHERE company_id = $1 AND NOT archived ORDER BY sort, created_at', [company.id])
+    return (await orgVisibility(req.user, company)).internal ? rows : rows.map((r: any) => ({ ...r, fields: withoutInternalDefs(r.fields) }))
   })
 
   app.post('/api/symbol-sets', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const s = cleanSymbolSet(req.body)
     if (!s) return reply.code(400).send({ error: 'Name, tag prefix and a valid icon are required' })
     const [row] = await db.query(
-      `INSERT INTO symbol_sets (name, color, tag_prefix, icon, fields, has_fov, sort)
-       VALUES ($1,$2,$3,$4,$5,$6,(SELECT coalesce(max(sort),0)+1 FROM symbol_sets)) RETURNING *`,
-      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+      `INSERT INTO symbol_sets (company_id, name, color, tag_prefix, icon, fields, has_fov, sort)
+       VALUES ($7,$1,$2,$3,$4,$5,$6,(SELECT coalesce(max(sort),0)+1 FROM symbol_sets WHERE company_id = $7)) RETURNING *`,
+      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, company.id])
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return row
   })
 
   app.put('/api/symbol-sets/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const s = cleanSymbolSet(req.body)
     if (!s) return reply.code(400).send({ error: 'Name, tag prefix and a valid icon are required' })
     const [row] = await db.query(
-      `UPDATE symbol_sets SET name=$1, color=$2, tag_prefix=$3, icon=$4, fields=$5, has_fov=$6 WHERE id=$7 RETURNING *`,
-      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, (req.params as any).id])
+      `UPDATE symbol_sets SET name=$1, color=$2, tag_prefix=$3, icon=$4, fields=$5, has_fov=$6 WHERE id=$7 AND company_id=$8 RETURNING *`,
+      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, (req.params as any).id, company.id])
     if (!row) return reply.code(404).send({ error: 'Not found' })
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return row
   })
 
   // Archive rather than delete so existing device markups keep their set
   app.delete('/api/symbol-sets/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
-    await db.query('UPDATE symbol_sets SET archived = true WHERE id = $1', [(req.params as any).id])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const gone = await db.query('UPDATE symbol_sets SET archived = true WHERE id = $1 AND company_id = $2 RETURNING id', [(req.params as any).id, company.id])
+    if (!gone.length) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return { ok: true }
   })
 
@@ -1265,12 +1487,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   // unit costs and labor hours come back only for app admins and for people whose role in at least one project can see costs
   // (admin, pm, editors while that project's "editors see costs" is on, and viewers); internal field definitions only for
   // people who are not clients everywhere.
-  app.get('/api/catalog', { preHandler: auth }, async (req) => {
-    const vis = await orgVisibility(req.user)
-    const types = await db.query('SELECT * FROM device_types WHERE NOT archived ORDER BY symbol_set_id, sort, created_at')
-    const products = (await db.query('SELECT * FROM products ORDER BY manufacturer, model, created_at')).map(productOut)
+  app.get('/api/catalog', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply)
+    if (!company) return
+    const vis = await orgVisibility(req.user, company)
+    const types = await db.query('SELECT * FROM device_types WHERE company_id = $1 AND NOT archived ORDER BY symbol_set_id, sort, created_at', [company.id])
+    const products = (await db.query('SELECT * FROM products WHERE company_id = $1 ORDER BY manufacturer, model, created_at', [company.id])).map(productOut)
     // Archived types stay in the list (flagged) so cables already drawn with them keep their name and colour
-    const cable_types = await db.query('SELECT id, name, color, sort, archived FROM cable_types ORDER BY sort, created_at')
+    const cable_types = await db.query('SELECT id, name, color, sort, archived FROM cable_types WHERE company_id = $1 ORDER BY sort, created_at', [company.id])
     return {
       device_types: vis.internal ? types : types.map((t: any) => ({ ...t, fields: withoutInternalDefs(t.fields) })),
       products: vis.costs ? products : products.map(stripProductCosts),
@@ -1287,56 +1511,67 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return { name, color: color || '#e03131' }
   }
   app.post('/api/cable-types', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const t = cleanCableType(req.body)
     if (!t) return reply.code(400).send({ error: 'A name and a colour like #1971c2 are required' })
     const [row] = await db.query(
-      'INSERT INTO cable_types (name, color, sort) VALUES ($1,$2,(SELECT coalesce(max(sort),0)+1 FROM cable_types)) RETURNING id, name, color, sort, archived', [t.name, t.color])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+      'INSERT INTO cable_types (company_id, name, color, sort) VALUES ($3,$1,$2,(SELECT coalesce(max(sort),0)+1 FROM cable_types WHERE company_id = $3)) RETURNING id, name, color, sort, archived', [t.name, t.color, company.id])
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return row
   })
   app.put('/api/cable-types/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const t = cleanCableType(req.body)
     const id = (req.params as any).id
     if (!t || !uuidRe.test(String(id))) return reply.code(400).send({ error: 'A name and a colour like #1971c2 are required' })
-    const [row] = await db.query('UPDATE cable_types SET name = $1, color = $2 WHERE id = $3 RETURNING id, name, color, sort, archived', [t.name, t.color, id])
+    const [row] = await db.query('UPDATE cable_types SET name = $1, color = $2 WHERE id = $3 AND company_id = $4 RETURNING id, name, color, sort, archived', [t.name, t.color, id, company.id])
     if (!row) return reply.code(404).send({ error: 'Not found' })
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return row
   })
   // Archived, never deleted: cables already drawn with the type keep their name and colour
   app.delete('/api/cable-types/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const id = (req.params as any).id
     if (!uuidRe.test(String(id))) return reply.code(400).send({ error: 'Bad id' })
-    await db.query('UPDATE cable_types SET archived = true WHERE id = $1', [id])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    const gone = await db.query('UPDATE cable_types SET archived = true WHERE id = $1 AND company_id = $2 RETURNING id', [id, company.id])
+    if (!gone.length) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return { ok: true }
   })
 
   // ---- Standard device library: symbol sets and device types for the built-in icon set (admins; only ever adds or fills blanks) ----
   app.get('/api/catalog/standard-library', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
-    return previewLibrary(db)
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    return previewLibrary(db, company.id)
   })
   app.post('/api/catalog/standard-library', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
-    const result = await installLibrary(db)
-    if (result.setsCreated || result.typesAdded || result.typesUpdated || result.cableTypesAdded) realtime.symbolSetsChanged(req.user.id, cid(req))
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const result = await installLibrary(db, company.id)
+    if (result.setsCreated || result.typesAdded || result.typesUpdated || result.cableTypesAdded) realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return result
   })
 
   // ---- Revu converter mappings (one set per organization: Revu signature -> device type / product) ----
   const REVU_ACTIONS = ['device', 'plain', 'skip']
-  const listRevuMappings = () => db.query(
-    'SELECT signature, symbol_set_id, device_type_id, product_id, action, updated_at FROM revu_mappings ORDER BY signature')
+  const listRevuMappings = (companyId: string) => db.query(
+    'SELECT signature, symbol_set_id, device_type_id, product_id, action, updated_at FROM revu_mappings WHERE company_id = $1 ORDER BY signature', [companyId])
 
-  app.get('/api/revu-mappings', { preHandler: auth }, async () => listRevuMappings())
+  app.get('/api/revu-mappings', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply)
+    if (!company) return
+    return listRevuMappings(company.id)
+  })
 
-  // Mappings are shared by the whole organization, so only app admins may change them.
+  // Mappings are shared by the whole company, so only its admins may change them.
   app.put('/api/revu-mappings', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const list = (req.body as any)?.mappings
     if (!Array.isArray(list) || list.length > 2000) return reply.code(400).send({ error: 'mappings must be a list' })
     const id = (v: unknown) => (v ? String(v).toLowerCase() : null)
@@ -1353,10 +1588,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     // Referenced ids are checked with three queries in total, not three per mapping.
     const devices = [...clean.values()].filter(c => c.action === 'device')
     const ids = (pick: (c: (typeof devices)[number]) => string | null) => [...new Set(devices.map(pick).filter((v): v is string => !!v))]
-    const sets = new Set((await db.query<{ id: string }>('SELECT id FROM symbol_sets WHERE id = ANY($1::uuid[])', [ids(c => c.set)])).map(r => r.id))
+    const sets = new Set((await db.query<{ id: string }>('SELECT id FROM symbol_sets WHERE id = ANY($1::uuid[]) AND company_id = $2', [ids(c => c.set), company.id])).map(r => r.id))
     const types = new Map((await db.query<{ id: string; symbol_set_id: string }>(
-      'SELECT id, symbol_set_id FROM device_types WHERE id = ANY($1::uuid[])', [ids(c => c.type)])).map(r => [r.id, r.symbol_set_id]))
-    const products = new Set((await db.query<{ id: string }>('SELECT id FROM products WHERE id = ANY($1::uuid[])', [ids(c => c.product)])).map(r => r.id))
+      'SELECT id, symbol_set_id FROM device_types WHERE id = ANY($1::uuid[]) AND company_id = $2', [ids(c => c.type), company.id])).map(r => [r.id, r.symbol_set_id]))
+    const products = new Set((await db.query<{ id: string }>('SELECT id FROM products WHERE id = ANY($1::uuid[]) AND company_id = $2', [ids(c => c.product), company.id])).map(r => r.id))
     for (const c of devices) {
       if (!c.set) return reply.code(400).send({ error: 'A device mapping needs a symbol set' })
       if (!sets.has(c.set)) return reply.code(400).send({ error: 'Unknown symbol set' })
@@ -1366,112 +1601,132 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const rows = [...clean.values()]
     if (rows.length)
       await db.query(
-        `INSERT INTO revu_mappings (signature, symbol_set_id, device_type_id, product_id, action)
-         SELECT * FROM unnest($1::text[], $2::uuid[], $3::uuid[], $4::uuid[], $5::text[])
-         ON CONFLICT (signature) DO UPDATE SET symbol_set_id = EXCLUDED.symbol_set_id, device_type_id = EXCLUDED.device_type_id,
+        `INSERT INTO revu_mappings (company_id, signature, symbol_set_id, device_type_id, product_id, action)
+         SELECT $6::uuid, * FROM unnest($1::text[], $2::uuid[], $3::uuid[], $4::uuid[], $5::text[])
+         ON CONFLICT (company_id, signature) DO UPDATE SET symbol_set_id = EXCLUDED.symbol_set_id, device_type_id = EXCLUDED.device_type_id,
            product_id = EXCLUDED.product_id, action = EXCLUDED.action, updated_at = now()`,
-        [rows.map(c => c.signature), rows.map(c => c.set), rows.map(c => c.type), rows.map(c => c.product), rows.map(c => c.action)])
-    return listRevuMappings()
+        [rows.map(c => c.signature), rows.map(c => c.set), rows.map(c => c.type), rows.map(c => c.product), rows.map(c => c.action), company.id])
+    return listRevuMappings(company.id)
   })
 
   app.post('/api/symbol-sets/:id/device-types', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const t = cleanDeviceType(req.body)
     if (!t) return reply.code(400).send({ error: 'Name and a valid icon are required' })
-    const [set] = await db.query('SELECT id FROM symbol_sets WHERE id = $1', [(req.params as any).id])
+    const [set] = await db.query('SELECT id FROM symbol_sets WHERE id = $1 AND company_id = $2', [(req.params as any).id, company.id])
     if (!set) return reply.code(404).send({ error: 'Not found' })
     const [row] = await db.query(
-      `INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, fields, coverage, mount, sort)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
-      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), t.coverage ? JSON.stringify(t.coverage) : null, t.mount ?? 'ceiling'])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+      `INSERT INTO device_types (company_id, symbol_set_id, name, icon, tag_prefix, fields, coverage, mount, sort)
+       VALUES ($8,$1,$2,$3,$4,$5,$6,$7,(SELECT coalesce(max(sort),0)+1 FROM device_types WHERE symbol_set_id = $1)) RETURNING *`,
+      [set.id, t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), t.coverage ? JSON.stringify(t.coverage) : null, t.mount ?? 'ceiling', company.id])
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return row
   })
 
   app.put('/api/device-types/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const t = cleanDeviceType(req.body)
     if (!t) return reply.code(400).send({ error: 'Name and a valid icon are required' })
     const b = req.body as any
     let defaultId: string | null = null
     if (b.default_product_id) {
-      const [p] = await db.query('SELECT id FROM products WHERE id = $1 AND device_type_id = $2', [b.default_product_id, (req.params as any).id])
+      const [p] = await db.query('SELECT id FROM products WHERE id = $1 AND device_type_id = $2 AND company_id = $3', [b.default_product_id, (req.params as any).id, company.id])
       if (!p) return reply.code(400).send({ error: 'Default product must belong to this type' })
       defaultId = p.id
     }
     const [row] = await db.query(
       `UPDATE device_types SET name=$1, icon=$2, tag_prefix=$3, fields=$4, default_product_id=$5,
          coverage = CASE WHEN $7::boolean THEN $8::jsonb ELSE coverage END,
-         mount = coalesce($9::text, mount) WHERE id=$6 RETURNING *`,
+         mount = coalesce($9::text, mount) WHERE id=$6 AND company_id=$10 RETURNING *`,
       [t.name, t.icon, t.tag_prefix, JSON.stringify(t.fields), defaultId, (req.params as any).id,
-        t.coverage !== undefined, t.coverage ? JSON.stringify(t.coverage) : null, t.mount ?? null])
+        t.coverage !== undefined, t.coverage ? JSON.stringify(t.coverage) : null, t.mount ?? null, company.id])
     if (!row) return reply.code(404).send({ error: 'Not found' })
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return row
   })
 
   // Reorder a set's device types: body { ids } lists them in the wanted order (unlisted types keep their place after them)
   app.put('/api/symbol-sets/:id/device-types/order', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const setId = (req.params as any).id
     const ids = (req.body as any)?.ids
     if (!UUID_RE.test(String(setId)) || !Array.isArray(ids) || ids.some((i: unknown) => typeof i !== 'string' || !UUID_RE.test(i)) || new Set(ids).size !== ids.length)
       return reply.code(400).send({ error: 'ids must be a list of device type ids' })
+    if (!(await db.query('SELECT 1 FROM symbol_sets WHERE id = $1 AND company_id = $2', [setId, company.id])).length) return reply.code(404).send({ error: 'Not found' })
     const rows = await db.query<{ id: string }>('SELECT id FROM device_types WHERE symbol_set_id = $1 ORDER BY sort, created_at', [setId])
     const have = new Set(rows.map(r => r.id))
     if (ids.some((i: string) => !have.has(i))) return reply.code(400).send({ error: 'Unknown device type for this symbol set' })
     const order = [...ids, ...rows.map(r => r.id).filter(i => !ids.includes(i))]
     await db.transaction(async q => { for (let i = 0; i < order.length; i++) await q('UPDATE device_types SET sort = $1 WHERE id = $2', [i + 1, order[i]]) })
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return { ok: true, order }
   })
 
   // Archive so existing device markups keep their type
   app.delete('/api/device-types/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
-    await db.query('UPDATE device_types SET archived = true WHERE id = $1', [(req.params as any).id])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const gone = await db.query('UPDATE device_types SET archived = true WHERE id = $1 AND company_id = $2 RETURNING id', [(req.params as any).id, company.id])
+    if (!gone.length) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return { ok: true }
   })
 
+  /** Accessory references to products that are not this company's are dropped (they could never be resolved). */
+  async function ownAccessories(p: { accessories: any[] }, companyId: string) {
+    const ids = p.accessories.filter(a => a.product_id).map(a => a.product_id as string)
+    if (!ids.length) return
+    const ok = new Set((await db.query<{ id: string }>('SELECT id FROM products WHERE id = ANY($1::uuid[]) AND company_id = $2', [ids, companyId])).map(r => r.id))
+    p.accessories = p.accessories.filter(a => !a.product_id || ok.has(a.product_id))
+  }
+
   app.post('/api/products', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const p = cleanProduct(req.body)
     if (!p) return reply.code(400).send({ error: 'Manufacturer, model or name is required' })
     let typeId: string | null = null
     if (p.kind === 'device') {
       typeId = (req.body as any).device_type_id ?? null
-      const [t] = typeId && uuidRe.test(typeId) ? await db.query('SELECT id FROM device_types WHERE id = $1', [typeId]) : []
+      const [t] = typeId && uuidRe.test(typeId) ? await db.query('SELECT id FROM device_types WHERE id = $1 AND company_id = $2', [typeId, company.id]) : []
       if (!t) return reply.code(400).send({ error: 'Unknown device type' })
     }
+    await ownAccessories(p, company.id)
     const [row] = await db.query(
-      `INSERT INTO products (device_type_id, kind, manufacturer, model, name, spec_url, unit_cost, labor_hours, default_fields, accessories, active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      `INSERT INTO products (company_id, device_type_id, kind, manufacturer, model, name, spec_url, unit_cost, labor_hours, default_fields, accessories, active)
+       VALUES ($12,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [typeId, p.kind, p.manufacturer, p.model, p.name, p.spec_url, p.unit_cost, p.labor_hours,
-        JSON.stringify(p.default_fields), JSON.stringify(p.accessories), p.active])
+        JSON.stringify(p.default_fields), JSON.stringify(p.accessories), p.active, company.id])
     if (typeId) await db.query('UPDATE device_types SET default_product_id = $1 WHERE id = $2 AND default_product_id IS NULL', [row.id, typeId])
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return productOut(row)
   })
 
   app.put('/api/products/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const p = cleanProduct(req.body)
     if (!p) return reply.code(400).send({ error: 'Manufacturer, model or name is required' })
+    await ownAccessories(p, company.id)
     const [row] = await db.query(
       `UPDATE products SET manufacturer=$1, model=$2, name=$3, spec_url=$4, unit_cost=$5, labor_hours=$6,
-         default_fields=$7, accessories=$8, active=$9 WHERE id=$10 RETURNING *`,
+         default_fields=$7, accessories=$8, active=$9 WHERE id=$10 AND company_id=$11 RETURNING *`,
       [p.manufacturer, p.model, p.name, p.spec_url, p.unit_cost, p.labor_hours,
-        JSON.stringify(p.default_fields), JSON.stringify(p.accessories), p.active, (req.params as any).id])
+        JSON.stringify(p.default_fields), JSON.stringify(p.accessories), p.active, (req.params as any).id, company.id])
     if (!row) return reply.code(404).send({ error: 'Not found' })
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return productOut(row)
   })
 
   // Hard delete only when unused; otherwise deactivate so BOMs of existing devices stay correct
   app.delete('/api/products/:id', { preHandler: auth }, async (req, reply) => {
-    if (!req.user.isAdmin) return reply.code(403).send({ error: 'Admins only' })
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
     const id = (req.params as any).id
+    if (!(await db.query('SELECT 1 FROM products WHERE id = $1 AND company_id = $2', [id, company.id])).length) return reply.code(404).send({ error: 'Not found' })
     const [used] = await db.query('SELECT count(*)::int AS n FROM markups WHERE product_id = $1', [id])
     if (used.n > 0) {
       await db.query('UPDATE products SET active = false WHERE id = $1', [id])
@@ -1479,7 +1734,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       await db.query('UPDATE device_types SET default_product_id = NULL WHERE default_product_id = $1', [id])
       await db.query('DELETE FROM products WHERE id = $1', [id])
     }
-    realtime.symbolSetsChanged(req.user.id, cid(req))
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
     return { ok: true, deactivated: used.n > 0 }
   })
 
@@ -1671,7 +1926,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     /** Field definitions that apply to this device: set and type fields (hardware fields apply to every device). */
     const defs = new Map<string, string>(Object.entries(HARDWARE_LABELS))
     if (b.symbol_set_id) {
-      const [set] = uuidRe.test(String(b.symbol_set_id)) ? await db.query('SELECT tag_prefix, fields FROM symbol_sets WHERE id = $1', [b.symbol_set_id]) : []
+      const [set] = uuidRe.test(String(b.symbol_set_id)) ? await db.query('SELECT tag_prefix, fields FROM symbol_sets WHERE id = $1 AND company_id = $2', [b.symbol_set_id, access.companyId]) : []
       if (!set) return reply.code(400).send({ error: 'Unknown symbol set' })
       prefix = ps.tag_prefixes[String(b.symbol_set_id).toLowerCase()] ?? set.tag_prefix
       for (const f of Array.isArray(set.fields) ? set.fields : []) if (f?.key) defs.set(String(f.key), String(f.label || f.key))
@@ -1684,12 +1939,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         for (const f of Array.isArray(dt.fields) ? dt.fields : []) if (f?.key) defs.set(String(f.key), String(f.label || f.key))
       }
       if (b.product_id) {
-        const [pr] = uuidRe.test(String(b.product_id)) ? await db.query('SELECT id FROM products WHERE id = $1', [b.product_id]) : []
+        const [pr] = uuidRe.test(String(b.product_id)) ? await db.query('SELECT id FROM products WHERE id = $1 AND company_id = $2', [b.product_id, access.companyId]) : []
         productId = pr ? pr.id : null
       }
     }
     const fields = b.fields && typeof b.fields === 'object' && !Array.isArray(b.fields) ? b.fields : {}
-    const padding = (await getSection(db, 'tags')).padding
+    const padding = (await getSection(db, access.companyId!, 'tags')).padding
     const baseVersion = Number.isInteger(b.base_version) ? (b.base_version as number) : null
     const restore = b.restore === true
     const out = await db.transaction(async q => {
@@ -1777,7 +2032,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const [names] = await db.query(
       `SELECT (SELECT name FROM users WHERE id = $1) AS created_by_name, (SELECT name FROM users WHERE id = $2) AS updated_by_name`,
       [row.created_by, row.updated_by])
-    realtime.markupChanged(doc.id, { ...row, ...names }, req.user.id, cid(req), realtime.hasRole(doc.id, 'client') ? await internalFieldKeys() : undefined, existing && !existing.deleted ? existing : null)
+    realtime.markupChanged(doc.id, { ...row, ...names }, req.user.id, cid(req), realtime.hasRole(doc.id, 'client') ? await internalFieldKeys(access.companyId!) : undefined, existing && !existing.deleted ? existing : null)
     return row
   })
 
@@ -1800,7 +2055,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const EXT_TYPES: Record<string, string> = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
   const PHOTO_MAX = 15 * 1024 * 1024
   /** Photos obey the smaller of their own cap and the organization's upload limit. */
-  const photoMax = () => Math.min(PHOTO_MAX, runtime.maxUploadBytes)
+  const photoMax = (companyId?: string | null) => Math.min(PHOTO_MAX, uploadBytes(companyId))
   const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
 
   /** Deletes a stored file only when nothing else (a revision, a frozen snapshot, a photo, a setting) still points at it. */
@@ -1848,13 +2103,19 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   /** Writes an uploaded photo to disk. Returns the key, or sends an error and returns null. */
-  async function savePhoto(file: any, reply: FastifyReply) {
+  async function savePhoto(file: any, reply: FastifyReply, companyId?: string | null) {
     if (!PHOTO_TYPES[file.mimetype]) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
     const bytes = new Uint8Array(await file.toBuffer())
-    if (file.file.truncated) { reply.code(413).send({ error: `Photo too large (${Math.round(photoMax() / 1048576)} MB max)` }); return null }
+    if (file.file.truncated) { reply.code(413).send({ error: `Photo too large (${Math.round(photoMax(companyId) / 1048576)} MB max)` }); return null }
     const ext = photoExt(bytes) // what the bytes really are, not what the client said
     if (!ext) { reply.code(400).send({ error: 'That is not a valid JPEG, PNG or WebP image' }); return null }
-    return storage.save(ext, bytes)
+    return storage.save(ext, bytes, companyId)
+  }
+
+  /** The company of a request when it has one (avatars are stored with it); never answers an error. */
+  async function softCompanyId(req: FastifyRequest) {
+    const r = await resolveCompany(req)
+    return 'ctx' in r ? r.ctx.id : null
   }
 
   async function attachmentsChanged(a: { markup_id: string }, req: FastifyRequest) {
@@ -1874,7 +2135,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/markups/:markupId/attachments', { preHandler: auth }, async (req, reply) => {
     const m = await markupWithAccess(req, reply, 'photos.edit')
     if (!m) return
-    const file = await req.file({ limits: { fileSize: photoMax() } })
+    const companyId = accessOf(req).companyId!
+    ;(req as any).uploadMb = uploadMb(companyId)
+    const file = await req.file({ limits: { fileSize: photoMax(companyId) } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
     const f = file.fields as any
     const id = String(f.id?.value ?? '')
@@ -1885,7 +2148,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (existing.markup_id !== m.id) return reply.code(409).send({ error: 'Attachment belongs to another markup' })
       return attRow(id)
     }
-    const key = await savePhoto(file, reply)
+    const key = await savePhoto(file, reply, companyId)
     if (!key) return
     try {
       await db.query(
@@ -1917,9 +2180,11 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.put('/api/attachments/:id/annotated', { preHandler: auth }, async (req, reply) => {
     const a = await attachmentWithAccess(req, reply, 'photos.edit')
     if (!a) return
-    const file = await req.file({ limits: { fileSize: photoMax() } })
+    const companyId = accessOf(req).companyId!
+    ;(req as any).uploadMb = uploadMb(companyId)
+    const file = await req.file({ limits: { fileSize: photoMax(companyId) } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
-    const key = await savePhoto(file, reply)
+    const key = await savePhoto(file, reply, companyId)
     if (!key) return
     await db.query('UPDATE attachments SET annotated_key = $1 WHERE id = $2', [key, a.id])
     removeFile(a.annotated_key)
@@ -1957,7 +2222,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/me/avatar', { preHandler: auth }, async (req, reply) => {
     const file = await req.file({ limits: { fileSize: 5 * 1024 * 1024 } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No picture' })
-    const key = await savePhoto(file, reply)
+    const key = await savePhoto(file, reply, await softCompanyId(req))
     if (!key) return
     const [old] = await db.query('SELECT avatar_key FROM users WHERE id = $1', [req.user.id])
     const [row] = await db.query('UPDATE users SET avatar_key = $1, avatar_version = avatar_version + 1 WHERE id = $2 RETURNING avatar_version', [key, req.user.id])
@@ -1984,9 +2249,22 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return reply.send(stream)
   })
 
-  await registerProjectSettings({ app, db, auth, fileAuth, storage, requireCap, releaseFile: removeFile })
-  await registerAdmin({ app, db, auth, fileAuth, storage, forgetUser, requireCap, sign, realtime, rl, keepsAnAdmin, dropFromProject, refreshAccess, publicUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX, reloadRuntime })
-  await registerBackups({ app, db, auth })
+  /** A person left a company: their cached standing goes, their sockets leave its rooms and stop hearing its catalog events. */
+  async function companyMemberRemoved(userId: string, companyId: string) {
+    forgetUser(userId)
+    const docs = await db.query<{ id: string }>('SELECT d.id FROM documents d JOIN projects p ON p.id = d.project_id WHERE p.company_id = $1', [companyId])
+    realtime.dropUserFromCompany(userId, companyId, docs.map(d => d.id))
+  }
+
+  await registerProjectSettings({ app, db, auth, fileAuth, storage, requireCap, requireCompany, releaseFile: removeFile })
+  await registerAdmin({
+    app, db, auth, fileAuth, storage, forgetUser, requireCap, requireCompany, companyCtx, companyMemberRemoved, sign, realtime, rl, keepsAnAdmin, dropFromProject,
+    refreshAccess, sessionUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX, reloadRuntime,
+  })
+  await registerBackups({ app, db, auth, requireCompany })
+  await registerCompanies({
+    app, db, auth, requireCompany, companyCtx, resolveCompany, forgetUser, forgetCompany, companyMemberRemoved, reloadRuntime, realtime,
+  })
 
   // ---- Built web app (production) ----
   if (webDir && existsSync(webDir)) {

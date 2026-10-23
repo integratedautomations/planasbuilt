@@ -1,7 +1,8 @@
 // Project settings API (Phase 8c): the settings document and the project's report logo.
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Db } from './db.js'
-import type { Cap } from './roles.js'
+import type { Access, Cap } from './roles.js'
+import type { CompanyCtx, CompanyRole } from './companies.js'
 import type { Storage } from './storage.js'
 import { mergeProjectSettings, publicProjectSettings, readProjectSettings } from './projectSettings.js'
 import { getSection } from './settings.js'
@@ -12,7 +13,8 @@ interface Ctx {
   auth: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
   fileAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
   storage: Storage
-  requireCap: (req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) => Promise<unknown>
+  requireCap: (req: FastifyRequest, reply: FastifyReply, projectId: string, cap: Cap) => Promise<Access | null>
+  requireCompany: (req: FastifyRequest, reply: FastifyReply, min?: CompanyRole) => Promise<CompanyCtx | null>
   /** Deletes a stored file once nothing references it any more. */
   releaseFile: (key: string | null | undefined) => void
 }
@@ -36,7 +38,8 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
   // Project admins only. A partial body changes just the keys it names; statuses still used by devices cannot be removed.
   app.put('/api/projects/:id/settings', { preHandler: auth }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any
-    if (!(await requireCap(req, reply, id, 'members.manage'))) return
+    const access = await requireCap(req, reply, id, 'members.manage')
+    if (!access) return
     const current = await load(id)
     const body = (req.body ?? {}) as Record<string, unknown>
     const inUse = 'statuses' in body
@@ -44,7 +47,7 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
         `SELECT DISTINCT m.status FROM markups m JOIN documents d ON d.id = m.document_id
          WHERE d.project_id = $1 AND NOT m.deleted AND m.status <> ''`, [id])).map(r => r.status)
       : []
-    const setIds = 'tag_prefixes' in body ? (await db.query<{ id: string }>('SELECT id FROM symbol_sets')).map(r => r.id) : undefined
+    const setIds = 'tag_prefixes' in body ? (await db.query<{ id: string }>('SELECT id FROM symbol_sets WHERE company_id = $1', [access.companyId])).map(r => r.id) : undefined
     const merged = mergeProjectSettings(current, body, { statusesInUse: inUse, setIds })
     if ('error' in merged) return reply.code(400).send({ error: merged.error })
     await save(id, merged.value)
@@ -54,9 +57,10 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
   // The report logo: the project's own, else the organization's. 404 when neither exists.
   app.get('/api/projects/:id/logo', { preHandler: fileAuth }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any
-    if (!(await requireCap(req, reply, id, 'view'))) return
+    const access = await requireCap(req, reply, id, 'view')
+    if (!access) return
     const own = (await load(id)).report
-    const org = own.logo_key ? null : await getSection(db, 'company')
+    const org = own.logo_key ? null : await getSection(db, access.companyId!, 'company')
     const key = own.logo_key || org?.logo_key || ''
     const type = own.logo_key ? own.logo_type : org?.logo_type ?? ''
     const stream = key ? await storage.open(key) : null
@@ -70,14 +74,15 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
 
   app.post('/api/projects/:id/logo', { preHandler: auth }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any
-    if (!(await requireCap(req, reply, id, 'members.manage'))) return
+    const access = await requireCap(req, reply, id, 'members.manage')
+    if (!access) return
     const file = await (req as any).file({ limits: { fileSize: LOGO_MAX } })
     if (!file) return reply.code(400).send({ error: 'No file' })
     const bytes: Buffer = await file.toBuffer()
     if (file.file.truncated) return reply.code(413).send({ error: 'Logo too large (2 MB max)' })
     const kind = logoKind(bytes)
     if (!kind) return reply.code(400).send({ error: 'The logo must be a PNG or JPEG image' })
-    const key = await storage.save(kind.ext, bytes)
+    const key = await storage.save(kind.ext, bytes, access.companyId)
     const s = await load(id)
     const old = s.report.logo_key
     await save(id, { ...s, report: { ...s.report, logo_key: key, logo_type: kind.type } })

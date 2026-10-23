@@ -68,11 +68,11 @@ export class Storage {
 
   constructor(
     readonly filesDir: string,
-    /** Current backend choice; read on every write so a settings change applies at once. */
-    private getConfig: () => Promise<StorageConfig> = async () => LOCAL_CONFIG,
+    /** Backend choice of a company (undefined = the install's first company); read on every write so a settings change applies at once. */
+    private getConfig: (companyId?: string | null) => Promise<StorageConfig> = async () => LOCAL_CONFIG,
     private factory: S3Factory = defaultFactory,
-    /** S3 settings used to read files that live in the bucket even when the active backend is local again. */
-    private getS3: () => Promise<S3Config | null> = async () => null,
+    /** S3 settings of every company, used to read files that live in a bucket even when the active backend is local again. */
+    private getS3: () => Promise<S3Config | S3Config[] | null> = async () => null,
   ) {
     mkdirSync(filesDir, { recursive: true })
   }
@@ -88,26 +88,29 @@ export class Storage {
 
   /** Where a stored s3: key lives: the bucket and object key recorded in it, or the current settings for legacy keys. */
   private async locate(key: string): Promise<{ c: S3Config; bucket: string; objectKey: string }> {
-    const c = await this.s3For()
     const rest = key.slice(S3_PREFIX.length)
     const slash = rest.indexOf('/')
+    // Credentials come from whichever company's S3 settings name the bucket recorded in the key.
+    const c = await this.s3For(slash > 0 ? rest.slice(0, slash) : null)
     if (slash > 0) return { c, bucket: rest.slice(0, slash), objectKey: rest.slice(slash + 1) }
     return { c, bucket: c.bucket, objectKey: this.s3Key(c, rest) }
   }
 
-  private async s3For(): Promise<S3Config> {
-    const c = (await this.getS3()) ?? (await this.getConfig()).s3
-    const err = validateS3Config(c)
-    if (err || !c) throw new Error(`S3 storage is not configured: ${err}`)
+  private async s3For(bucket: string | null): Promise<S3Config> {
+    const got = await this.getS3()
+    let list = (Array.isArray(got) ? got : got ? [got] : []).filter(c => !validateS3Config(c))
+    if (!list.length) { const s3 = (await this.getConfig()).s3; list = s3 && !validateS3Config(s3) ? [s3] : [] }
+    const c = (bucket && list.find(x => x.bucket === bucket)) || list[0]
+    if (!c) throw new Error(`S3 storage is not configured: ${validateS3Config(null)}`)
     return c
   }
 
   private localPath(name: string) { return path.join(this.filesDir, path.basename(name)) }
 
   /** Stores a new file under a fresh name `<uuid>.<ext>` on the active backend. Returns the key to keep in the database. */
-  async save(ext: string, body: Readable | Buffer | Uint8Array): Promise<string> {
+  async save(ext: string, body: Readable | Buffer | Uint8Array, companyId?: string | null): Promise<string> {
     const name = `${randomUUID()}.${ext.replace(/^\./, '')}`
-    const cfg = await this.getConfig()
+    const cfg = await this.getConfig(companyId)
     if (cfg.backend === 's3' && cfg.s3) return this.putS3(cfg.s3, name, body)
     const dest = this.localPath(name)
     if (body instanceof Readable) await pipeline(body, createWriteStream(dest))

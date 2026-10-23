@@ -107,8 +107,14 @@ describe('admin routes', () => {
       if (!h) return reply.code(401).send({ error: 'no' })
       req.user = { id: 'u', isAdmin: h === 'admin' }
     }
+    // Stand-in for the app's company resolution: admins work in the install's first company.
+    const requireCompany = async (req: any, reply: any) => {
+      if (!req.user.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return null }
+      const [c] = await db.query<{ id: string; name: string }>('SELECT id, name FROM companies ORDER BY created_at LIMIT 1')
+      return { id: c.id, name: c.name, role: 'owner', member: true, platform: true, isAdmin: true, canCreateProjects: true, archived: false }
+    }
     await registerBackups({
-      app, db, auth, dir, env,
+      app, db, auth, requireCompany: requireCompany as any, dir, env,
       rclone: async args => { calls.push(args); return fail ? { ok: false, output: 'boom: connection refused' } : { ok: true, output: '' } },
       resolveOneDrive: async () => ({ drive_id: 'DID', drive_type: 'personal' }),
     })

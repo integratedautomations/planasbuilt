@@ -1,4 +1,5 @@
-// Organization settings: one row per section in the settings(key, value jsonb) table.
+// Company settings: one row per section and company in the settings(company_id, key, value jsonb) table.
+// A few values are install-wide instead and live in system_settings(key, value) (getSystem / putSystem).
 import type { Db } from './db.js'
 import type { S3Config, StorageConfig } from './storage.js'
 import type { SmtpConfig } from './mail.js'
@@ -46,8 +47,8 @@ export function renderInvite(t: InviteSettings, v: Record<string, string>) {
 
 export type SectionName = keyof typeof DEFAULTS
 
-export async function getSection<K extends SectionName>(db: Db, key: K): Promise<(typeof DEFAULTS)[K]> {
-  const [row] = await db.query('SELECT value FROM settings WHERE key = $1', [key])
+export async function getSection<K extends SectionName>(db: Pick<Db, 'query'>, companyId: string, key: K): Promise<(typeof DEFAULTS)[K]> {
+  const [row] = await db.query('SELECT value FROM settings WHERE company_id = $1 AND key = $2', [companyId, key])
   const v = row?.value && typeof row.value === 'object' ? row.value : {}
   const d = DEFAULTS[key] as any
   const out = { ...d, ...v }
@@ -55,9 +56,21 @@ export async function getSection<K extends SectionName>(db: Db, key: K): Promise
   return out
 }
 
-export async function putSection(db: Db, key: SectionName, value: unknown) {
+export async function putSection(db: Pick<Db, 'query'>, companyId: string, key: SectionName, value: unknown) {
   await db.query(
-    `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    `INSERT INTO settings (company_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value`,
+    [companyId, key, JSON.stringify(value)])
+}
+
+/** Install-wide values (not owned by any company) live in system_settings. */
+export async function getSystem<T = any>(db: Pick<Db, 'query'>, key: string, fallback: T): Promise<T> {
+  const [row] = await db.query('SELECT value FROM system_settings WHERE key = $1', [key])
+  return row?.value ?? fallback
+}
+
+export async function putSystem(db: Pick<Db, 'query'>, key: string, value: unknown) {
+  await db.query(
+    `INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
     [key, JSON.stringify(value)])
 }
 

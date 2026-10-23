@@ -47,7 +47,8 @@ export async function openDb(databaseUrl: string | undefined, dataDir: string | 
   }
 }
 
-const SCHEMA = `
+/** The original single-company schema: every statement is idempotent. Exported so the migration test can build a legacy database. */
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   email text UNIQUE NOT NULL,
@@ -318,14 +319,14 @@ const DEFAULT_SETS = [
   },
 ]
 
-async function seedSymbolSets(db: Db) {
-  const [{ count }] = await db.query<{ count: number }>('SELECT count(*)::int AS count FROM symbol_sets')
-  if (count > 0) return
+type Q = Db['query']
+
+async function seedSymbolSets(q: Q, companyId: string) {
   let sort = 0
   for (const s of DEFAULT_SETS) {
-    await db.query(
-      'INSERT INTO symbol_sets (name, color, tag_prefix, icon, fields, has_fov, sort) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-      [s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, sort++])
+    await q(
+      'INSERT INTO symbol_sets (company_id, name, color, tag_prefix, icon, fields, has_fov, sort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [companyId, s.name, s.color, s.tag_prefix, s.icon, JSON.stringify(s.fields), s.has_fov, sort++])
   }
 }
 
@@ -358,44 +359,144 @@ const SEED_CATALOG: Record<string, SeedType[]> = {
   ],
 }
 
-async function seedCatalog(db: Db) {
-  const [{ count }] = await db.query<{ count: number }>('SELECT count(*)::int AS count FROM device_types')
-  if (count > 0) return
+async function seedCatalog(q: Q, companyId: string) {
   for (const [setName, types] of Object.entries(SEED_CATALOG)) {
-    const [set] = await db.query('SELECT id FROM symbol_sets WHERE name = $1 LIMIT 1', [setName])
+    const [set] = await q('SELECT id FROM symbol_sets WHERE name = $1 AND company_id = $2 LIMIT 1', [setName, companyId])
     if (!set) continue
     let sort = 0
     for (const t of types) {
-      const [dt] = await db.query(
-        'INSERT INTO device_types (symbol_set_id, name, tag_prefix, sort) VALUES ($1,$2,$3,$4) RETURNING id',
-        [set.id, t.name, t.tag_prefix ?? null, sort++])
+      const [dt] = await q(
+        'INSERT INTO device_types (company_id, symbol_set_id, name, tag_prefix, sort) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+        [companyId, set.id, t.name, t.tag_prefix ?? null, sort++])
       let first: string | null = null
       for (const p of t.products) {
-        const [pr] = await db.query(
-          `INSERT INTO products (device_type_id, manufacturer, model, name, unit_cost, labor_hours, default_fields)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-          [dt.id, p.manufacturer, p.model, p.name, p.unit_cost, p.labor_hours, JSON.stringify(p.default_fields ?? {})])
+        const [pr] = await q(
+          `INSERT INTO products (company_id, device_type_id, manufacturer, model, name, unit_cost, labor_hours, default_fields)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+          [companyId, dt.id, p.manufacturer, p.model, p.name, p.unit_cost, p.labor_hours, JSON.stringify(p.default_fields ?? {})])
         first ??= pr.id
         // Accessories are standalone accessory products referenced by id
         const acc: any[] = []
         for (const a of p.accessories ?? []) {
-          const [ap] = await db.query(
-            `INSERT INTO products (device_type_id, kind, manufacturer, model, name, unit_cost, labor_hours)
-             VALUES (NULL,'accessory',$1,$2,$3,$4,$5) RETURNING id`,
-            [p.manufacturer, a.model, a.model, 8, 0.25])
+          const [ap] = await q(
+            `INSERT INTO products (company_id, device_type_id, kind, manufacturer, model, name, unit_cost, labor_hours)
+             VALUES ($1,NULL,'accessory',$2,$3,$4,$5,$6) RETURNING id`,
+            [companyId, p.manufacturer, a.model, a.model, 8, 0.25])
           acc.push({ product_id: ap.id, qty: a.qty })
         }
-        if (acc.length) await db.query('UPDATE products SET accessories = $1 WHERE id = $2', [JSON.stringify(acc), pr.id])
+        if (acc.length) await q('UPDATE products SET accessories = $1 WHERE id = $2', [JSON.stringify(acc), pr.id])
       }
-      await db.query('UPDATE device_types SET default_product_id = $1 WHERE id = $2', [first, dt.id])
+      await q('UPDATE device_types SET default_product_id = $1 WHERE id = $2', [first, dt.id])
     }
   }
+}
+
+/** The starter symbol sets and catalog for a company that has none (used for the first company and on request for new ones). */
+export async function seedStarterCatalog(q: Q, companyId: string) {
+  await seedSymbolSets(q, companyId)
+  await seedCatalog(q, companyId)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Companies. One install serves several companies: projects, the catalog and the settings belong to one company each,
+// people (users) are global and belong to companies through company_members.
+
+export const slugify = (name: string) =>
+  name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'company'
+
+/** Creates a company (unique slug) with its branding row. Run inside a transaction when other writes depend on it. */
+export async function createCompanyRow(q: Q, name: string): Promise<{ id: string; name: string; slug: string; archived: boolean; created_at: string }> {
+  const base = slugify(name)
+  let slug = base
+  for (let n = 2; (await q('SELECT 1 FROM companies WHERE slug = $1', [slug])).length; n++) slug = `${base}-${n}`
+  const [c] = await q('INSERT INTO companies (name, slug) VALUES ($1,$2) RETURNING id, name, slug, archived, created_at', [name, slug])
+  await q(`INSERT INTO settings (company_id, key, value) VALUES ($1,'company',$2) ON CONFLICT DO NOTHING`, [c.id, JSON.stringify({ name })])
+  return c
+}
+
+const COMPANY_TABLES = ['projects', 'symbol_sets', 'device_types', 'products', 'cable_types', 'revu_mappings'] as const
+
+async function hasColumn(q: Q, table: string, column: string) {
+  return (await q('SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2', [table, column])).length > 0
+}
+
+/**
+ * Moves a single-company database to the multi-company model, in ONE transaction: a company (named after the old
+ * organization name, else "My Company") receives every existing row and every user (admins become owners). Idempotent:
+ * once the settings table is keyed by company the data steps are skipped, so later runs never re-add removed members.
+ * A fresh database goes through the same path with nothing to move and ends up with one empty "My Company".
+ */
+async function upgradeToCompanies(db: Db) {
+  await db.transaction(async q => {
+    await q(`CREATE TABLE IF NOT EXISTS companies (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      name text NOT NULL,
+      slug text UNIQUE NOT NULL,
+      archived boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`)
+    await q(`CREATE TABLE IF NOT EXISTS company_members (
+      company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role text NOT NULL CHECK (role IN ('owner','admin','member','guest')),
+      can_create_projects boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (company_id, user_id)
+    )`)
+    await q('CREATE INDEX IF NOT EXISTS company_members_user ON company_members(user_id)')
+    // Install-wide values (not owned by any company).
+    await q(`CREATE TABLE IF NOT EXISTS system_settings (key text PRIMARY KEY, value jsonb NOT NULL DEFAULT '{}')`)
+
+    const legacy = !(await hasColumn(q, 'settings', 'company_id'))
+    let [def] = await q<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1')
+    if (!def) {
+      let name = 'My Company'
+      if (legacy) {
+        const [row] = await q<{ name: string | null }>(`SELECT nullif(btrim(value->>'name'), '') AS name FROM settings WHERE key = 'company'`)
+        if (row?.name) name = row.name.slice(0, 200)
+      }
+      const base = slugify(name)
+      const [c] = await q<{ id: string }>('INSERT INTO companies (name, slug) VALUES ($1,$2) RETURNING id', [name, base])
+      def = c
+    }
+
+    for (const t of COMPANY_TABLES) await q(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES companies(id)`)
+    await q('ALTER TABLE settings ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES companies(id) ON DELETE CASCADE')
+    await q('ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES companies(id) ON DELETE CASCADE')
+    await q('ALTER TABLE user_prefs ADD COLUMN IF NOT EXISTS last_company_id uuid REFERENCES companies(id) ON DELETE SET NULL')
+
+    if (legacy) {
+      for (const t of [...COMPANY_TABLES, 'settings'] as const) {
+        await q(`UPDATE ${t} SET company_id = $1 WHERE company_id IS NULL`, [def.id])
+        await q(`ALTER TABLE ${t} ALTER COLUMN company_id SET NOT NULL`)
+      }
+      await q(`UPDATE user_tokens SET company_id = $1 WHERE purpose = 'invite' AND company_id IS NULL`, [def.id])
+      await q('ALTER TABLE settings DROP CONSTRAINT IF EXISTS settings_pkey')
+      await q('ALTER TABLE settings ADD PRIMARY KEY (company_id, key)')
+      await q('ALTER TABLE revu_mappings DROP CONSTRAINT IF EXISTS revu_mappings_pkey')
+      await q('ALTER TABLE revu_mappings ADD PRIMARY KEY (company_id, signature)')
+      // Every existing person joins the default company; app admins become its owners (and stay platform admins).
+      await q(
+        `INSERT INTO company_members (company_id, user_id, role, can_create_projects)
+         SELECT $1, id, CASE WHEN is_admin THEN 'owner' ELSE 'member' END, (is_admin OR can_create_projects) FROM users
+         ON CONFLICT DO NOTHING`, [def.id])
+      // The branding row always exists and carries the company's name.
+      await q(`INSERT INTO settings (company_id, key, value) SELECT id, 'company', jsonb_build_object('name', name) FROM companies WHERE id = $1 ON CONFLICT DO NOTHING`, [def.id])
+    }
+    for (const t of ['projects', 'symbol_sets', 'device_types', 'products', 'cable_types', 'revu_mappings'])
+      await q(`CREATE INDEX IF NOT EXISTS ${t}_company ON ${t}(company_id)`)
+  })
 }
 
 export async function migrate(db: Db) {
   for (const stmt of SCHEMA.split(';').map(s => s.trim()).filter(Boolean)) {
     await db.query(stmt)
   }
-  await seedSymbolSets(db)
-  await seedCatalog(db)
+  await upgradeToCompanies(db)
+  // First install only: the starter symbol sets and catalog go to the first company.
+  const [def] = await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1')
+  const [{ sets }] = await db.query<{ sets: number }>('SELECT count(*)::int AS sets FROM symbol_sets')
+  if (sets === 0) await seedSymbolSets(db.query, def.id)
+  const [{ types }] = await db.query<{ types: number }>('SELECT count(*)::int AS types FROM device_types')
+  if (types === 0) await seedCatalog(db.query, def.id)
 }

@@ -10,7 +10,7 @@ import { builtinBody, installLibrary, isStdIcon, matchStdDevice, planLibrary, pr
 
 let app: Awaited<ReturnType<typeof buildApp>>
 let db: Db
-let admin = '', bob = ''
+let admin = '', bob = '', company = ''
 const H = (t: string) => ({ authorization: `Bearer ${t}` })
 const PNG = 'data:image/png;base64,iVBORw0KGgo='
 const CUSTOM_SVG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="20" fill="red"/></svg>')
@@ -24,6 +24,7 @@ beforeAll(async () => {
   admin = setup.token
   await app.inject({ method: 'POST', url: '/api/users', headers: H(admin), payload: { email: 'b@x.com', name: 'Bob', password: 'password1' } })
   bob = (await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'b@x.com', password: 'password1' } })).json().token
+  company = (await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at LIMIT 1'))[0].id
 })
 
 const counts = async () => ({
@@ -116,9 +117,9 @@ describe('Standard device library route', () => {
     const [ac] = await db.query<{ id: string }>("SELECT id FROM symbol_sets WHERE name = 'Access Control'")
     const [fa] = await db.query<{ id: string }>("SELECT id FROM symbol_sets WHERE name = 'Fire Alarm'")
     await db.query("DELETE FROM device_types WHERE symbol_set_id = ANY($1::uuid[])", [[ac.id, fa.id]])
-    await db.query("INSERT INTO device_types (symbol_set_id, name, icon, sort) VALUES ($1,'card reader',$2,1)", [ac.id, PNG])
-    await db.query("INSERT INTO device_types (symbol_set_id, name, icon, tag_prefix, sort) VALUES ($1,'Smoke Detector',$2,'SMK',1)", [fa.id, OLD_BUILTIN])
-    await db.query("INSERT INTO device_types (symbol_set_id, name, icon, sort) VALUES ($1,'My Special Gadget','',2)", [fa.id])
+    await db.query("INSERT INTO device_types (company_id, symbol_set_id, name, icon, sort) VALUES ($3,$1,'card reader',$2,1)", [ac.id, PNG, company])
+    await db.query("INSERT INTO device_types (company_id, symbol_set_id, name, icon, tag_prefix, sort) VALUES ($3,$1,'Smoke Detector',$2,'SMK',1)", [fa.id, OLD_BUILTIN, company])
+    await db.query("INSERT INTO device_types (company_id, symbol_set_id, name, icon, sort) VALUES ($2,$1,'My Special Gadget','',2)", [fa.id, company])
     const before = await counts()
 
     const preview = (await app.inject({ method: 'GET', url: '/api/catalog/standard-library', headers: H(admin) })).json()
@@ -171,8 +172,8 @@ describe('Standard device library route', () => {
     const run2 = (await app.inject({ method: 'POST', url: '/api/catalog/standard-library', headers: H(admin) })).json()
     expect(run2).toMatchObject({ setsCreated: 0, typesAdded: 0, typesUpdated: 0 })
     expect(await snapshot()).toBe(snap)
-    expect(await previewLibrary(db)).toMatchObject({ setsCreated: 0, typesAdded: 0, typesUpdated: 0 })
-    expect(await installLibrary(db)).toMatchObject({ setsCreated: 0, typesAdded: 0, typesUpdated: 0 })
+    expect(await previewLibrary(db, company)).toMatchObject({ setsCreated: 0, typesAdded: 0, typesUpdated: 0 })
+    expect(await installLibrary(db, company)).toMatchObject({ setsCreated: 0, typesAdded: 0, typesUpdated: 0 })
   })
 
   it('does not bring back a symbol set or type that was archived, and still never deletes', async () => {
