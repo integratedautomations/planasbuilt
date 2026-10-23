@@ -24,6 +24,8 @@ export function fitView(page: Size, box: Size, margin = 16): View {
 export interface PanZoomOptions {
   /** Called at pointerdown (after the markup layer saw it): false = a tool owns this pointer. */
   shouldPan?: (e: PointerEvent) => boolean
+  /** True while a tool is using the held finger (device rotate-on-hold): a one-finger move does not pan. */
+  holdPan?: () => boolean
   /** A second finger arrived: tools should cancel whatever they were drawing. */
   onPinchStart?: () => void
   /** Every view change, for layers that position themselves (the markup stage). */
@@ -130,6 +132,7 @@ export function usePanZoom(
       const p = { ...local(e), pan: prev.pan }
       pointers.set(e.pointerId, p)
       if (pointers.size === 1 && prev.pan && !pinched) {
+        if (opts.current.holdPan?.()) return
         apply({ ...view.current, x: view.current.x + p.x - prev.x, y: view.current.y + p.y - prev.y })
       } else if (pointers.size === 2 && pinch) {
         const next = pinchState()

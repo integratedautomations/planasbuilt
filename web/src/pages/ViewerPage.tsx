@@ -413,6 +413,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     pageSize ? { width: pageSize.width, height: pageSize.height } : null, {
       shouldPan: () => { const owned = consumedRef.current; consumedRef.current = false; return !owned },
       onPinchStart: () => markupRef.current?.cancelGesture(),
+      holdPan: () => !!markupRef.current?.isPlacing(),
       onView: syncStage,
     })
   useEffect(() => { syncStage(view.current) })

@@ -22,6 +22,7 @@ import type { Catalog } from '../catalog/catalog'
 import type { BoxGeometry, Fov, Markup, MarkupStyle, MarkupType, PathGeometry, SymbolSet, Tool } from './types'
 import { uuid } from '../uuid'
 import { initialCoverage } from './coverage'
+import { PLACE_ROTATE_SLOP_PX, angleLabel, faceAngle, placeAngle } from './placeRotate'
 import type { Peer } from '../realtime/presence'
 import { REDLINE } from './canvasFonts'
 import { createTouchArbiter, isDoubleTap, LONG_PRESS_MS } from '../viewer/touchGesture'
@@ -38,6 +39,8 @@ export interface MarkupCanvasHandle {
   /** A second finger arrived / a touch was lost: drop the in-flight tap or drag, keep points already placed. */
   cancelGesture: () => void
   finishDraft: () => void
+  /** A device is held down after placing (rotate-on-hold in progress): the viewport must not pan. */
+  isPlacing: () => boolean
 }
 
 interface Props {
@@ -164,6 +167,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const tapMode = useRef(false)
   const [touchUi, setTouchUi] = useState(false)
   const latest = useRef<Record<string, (...a: never[]) => unknown>>({})
+  /** Device placement held open until release: the pointer may turn it first. `base` is the geometry as placed; `m` is what commits. */
+  const placeRef = useRef<{ m: Markup; base: BoxGeometry; c: Pt; cx: number; cy: number; moved: boolean } | null>(null)
+  const [placeView, setPlaceView] = useState<{ m: Markup; to: Pt | null; angle: number | null } | null>(null)
   const [snapHint, setSnapHint] = useState<{ x: number; y: number; r: number } | null>(null)
   // Plex arrives from Google Fonts after the first draw: re-measure canvas text once it has loaded.
   useEffect(() => {
@@ -207,6 +213,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   })
 
   const finish = (m: Markup | null) => {
+    placeRef.current = null
+    setPlaceView(null)
     setDraft(null)
     dragStart.current = null
     freehandPts.current = []
@@ -232,6 +240,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     cancelDraft: () => { cancelMarquee(); finish(null) },
     cancelGesture: () => cancelGesture(),
     finishDraft: finishClickPath,
+    isPlacing: () => !!placeRef.current,
   }))
 
   // Leaving a tool abandons its half-drawn markup
@@ -254,6 +263,45 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (m.type !== 'area' && !lockedIds.has(m.id) && rectsIntersect(markupBounds(m), probe)) return m.id
     }
     return null
+  }
+
+  /** Open a held placement at `c`: nothing commits until commitPlace. */
+  function beginPlace(m: Markup, c: Pt, cx: number, cy: number) {
+    placeRef.current = { m, base: m.geometry as BoxGeometry, c, cx, cy, moved: false }
+    setDevGhost(null); setSnapHint(null)
+    setPlaceView({ m, to: null, angle: null })
+  }
+
+  /** Touch long-press on empty space with the device tool: place a device and let the finger turn it. False = not applicable (stack / overlap / no set). */
+  function startPlace(p: Pt, cx: number, cy: number): boolean {
+    const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
+    if (!set || readOnly || placeRef.current) return false
+    if (findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)) return false
+    if (onDeviceOverlap && findOverlapTarget(markups, p, set.id, newBase.deviceTypeId ?? null)) return false
+    const size = 24 * (props.deviceScale ?? 1)
+    const covFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
+    beginPlace(newMarkup('device', { x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0, ...(covFov ? { fov: covFov } : {}) }), p, cx, cy)
+    return true
+  }
+
+  /** Pointer moved while a placement is held: past the slop it turns the device to face the pointer (15 degree steps, free with Alt). */
+  function updatePlace(ptr: Pt, free: boolean, cx: number, cy: number) {
+    const pl = placeRef.current
+    if (!pl) return
+    if (!pl.moved) {
+      if (Math.hypot(cx - pl.cx, cy - pl.cy) <= PLACE_ROTATE_SLOP_PX) return
+      pl.moved = true
+    }
+    const angle = placeAngle(pl.c, ptr, free)
+    if (angle === null) return
+    pl.m = { ...pl.m, geometry: faceAngle(pl.base, angle) }
+    setPlaceView({ m: pl.m, to: ptr, angle })
+  }
+
+  /** Release: the device and its rotation commit as one change (one undo step). */
+  function commitPlace() {
+    const pl = placeRef.current
+    if (pl) finish(pl.m)
   }
 
   function handleDown(e: Konva.KonvaEventObject<PointerEvent>) {
@@ -333,7 +381,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       // On top of a device of another type: the viewer may replace it or ask first
       const over = onDeviceOverlap ? findOverlapTarget(markups, p, set.id, newBase.deviceTypeId ?? null) : null
       if (over && onDeviceOverlap!(over, placed)) { finish(null); return }
-      finish(placed)
+      // Mouse / pen: keep the placement open until release so the pointer can turn it. Touch taps place at once.
+      if (e.evt.pointerType === 'touch') finish(placed)
+      else beginPlace(placed, p, e.evt.clientX, e.evt.clientY)
       return
     }
     if (t === 'count') {
@@ -371,6 +421,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
   function handleMove(e: Konva.KonvaEventObject<PointerEvent>) {
     if (onCursor) onCursor(stageRef.current?.getRelativePointerPosition() ?? null)
+    if (placeRef.current) { updatePlace(pointer(), e.evt.altKey, e.evt.clientX, e.evt.clientY); return }
     if (e.evt.pointerType === 'touch') { setDevGhost(null); setSnapHint(null) }
     else if (tool === 'device' && !readOnly && newBase.symbolSetId) setDevGhost((e.evt.buttons & 4) ? null : pointer())
     else if (devGhost) setDevGhost(null)
@@ -438,6 +489,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       return
     }
     if (e.evt.button !== 0) return
+    if (placeRef.current) { commitPlace(); return }
     if (ms && box) {
       cancelMarquee()
       if (box.width < 4 / zoom && box.height < 4 / zoom) { if (!ms.add) onSelect([]); return }
@@ -473,7 +525,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
   }
 
-  latest.current = { handleDown, handleMove, handleUp, cancelGesture } as never
+  latest.current = { handleDown, handleMove, handleUp, cancelGesture, startPlace, updatePlace, commitPlace } as never
 
   /** Drop the in-flight tap/drag (second finger, lost touch, long press). Points already placed on a polyline stay. */
   function cancelGesture() {
@@ -516,9 +568,13 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     // Markup drags, handles, drawing: the layer owns the finger. Everything else pans.
     consumedRef.current = isDrawTool ? drawDrag : tool === 'select' && (t.handle || !!t.hitId || boxSelect)
     window.clearTimeout(t.timer)
-    if (onContextMenu && !t.handle) {
+    if ((onContextMenu || tool === 'device') && !t.handle) {
       t.timer = window.setTimeout(() => {
         if (a.phase !== 'pending') return
+        // Device tool, empty space: hold = place, then drag to turn it (the arbiter keeps following the finger)
+        if (tool === 'device' && !markupAt(t.pt, t.hitId)
+          && (latest.current as unknown as { startPlace: (p: Pt, x: number, y: number) => boolean }).startPlace(t.pt, e.evt.clientX, e.evt.clientY)) return
+        if (!onContextMenu) return
         a.kill()
         cancelGesture()
         const hitId = markupAt(t.pt, t.hitId)
@@ -534,7 +590,13 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         if (ev.pointerType !== 'touch') return
         const res = a.move(ev.pointerId, ev.clientX, ev.clientY)
         if (res === 'none') return
-        const h = latest.current as unknown as { handleDown: typeof handleDown; handleMove: typeof handleMove }
+        const h = latest.current as unknown as { handleDown: typeof handleDown; handleMove: typeof handleMove; updatePlace: typeof updatePlace }
+        if (placeRef.current) {
+          window.clearTimeout(t.timer)
+          if (res === 'drag-start') t.dragged = true
+          h.updatePlace(stagePoint(ev), false, ev.clientX, ev.clientY)
+          return
+        }
         if (res === 'drag-start') {
           window.clearTimeout(t.timer)
           t.dragged = true
@@ -547,9 +609,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       }
       const up = (ev: PointerEvent) => {
         if (ev.pointerType !== 'touch') return
-        const h = latest.current as unknown as { handleDown: typeof handleDown; handleUp: typeof handleUp }
+        const h = latest.current as unknown as { handleDown: typeof handleDown; handleUp: typeof handleUp; commitPlace: typeof commitPlace }
         const res = a.up(ev.pointerId)
-        if (res === 'tap') { window.clearTimeout(t.timer); tapAction(ev, h.handleDown) }
+        if (placeRef.current && (res === 'tap' || res === 'drag-end')) { window.clearTimeout(t.timer); h.commitPlace() }
+        else if (res === 'tap') { window.clearTimeout(t.timer); tapAction(ev, h.handleDown) }
         else if (res === 'drag-end' && (t.kind === 'draw' || t.kind === 'marquee')) { stagePoint(ev); h.handleUp(asKonva(ev)) }
         if (a.count === 0) stopTouchListening()
       }
@@ -591,6 +654,15 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
     void ev
   }
+
+  // A mouse placement released outside the canvas still commits
+  const placing = !!placeView
+  useEffect(() => {
+    if (!placing) return
+    const up = (ev: PointerEvent) => { if (ev.pointerType !== 'touch' && ev.button === 0) (latest.current as unknown as { commitPlace: () => void }).commitPlace() }
+    window.addEventListener('pointerup', up)
+    return () => window.removeEventListener('pointerup', up)
+  }, [placing])
 
   useEffect(() => () => { window.clearTimeout(touch.current.timer); touch.current.unlisten?.() }, [])
 
@@ -773,6 +845,28 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost' }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}
                 iconSrc={deviceIcon(gm, set, catalog)} typeMount={newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined} />
             </Group>
+          )
+        })()}
+        {placeView && newBase.symbolSetId && symbolSets.get(newBase.symbolSetId) && (() => {
+          const set = symbolSets.get(newBase.symbolSetId!)!
+          const gm = placeView.m
+          const c = placeRef.current?.c
+          return (
+            <>
+              <MarkupShape markup={gm} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={showCones}
+                iconSrc={deviceIcon(gm, set, catalog)} typeMount={typeMountOf(gm, catalog)} />
+              {c && placeView.to && placeView.angle !== null && (
+                <>
+                  <Line points={[c.x, c.y, placeView.to.x, placeView.to.y]} listening={false} stroke="#1971c2" strokeWidth={1 / zoom} dash={[4 / zoom, 3 / zoom]} opacity={0.8} />
+                  <Group x={placeView.to.x} y={placeView.to.y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
+                    <Label x={12} y={12}>
+                      <Tag fill="#1971c2" cornerRadius={3} />
+                      <Text text={angleLabel(placeView.angle)} fill="#fff" fontSize={11} padding={3} />
+                    </Label>
+                  </Group>
+                </>
+              )}
+            </>
           )
         })()}
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
