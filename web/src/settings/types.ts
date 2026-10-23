@@ -14,7 +14,7 @@ export interface AdminSettings {
   company: CompanySettings
   tags: { padding: 2 | 3 | 4 }
   photos: { max_dimension: number }
-  retention: { mode: 'all' | 'keep'; keep_latest: number }
+  retention: { mode: 'all' | 'keep'; keep_latest: number; /** Days removed files wait in the _trash folder (0 = delete at once). */ trash_days: number }
   storage: { backend: 'local' | 's3'; s3: S3Settings }
   smtp: SmtpSettings
   /** Sign-in rules. lockout_limit 0 = the built-in default. */

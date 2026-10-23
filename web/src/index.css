@@ -112,6 +112,8 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .topbar .icon-btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.12); }
 .topbar .icon-btn.active { color: #fff; background: rgb(255 255 255 / 0.18); }
 .topbar .divider { background: rgb(255 255 255 / 0.25); }
+.company-switcher { max-width: 190px; min-width: 0; text-overflow: ellipsis; }
+@media (max-width: 520px) { .company-switcher { max-width: 110px; } }
 .crumb { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- Project page: plan cards, menus, responsive toolbar ---- */

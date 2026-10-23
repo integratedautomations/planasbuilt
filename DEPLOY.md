@@ -49,8 +49,26 @@ ls -lh backups
 ```
 Backups contain every password hash and all plans, so the script creates `./backups` as mode 700 and each file as mode 600 (owner: root, because the backup container runs as root). Use `sudo` to read or copy them, and run `deploy/restore.sh` with `sudo`. A lost server must not lose the backups, so also set up off-site copies (below).
 
+### Readable files and per-company backups
+Files are stored in readable folders under `/data/files` (on Unraid: `/mnt/user/PlanAsBuilt/files`, browse it over SMB):
+```
+<Company>/_company/logo.png
+<Company>/Projects/<Project>/Plans/<Plan>/Rev 01 - 2026-10-21 - <original name>.pdf
+<Company>/Projects/<Project>/Photos/<Plan>/<TAG> - <device type>/2026-10-21 1432 - <caption>.jpg   (Untagged/ without a tag)
+<Company>/Projects/<Project>/_project/report-logo.png
+_users/<email>/avatar.png          _trash/<date-time>/...   (deleted files, purged after the retention period)
+```
+The database still finds files by id, so renaming a company, project, plan or device tag, or moving a device or a project, is safe: the files follow in the background. Deleted files wait in `_trash/` for **Days to keep deleted files** (Settings > Storage, default 30, 0 = delete at once). Files saved by older versions keep their numbered names until an admin runs **Settings > Storage > Organize files** (Preview, then Organize; it runs in the background and can be left). A project member can also download **Download project folder** on the project page: a zip in the same layout plus a device list (`devices.csv`, `devices.json`).
+
+Each backup target has a scope. **System** targets (platform admin only; every target saved before scopes existed) get the full copy described above. **Company** targets get only that company's own folder (`files/`, synced; replaced or deleted files are kept in `files-deleted/<timestamp>` for the target's retention days) and a database export of its rows (`db/company-export-<timestamp>.json`), so one company's data never lands in another company's backup. For company targets the backup container downloads the export from the app, which needs a shared secret: put the same random value in `.env` for both containers (compose passes it to `app` and `backup`), then recreate them.
+```bash
+echo "BACKUP_INTERNAL_TOKEN=$(openssl rand -hex 32)" >> .env   # or paste it over the empty BACKUP_INTERNAL_TOKEN= line
+docker compose up -d --build app backup
+```
+The token is accepted only on `GET /api/admin/companies/:id/export`. Company folders on an S3 bucket are not on local disk, so the folder part of a company target skips them (the database export is still copied).
+
 ### Off-site copies (rclone)
-After each local backup, `backup.sh` copies the new `db-*.dump` and `files-*.tar.gz` to every enabled target with rclone and deletes remote copies older than that target's retention (default 30 days). Targets: SFTP, S3-compatible, OneDrive, Google Drive, Zoho WorkDrive, each optionally wrapped in rclone `crypt` so the files are encrypted before they leave the server.
+After each local backup, `backup.sh` copies the new `db-*.dump` and `files-*.tar.gz` to every enabled system target with rclone and deletes remote copies older than that target's retention (default 30 days). Targets: SFTP, S3-compatible, OneDrive, Google Drive, Zoho WorkDrive, each optionally wrapped in rclone `crypt` so the files are encrypted before they leave the server.
 
 1. Generate a key that encrypts the saved passwords/tokens in the database, and add it to `.env` (keep a copy somewhere safe):
    ```bash

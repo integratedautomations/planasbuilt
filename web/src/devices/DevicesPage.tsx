@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import type { DocumentSummary, Project, User } from '../api'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import { fieldDefsFor } from '../catalog/catalog'
 import { describeBlocked, gateStatus, lockedFor } from '../projectSettings'
@@ -184,6 +185,7 @@ export function DevicesPage({ user }: { user: User }) {
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <Link to={`/projects/${pid}`} className="crumb">{project?.name ?? '…'}</Link>
         <span className="muted">/</span>

@@ -3,11 +3,15 @@ import { Link } from 'react-router-dom'
 import { api } from '../api'
 import type { LinkResult, ManagedUser, Role, User, UserStatus } from '../api'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { RoleOptions } from './RoleSelect'
+import { COMPANY_ROLES, COMPANY_ROLE_INFO } from '../roles'
+import type { CompanyRole } from '../roles'
 import { CopyLink } from './CopyLink'
 import { UserMenu } from './UserMenu'
 
+const roleLabel = (u: ManagedUser) => u.company_role ? COMPANY_ROLE_INFO[u.company_role].label : u.is_admin ? 'Admin' : 'Member'
 const STATUS_LABEL: Record<UserStatus, string> = { active: 'Active', invited: 'Invited', deactivated: 'Deactivated' }
 type ProjectRef = { id: string; name: string }
 
@@ -45,15 +49,16 @@ export function UsersPage({ me }: { me: User }) {
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
-        <span className="crumb">Users</span>
+        <span className="crumb">Company members</span>
         <span className="spacer" />
         <UserMenu />
       </header>
       <OfflineBanner />
       <main className="content content-wide">
         <div className="row wrap">
-          <h2>Users</h2>
+          <h2>Company members{me.company ? ` · ${me.company.name}` : ''}</h2>
           <span className="spacer" />
           <input type="search" placeholder="Search name or email" aria-label="Search users" value={q} onChange={e => setQ(e.target.value)} />
           <select aria-label="Filter by status" value={status} onChange={e => setStatus(e.target.value as typeof status)}>
@@ -68,15 +73,16 @@ export function UsersPage({ me }: { me: User }) {
         {users === null ? <p className="muted">Loading…</p> : (
           <div className="table-wrap">
             <table className="data-table users-table">
-              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th className="num">Projects</th><th>Last active</th><th>Status</th></tr></thead>
+              <thead><tr><th>Name</th><th>Email</th><th>Company role</th><th>Creates projects</th><th className="num">Projects</th><th>Last active</th><th>Status</th></tr></thead>
               <tbody>
-                {shown.length === 0 && <tr><td colSpan={6} className="muted">No users match.</td></tr>}
+                {shown.length === 0 && <tr><td colSpan={7} className="muted">No users match.</td></tr>}
                 {shown.map(u => (
                   <tr key={u.id} className={`clickable${openId === u.id ? ' selected' : ''}`} tabIndex={0}
                     onClick={() => setOpenId(u.id)} onKeyDown={e => { if (e.key === 'Enter') setOpenId(u.id) }}>
                     <td>{u.name}{u.id === me.id && <span className="muted small"> (you)</span>}</td>
                     <td>{u.email}</td>
-                    <td>{u.is_admin ? 'Admin' : 'User'}</td>
+                    <td>{roleLabel(u)}{u.platform_admin && <span className="muted small"> · platform admin</span>}</td>
+                    <td>{u.company_role === 'owner' || u.company_role === 'admin' || u.can_create_projects ? 'Yes' : 'No'}</td>
                     <td className="num">{u.project_count}</td>
                     <td>{u.status === 'invited' ? '' : ago(u.last_seen_at)}</td>
                     <td><span className={`status-pill ${u.status}`}>{STATUS_LABEL[u.status]}</span></td>
@@ -98,7 +104,8 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
 }) {
   const [u, setU] = useState<ManagedUser | null>(null)
   const [name, setName] = useState('')
-  const [admin, setAdmin] = useState(false)
+  const [companyRole, setCompanyRole] = useState<CompanyRole>('member')
+  const [platformAdmin, setPlatformAdmin] = useState(false)
   const [canCreate, setCanCreate] = useState(false)
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
@@ -106,10 +113,11 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
   const [addId, setAddId] = useState('')
   const [addRole, setAddRole] = useState<Role>('editor')
 
-  const apply = (next: ManagedUser) => { setU(next); setName(next.name); setAdmin(next.is_admin); setCanCreate(next.can_create_projects); onChanged() }
+  const fill = (next: ManagedUser) => { setU(next); setName(next.name); setCompanyRole(next.company_role ?? (next.is_admin ? 'admin' : 'member')); setPlatformAdmin(!!next.platform_admin); setCanCreate(next.can_create_projects) }
+  const apply = (next: ManagedUser) => { fill(next); onChanged() }
   useEffect(() => {
     setU(null); setLink(null); setError(''); setMsg('')
-    api<ManagedUser>(`/users/${id}`).then(next => { setU(next); setName(next.name); setAdmin(next.is_admin); setCanCreate(next.can_create_projects) }).catch(e => setError(e.message))
+    api<ManagedUser>(`/users/${id}`).then(fill).catch(e => setError(e.message))
   }, [id])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -132,7 +140,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
 
   function submit(e: FormEvent) {
     e.preventDefault()
-    void patch({ name, is_admin: admin, can_create_projects: canCreate })
+    void patch({ name, company_role: companyRole, can_create_projects: canCreate, ...(me.platform_admin && !self ? { platform_admin: platformAdmin } : {}) })
   }
 
   return (
@@ -146,16 +154,22 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
 
             <form className="stack" onSubmit={submit}>
               <label className="field">Name<input value={name} onChange={e => setName(e.target.value)} required /></label>
-              <label className="field">Role
-                <select value={admin ? 'admin' : 'user'} disabled={self} onChange={e => setAdmin(e.target.value === 'admin')}>
-                  <option value="user">User</option>
-                  <option value="admin">Admin (manages settings and users)</option>
+              <label className="field">Company role
+                <select value={companyRole} disabled={self} onChange={e => setCompanyRole(e.target.value as CompanyRole)}>
+                  {COMPANY_ROLES.map(r => <option key={r} value={r}>{COMPANY_ROLE_INFO[r].label}</option>)}
                 </select>
+                <span className="muted small">{COMPANY_ROLE_INFO[companyRole].description}</span>
               </label>
-              <label className="check">
-                <input type="checkbox" checked={admin || canCreate} disabled={admin} onChange={e => setCanCreate(e.target.checked)} /> Can create projects{admin && <span className="muted small"> (admins always can)</span>}
-              </label>
-              <div><button className="primary" disabled={name === u.name && admin === u.is_admin && canCreate === u.can_create_projects}>Save</button></div>
+              {(() => { const always = companyRole === 'owner' || companyRole === 'admin'; return (
+                <label className="check">
+                  <input type="checkbox" checked={always || (companyRole !== 'guest' && canCreate)} disabled={always || companyRole === 'guest'} onChange={e => setCanCreate(e.target.checked)} /> Can create projects{always && <span className="muted small"> (owners and admins always can)</span>}
+                </label>) })()}
+              {me.platform_admin && (
+                <label className="check">
+                  <input type="checkbox" checked={platformAdmin} disabled={self} onChange={e => setPlatformAdmin(e.target.checked)} /> Platform admin<span className="muted small"> (creates companies and sees all of them)</span>
+                </label>
+              )}
+              <div><button className="primary" disabled={name === u.name && companyRole === (u.company_role ?? (u.is_admin ? 'admin' : 'member')) && canCreate === u.can_create_projects && platformAdmin === !!u.platform_admin}>Save</button></div>
             </form>
 
             <h4>Projects</h4>
@@ -205,8 +219,8 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
                 </>
               )}
             </div>
-            {link && (
-              <CopyLink link={link.link} note={`Send this to ${link.email}. It works once and expires ${new Date(link.expires_at).toLocaleString()}.`} />
+            {link?.link && (
+              <CopyLink link={link.link} note={`Send this to ${link.email}. It works once and expires ${link.expires_at ? new Date(link.expires_at).toLocaleString() : 'soon'}.`} />
             )}
             {error && <div className="error">{error}</div>}
             {msg && <div className="muted small" role="status">{msg}</div>}
@@ -220,7 +234,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
 function InviteDialog({ projects, onClose, onDone }: { projects: ProjectRef[]; onClose: () => void; onDone: () => void }) {
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
-  const [admin, setAdmin] = useState(false)
+  const [companyRole, setCompanyRole] = useState<CompanyRole>('member')
   const [picked, setPicked] = useState<Record<string, Role>>({})
   const [error, setError] = useState('')
   const [result, setResult] = useState<LinkResult | null>(null)
@@ -230,7 +244,7 @@ function InviteDialog({ projects, onClose, onDone }: { projects: ProjectRef[]; o
     e.preventDefault(); setError(''); setBusy(true)
     try {
       const r = await api<LinkResult>('/invites', { method: 'POST', body: JSON.stringify({
-        email, name, role: admin ? 'admin' : 'user', projects: Object.entries(picked).map(([id, role]) => ({ id, role })),
+        email, name, company_role: companyRole, projects: Object.entries(picked).map(([id, role]) => ({ id, role })),
       }) })
       setResult(r); onDone()
     } catch (err) { setError((err as Error).message) }
@@ -240,18 +254,26 @@ function InviteDialog({ projects, onClose, onDone }: { projects: ProjectRef[]; o
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="card modal" role="dialog" aria-label="Invite user" onClick={e => e.stopPropagation()}>
-        <div className="row"><h3>Invite user</h3><span className="spacer" /><button onClick={onClose}>{result ? 'Done' : 'Cancel'}</button></div>
+        <div className="row"><h3>Add or invite someone</h3><span className="spacer" /><button onClick={onClose}>{result ? 'Done' : 'Cancel'}</button></div>
         {result ? (
           <>
+            {result.added_to_company || !result.link ? (
+              <p role="status">{result.email} already has an account and was added to this company.</p>
+            ) : (<>
             <p>{result.emailed ? `An email with the link was sent to ${result.email}. You can also copy it:` : `Copy this link and send it to ${result.email}:`}</p>
             {result.email_error && <div className="error">Email failed: {result.email_error}</div>}
-            <CopyLink link={result.link} note={`Valid until ${new Date(result.expires_at).toLocaleString()}.`} />
+            <CopyLink link={result.link} note={`Valid until ${result.expires_at ? new Date(result.expires_at).toLocaleString() : 'used'}.`} />
+            </>)}
           </>
         ) : (
           <form className="stack" onSubmit={submit}>
             <label className="field">Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus /></label>
             <label className="field">Name (optional)<input value={name} onChange={e => setName(e.target.value)} /></label>
-            <label className="check"><input type="checkbox" checked={admin} onChange={e => setAdmin(e.target.checked)} /> App admin (manages settings and users)</label>
+            <label className="field">Company role
+              <select value={companyRole} onChange={e => setCompanyRole(e.target.value as CompanyRole)}>
+                {COMPANY_ROLES.map(r => <option key={r} value={r}>{COMPANY_ROLE_INFO[r].label}</option>)}
+              </select>
+            </label>
             {projects.length > 0 && (
               <fieldset className="invite-projects">
                 <legend className="small muted">Add to projects</legend>
@@ -269,7 +291,7 @@ function InviteDialog({ projects, onClose, onDone }: { projects: ProjectRef[]; o
               </fieldset>
             )}
             {error && <div className="error">{error}</div>}
-            <button className="primary" disabled={busy}>Create invite</button>
+            <button className="primary" disabled={busy}>Add or invite</button>
           </form>
         )}
       </div>

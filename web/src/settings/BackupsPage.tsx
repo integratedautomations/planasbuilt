@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { UserMenu } from './UserMenu'
 import './backups.css'
@@ -69,6 +70,7 @@ export function BackupsPage() {
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <span className="crumb">Backups</span>
         <span className="spacer" />

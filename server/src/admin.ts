@@ -129,7 +129,7 @@ export async function registerAdmin(ctx: AdminContext) {
       ? bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
       : /^\s*(<\?xml|<!--|<!DOCTYPE svg|<svg)/i.test(bytes.subarray(0, 2000).toString('utf8').replace(/^\uFEFF/, ''))
     if (!looksRight) return reply.code(400).send({ error: 'That file is not a valid PNG or SVG' })
-    const key = await storage.save(ext, bytes, company.id)
+    const key = await storage.save({ kind: 'company-logo', ext, company: company.name }, bytes, company.id)
     const c = await getSection(db, company.id, 'company')
     await putSection(db, company.id, 'company', { ...c, logo_key: key, logo_type: file.mimetype })
     void storage.remove(c.logo_key)

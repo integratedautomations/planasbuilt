@@ -16,6 +16,8 @@ import { cacheAllowed } from './cacheOwner'
 import { isForeign } from './owner'
 import { ackSnapshot, getSyncUser, mergeServerMarkups } from './sync'
 import { applyProjectSettings } from '../projectSettings'
+import { getActiveCompanyId, setActiveCompanyId } from '../company/activeCompany'
+import { readScoped, replaceScoped, scopeId, stamp } from './companyScope'
 
 /** revisions are newest first. */
 export interface DocMeta { id: string; name: string; device_scale?: number; revisions: { id?: string; revision: number; page_count: number; kind?: 'upload' | 'issued' | 'restore'; label?: string }[] }
@@ -50,17 +52,20 @@ const nonEmpty = <T>(rows: T[]) => (rows.length ? rows : undefined)
 
 export const loadProjects = () => readThrough(
   () => api<Project[]>('/projects'),
-  async rows => db.transaction('rw', db.projects, async () => { await db.projects.clear(); await db.projects.bulkPut(rows) }),
-  async () => (await db.projects.toArray()),
+  async rows => { const company = scopeId(); await db.transaction('rw', db.projects, () => replaceScoped(db.projects, rows, company)) },
+  async () => (await readScoped(db.projects)),
   'Your project list',
 )
 
 export const loadProject = (id: string) => readThrough(
   () => api<Project>(`/projects/${id}`),
-  p => db.projects.put(p),
+  p => db.projects.put(stamp([p])[0]),
   () => db.projects.get(id),
   'This project',
 ).then(r => {
+  // A project belongs to one company: its catalog and settings are that company's, so follow it there.
+  const owner = r.data?.company_id
+  if (!r.fromCache && owner && owner !== getActiveCompanyId()) setActiveCompanyId(owner)
   // The project's status list and rules apply everywhere statuses are shown, online or from the offline copy.
   applyProjectSettings(r.data?.settings)
   return r
@@ -98,20 +103,23 @@ export const loadLayers = (projectId: string) => readThrough(
 
 export const loadSymbolSets = () => readThrough(
   () => api<SymbolSet[]>('/symbol-sets'),
-  async rows => db.transaction('rw', db.symbolSets, async () => { await db.symbolSets.clear(); await db.symbolSets.bulkPut(rows) }),
-  async () => nonEmpty(await db.symbolSets.toArray()),
+  async rows => { const company = scopeId(); await db.transaction('rw', db.symbolSets, () => replaceScoped(db.symbolSets, rows, company)) },
+  async () => nonEmpty(await readScoped(db.symbolSets)),
   'Symbol sets',
 )
 
 export const loadCatalog = () => readThrough(
   () => api<CatalogData>('/catalog'),
-  async d => db.transaction('rw', db.deviceTypes, db.products, db.cableTypes, async () => {
-    await db.deviceTypes.clear(); await db.deviceTypes.bulkPut(d.device_types)
-    await db.products.clear(); await db.products.bulkPut(d.products)
-    await db.cableTypes.clear(); await db.cableTypes.bulkPut(d.cable_types ?? [])
-  }),
+  async d => {
+    const company = scopeId()
+    await db.transaction('rw', db.deviceTypes, db.products, db.cableTypes, async () => {
+      await replaceScoped(db.deviceTypes, d.device_types, company)
+      await replaceScoped(db.products, d.products, company)
+      await replaceScoped(db.cableTypes, d.cable_types ?? [], company)
+    })
+  },
   async () => {
-    const device_types = await db.deviceTypes.toArray(), products = await db.products.toArray(), cable_types = await db.cableTypes.toArray()
+    const device_types = await readScoped(db.deviceTypes), products = await readScoped(db.products), cable_types = await readScoped(db.cableTypes)
     return device_types.length || products.length ? { device_types, products, cable_types } : undefined
   },
   'Catalog',

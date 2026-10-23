@@ -1,6 +1,7 @@
 import { Link, useSearchParams } from 'react-router-dom'
 import type { User } from '../api'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { CompanyTab } from './CompanyTab'
 import { MailTab } from './MailTab'
@@ -25,6 +26,7 @@ export function SettingsPage({ user, onUser }: { user: User; onUser: (u: User) =
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <span className="crumb">Settings</span>
         <span className="spacer" />
@@ -33,6 +35,7 @@ export function SettingsPage({ user, onUser }: { user: User; onUser: (u: User) =
       <OfflineBanner />
       <main className="content content-wide settings-page">
         <h2>Settings</h2>
+        {user.is_admin && user.company && tab !== 'personal' && <p className="muted small">These settings are for <strong>{user.company.name}</strong>. Use the company switcher in the header to change another company.</p>}
         <div className="tabs" role="tablist">
           {tabs.map(t => (
             <button key={t.id} role="tab" aria-selected={tab === t.id} className={`tab${tab === t.id ? ' active' : ''}`}

@@ -6,6 +6,7 @@ import type { CompanyCtx, CompanyRole } from './companies.js'
 import type { Storage } from './storage.js'
 import { mergeProjectSettings, publicProjectSettings, readProjectSettings } from './projectSettings.js'
 import { getSection } from './settings.js'
+import { projectNames } from './fileCtx.js'
 
 interface Ctx {
   app: any
@@ -82,7 +83,7 @@ export async function registerProjectSettings({ app, db, auth, fileAuth, storage
     if (file.file.truncated) return reply.code(413).send({ error: 'Logo too large (2 MB max)' })
     const kind = logoKind(bytes)
     if (!kind) return reply.code(400).send({ error: 'The logo must be a PNG or JPEG image' })
-    const key = await storage.save(kind.ext, bytes, access.companyId)
+    const key = await storage.save({ kind: 'project-logo', ext: kind.ext, ...(await projectNames(db, id)) }, bytes, access.companyId)
     const s = await load(id)
     const old = s.report.logo_key
     await save(id, { ...s, report: { ...s.report, logo_key: key, logo_type: kind.type } })

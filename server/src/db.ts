@@ -217,6 +217,28 @@ ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAU
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS markups_snapshot jsonb;
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS attachments_snapshot jsonb;
 ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS scales_snapshot jsonb;
+-- The file name the PDF was uploaded with (shown in its readable storage path, see fileLayout.ts).
+ALTER TABLE document_revisions ADD COLUMN IF NOT EXISTS original_name text NOT NULL DEFAULT '';
+-- Background file moves: re-layout after a rename/move (kind 'relayout') and the admin's "Organize files" (kind 'organize'). See relayout.ts.
+CREATE TABLE IF NOT EXISTS relayout_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind text NOT NULL DEFAULT 'relayout',
+  scope text NOT NULL,
+  scope_id text,
+  company_id uuid,
+  status text NOT NULL DEFAULT 'pending',
+  attempts int NOT NULL DEFAULT 0,
+  total int NOT NULL DEFAULT 0,
+  moved int NOT NULL DEFAULT 0,
+  failed int NOT NULL DEFAULT 0,
+  failed_keys jsonb NOT NULL DEFAULT '[]',
+  last_error text NOT NULL DEFAULT '',
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  next_run_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS relayout_jobs_open ON relayout_jobs(status, next_run_at);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version int NOT NULL DEFAULT 0;
@@ -488,11 +510,78 @@ async function upgradeToCompanies(db: Db) {
   })
 }
 
+/**
+ * Database triggers that queue a re-layout job (relayout_jobs) whenever a name that is part of a file's readable path changes:
+ * company / project / plan name, a project's company, a device's tag, device type or plan, a photo caption, a device type name.
+ * Doing it in the database means every code path that renames something is covered, inside the same transaction.
+ */
+const RELAYOUT_TRIGGERS: string[] = [
+  `CREATE OR REPLACE FUNCTION relayout_enqueue(p_scope text, p_id text, p_company uuid) RETURNS void AS $$
+   BEGIN
+     INSERT INTO relayout_jobs (kind, scope, scope_id, company_id)
+     SELECT 'relayout', p_scope, p_id, p_company
+     WHERE NOT EXISTS (SELECT 1 FROM relayout_jobs WHERE kind = 'relayout' AND scope = p_scope AND scope_id = p_id AND status = 'pending');
+   END $$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION relayout_on_company() RETURNS trigger AS $$
+   BEGIN
+     IF NEW.name IS DISTINCT FROM OLD.name THEN PERFORM relayout_enqueue('company', NEW.id::text, NEW.id); END IF;
+     RETURN NEW;
+   END $$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION relayout_on_project() RETURNS trigger AS $$
+   BEGIN
+     IF NEW.name IS DISTINCT FROM OLD.name OR NEW.company_id IS DISTINCT FROM OLD.company_id THEN
+       PERFORM relayout_enqueue('project', NEW.id::text, NEW.company_id);
+     END IF;
+     RETURN NEW;
+   END $$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION relayout_on_document() RETURNS trigger AS $$
+   BEGIN
+     IF NEW.name IS DISTINCT FROM OLD.name OR NEW.project_id IS DISTINCT FROM OLD.project_id THEN
+       PERFORM relayout_enqueue('document', NEW.id::text, (SELECT company_id FROM projects WHERE id = NEW.project_id));
+     END IF;
+     RETURN NEW;
+   END $$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION relayout_on_markup() RETURNS trigger AS $$
+   BEGIN
+     IF (NEW.tag IS DISTINCT FROM OLD.tag OR NEW.device_type_id IS DISTINCT FROM OLD.device_type_id OR NEW.document_id IS DISTINCT FROM OLD.document_id)
+        AND EXISTS (SELECT 1 FROM attachments WHERE markup_id = NEW.id) THEN
+       PERFORM relayout_enqueue('markup', NEW.id::text,
+         (SELECT p.company_id FROM documents d JOIN projects p ON p.id = d.project_id WHERE d.id = NEW.document_id));
+     END IF;
+     RETURN NEW;
+   END $$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION relayout_on_attachment() RETURNS trigger AS $$
+   BEGIN
+     IF NEW.caption IS DISTINCT FROM OLD.caption THEN
+       PERFORM relayout_enqueue('attachment', NEW.id::text,
+         (SELECT p.company_id FROM markups m JOIN documents d ON d.id = m.document_id JOIN projects p ON p.id = d.project_id WHERE m.id = NEW.markup_id));
+     END IF;
+     RETURN NEW;
+   END $$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION relayout_on_device_type() RETURNS trigger AS $$
+   BEGIN
+     IF NEW.name IS DISTINCT FROM OLD.name THEN PERFORM relayout_enqueue('company', NEW.company_id::text, NEW.company_id); END IF;
+     RETURN NEW;
+   END $$ LANGUAGE plpgsql`,
+  ...([
+    ['relayout_company', 'companies', 'name', 'relayout_on_company'],
+    ['relayout_project', 'projects', 'name, company_id', 'relayout_on_project'],
+    ['relayout_document', 'documents', 'name, project_id', 'relayout_on_document'],
+    ['relayout_markup', 'markups', 'tag, device_type_id, document_id', 'relayout_on_markup'],
+    ['relayout_attachment', 'attachments', 'caption', 'relayout_on_attachment'],
+    ['relayout_device_type', 'device_types', 'name', 'relayout_on_device_type'],
+  ] as const).flatMap(([name, table, cols, fn]) => [
+    `DROP TRIGGER IF EXISTS ${name} ON ${table}`,
+    `CREATE TRIGGER ${name} AFTER UPDATE OF ${cols} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}()`,
+  ]),
+]
+
 export async function migrate(db: Db) {
   for (const stmt of SCHEMA.split(';').map(s => s.trim()).filter(Boolean)) {
     await db.query(stmt)
   }
   await upgradeToCompanies(db)
+  for (const stmt of RELAYOUT_TRIGGERS) await db.query(stmt)
   // First install only: the starter symbol sets and catalog go to the first company.
   const [def] = await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1')
   const [{ sets }] = await db.query<{ sets: number }>('SELECT count(*)::int AS sets FROM symbol_sets')

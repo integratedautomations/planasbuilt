@@ -87,6 +87,7 @@ export const HARDWARE_FIELDS: FieldDef[] = [
 
 export interface SymbolSet {
   id: string
+  company_id?: string
   name: string
   color: string
   tag_prefix: string

@@ -10,6 +10,7 @@
  *  - the catch-up request has a timeout; a stuck one cannot hold up the other messages for more than that
  */
 import { getToken, signalAuthExpired } from '../api'
+import { getActiveCompanyId } from '../company/activeCompany'
 import { loadMarkups } from '../offline/cache'
 import { getClientId } from './clientId'
 import { applyServerMessage } from './handlers'
@@ -99,7 +100,17 @@ const online = () => typeof navigator === 'undefined' || navigator.onLine !== fa
 
 function url(token: string) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(getClientId())}`
+  return `${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(getClientId())}${companyQuery()}`
+}
+
+function companyQuery() {
+  const id = getActiveCompanyId()
+  return id ? `&company=${encodeURIComponent(id)}` : ''
+}
+
+/** Tell the server which company's live events this connection wants (after the user switches company). */
+export function setSocketCompany(companyId: string | null) {
+  if (companyId) rawSend({ type: 'company', companyId })
 }
 
 function rawSend(obj: unknown): boolean {
@@ -222,6 +233,11 @@ async function handle(msg: any) {
     const applied = await applyServerMessage(msg, docId)
     emit('markup', { ...msg, applied })
     return
+  }
+  // Catalog events carry the company they are about; one for another company is not for this screen.
+  if (msg.type === 'symbol_sets' && msg.companyId) {
+    const active = getActiveCompanyId()
+    if (active && msg.companyId !== active) return
   }
   emit(msg.type, msg)
 }

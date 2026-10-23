@@ -13,10 +13,13 @@ import { exportProjectSchedule } from '../schedule/exportProject'
 import { makeRevisionCurrent } from '../revisions/api'
 import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { Icon } from '../ui/Icon'
 import { UserMenu } from '../settings/UserMenu'
 import { MembersPanel } from '../settings/MembersPanel'
 import { ProjectSettingsTab } from '../settings/ProjectSettingsTab'
+import { MoveProjectPanel } from '../settings/MoveProjectPanel'
+import { DownloadProjectFolder } from './DownloadProjectFolder'
 import { lockedFor } from '../projectSettings'
 import { cableSettings } from '../markups/cables'
 import { can } from '../roles'
@@ -68,7 +71,7 @@ export function ProjectPage({ user }: { user: User }) {
   const { projectId } = useParams()
   const [project, setProject] = useState<Project | null>(null)
   const [docs, setDocs] = useState<DocumentSummary[]>([])
-  const [tab, setTab] = useState<'plans' | 'members' | 'settings'>('plans')
+  const [tab, setTab] = useState<'plans' | 'members' | 'settings' | 'company'>('plans')
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -212,6 +215,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <span className="crumb" title={project?.name}>{project?.name ?? '…'}</span>
         {project?.status === 'completed' && <span className="muted small hide-narrow">Completed</span>}
@@ -230,12 +234,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
           <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
+          {user.platform_admin && <button role="tab" aria-selected={tab === 'company'} className={`tab${tab === 'company' ? ' active' : ''}`} onClick={() => setTab('company')}>Company</button>}
           {isAdmin && <button role="tab" aria-selected={tab === 'settings'} className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>Settings</button>}
           <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/devices`} title="Every device in the project, without opening a plan">Devices</Link>
           <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/wiring`} title="Riser diagram built from the cable runs locked to devices">Wiring</Link>
         </div>
         {locked && <div className="lock-banner" role="status">This project is locked. Only admins can make changes.</div>}
         {tab === 'settings' && isAdmin && project && <ProjectSettingsTab project={project} onProject={setProject} />}
+        {tab === 'company' && user.platform_admin && project && <MoveProjectPanel project={project} />}
         {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
         {tab === 'plans' && <>
         <div className="row pp-toolbar">
@@ -250,6 +256,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
               {exporting ? 'Exporting…' : 'Export schedule'}
             </button>
+            <DownloadProjectFolder projectId={projectId!} disabled={!project} />
             <button disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}
               title="One PDF: every sheet with markups, then a page per device with its details and photos">
               {reporting ? `Building report… ${reporting}` : 'As-built report'}

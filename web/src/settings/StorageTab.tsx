@@ -3,6 +3,7 @@ import { api } from '../api'
 import { formatBytes } from './types'
 import type { CleanupPreview, Usage } from './types'
 import { useAdminSettings } from './useAdminSettings'
+import { OrganizeFilesPanel } from './OrganizeFilesPanel'
 
 export function StorageTab() {
   const { settings, setSettings, error, save } = useAdminSettings()
@@ -142,6 +143,11 @@ export function StorageTab() {
               onChange={e => setSettings({ ...s, retention: { ...s.retention, keep_latest: Number(e.target.value) } })} />
           </label>
         )}
+        <label className="field">Days to keep deleted files (0 = delete at once)
+          <input type="number" min={0} max={3650} value={s.retention.trash_days ?? 30}
+            onChange={e => setSettings({ ...s, retention: { ...s.retention, trash_days: Number(e.target.value) } })} />
+          <span className="muted small">Deleted photos and plans wait in the _trash folder for this long, so a mistake can be undone by moving the file back.</span>
+        </label>
         <div className="row">
           <button type="button" disabled={s.retention.mode !== 'keep'} onClick={showCleanup}
             title={s.retention.mode === 'keep' ? 'See what would be removed first' : 'Choose a retention rule first'}>Clean up now…</button>
@@ -164,6 +170,8 @@ export function StorageTab() {
           </div>
         )}
       </section>
+
+      <OrganizeFilesPanel />
 
       <div className="settings-actions">
         {err && <div className="error">{err}</div>}

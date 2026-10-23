@@ -13,6 +13,8 @@ import type { Realtime } from './realtime.js'
 import { getSection, maskSection } from './settings.js'
 import type { SectionName } from './settings.js'
 import { moveProject } from './projectMove.js'
+import { createHash, timingSafeEqual } from 'node:crypto'
+import { companyFolder } from './fileLayout.js'
 
 export const COMPANY_ROLES = ['owner', 'admin', 'member', 'guest'] as const
 export type CompanyRole = (typeof COMPANY_ROLES)[number]
@@ -55,6 +57,15 @@ export interface CompaniesContext {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SECTIONS_FOR_EXPORT: SectionName[] = ['company', 'tags', 'photos', 'retention', 'storage', 'smtp', 'security', 'uploads', 'invite', 'project_defaults']
+
+/** True when the request carries the install's internal backup token (compared in constant time). */
+export function backupTokenOk(req: FastifyRequest, env: NodeJS.ProcessEnv = process.env): boolean {
+  const want = (env.BACKUP_INTERNAL_TOKEN ?? '').trim()
+  const got = req.headers['x-backup-token']
+  if (want.length < 16 || typeof got !== 'string') return false
+  const a = createHash('sha256').update(want).digest(), b = createHash('sha256').update(got).digest()
+  return timingSafeEqual(a, b)
+}
 
 export async function registerCompanies(ctx: CompaniesContext) {
   const { app, db, auth, requireCompany, companyCtx, resolveCompany, forgetUser, forgetCompany, companyMemberRemoved, reloadRuntime, realtime } = ctx
@@ -265,9 +276,16 @@ export async function registerCompanies(ctx: CompaniesContext) {
   })
 
   // ---- Per-company database export (JSON), the company's own rows only. Secrets are never included. ----
-  app.get('/api/admin/companies/:id/export', { preHandler: auth }, async (req, reply) => {
+  // backup.sh calls this with the install's internal token (BACKUP_INTERNAL_TOKEN, shared by the app and backup containers) in the
+  // X-Backup-Token header; the token is accepted on this route only. Everyone else needs to be an admin of the company.
+  const exportAuth = async (req: FastifyRequest, reply: FastifyReply) => {
+    if (backupTokenOk(req)) { internalExport.add(req); return }
+    return auth(req, reply)
+  }
+  const internalExport = new WeakSet<FastifyRequest>()
+  app.get('/api/admin/companies/:id/export', { preHandler: exportAuth }, async (req, reply) => {
     const { id } = req.params as any
-    if (!(await adminOf(req, reply, id))) return
+    if (!internalExport.has(req) && !(await adminOf(req, reply, id))) return
     const rows = (sql: string) => db.query(`SELECT to_jsonb(t) AS j FROM (${sql}) t`, [id]).then(r => r.map((x: any) => x.j))
     const pj = 'project_id IN (SELECT id FROM projects WHERE company_id = $1)'
     const doc = 'document_id IN (SELECT d.id FROM documents d JOIN projects p ON p.id = d.project_id WHERE p.company_id = $1)'
@@ -275,7 +293,7 @@ export async function registerCompanies(ctx: CompaniesContext) {
     for (const k of SECTIONS_FOR_EXPORT) settings[k] = maskSection(k, await getSection(db, id, k))
     return {
       exported_at: new Date().toISOString(),
-      company: (await rows('SELECT id, name, slug, archived, created_at FROM companies WHERE id = $1'))[0],
+      company: await rows('SELECT id, name, slug, archived, created_at FROM companies WHERE id = $1').then(r => r[0] && { ...r[0], folder: companyFolder(r[0].name) }),
       members: await rows('SELECT m.user_id, u.email, u.name, m.role, m.can_create_projects FROM company_members m JOIN users u ON u.id = m.user_id WHERE m.company_id = $1'),
       settings,
       symbol_sets: await rows('SELECT * FROM symbol_sets WHERE company_id = $1'),

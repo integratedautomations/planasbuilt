@@ -16,6 +16,8 @@ services:
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       # Encrypts off-site backup passwords/tokens stored by the admin Backups page: openssl rand -hex 32
       BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      # Lets the backup service fetch a company's database export (accepted on that one route only): openssl rand -hex 32
+      BACKUP_INTERNAL_TOKEN: ${BACKUP_INTERNAL_TOKEN:-}
     volumes:
       - files:/data
       # rclone.conf + status shared with the backup service (written by the app, mode 600)
@@ -72,6 +74,9 @@ services:
       BACKUP_HOUR: ${BACKUP_HOUR:-3}
       RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
       RCLONE_DIR: /rclone
+      # Per-company off-site copies fetch each company's database export from the app with this token (same value as the app's).
+      APP_URL: http://app:3001
+      BACKUP_INTERNAL_TOKEN: ${BACKUP_INTERNAL_TOKEN:-}
     volumes:
       - ./deploy/backup.sh:/backup.sh:ro
       - files:/data:ro

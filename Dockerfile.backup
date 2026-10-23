@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # Image for the compose `backup` service: pg_dump (matches the postgres:17 server), rclone for off-site copies, jq for
-# reading the target list written by the app. Built by .github/workflows/image.yml as planasbuilt-backup.
+# reading the target list written by the app, curl for fetching per-company database exports from the app. Built by .github/workflows/image.yml as planasbuilt-backup.
 FROM postgres:17
 RUN apt-get update \
- && apt-get install -y --no-install-recommends jq ca-certificates \
+ && apt-get install -y --no-install-recommends jq curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=rclone/rclone:1.68.2 /usr/local/bin/rclone /usr/local/bin/rclone
 COPY deploy/backup.sh /backup.sh

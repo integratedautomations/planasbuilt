@@ -95,6 +95,12 @@ class OfflineDb extends Dexie {
     this.version(2).stores({ deviceTypes: 'id, symbol_set_id', products: 'id, device_type_id' })
     // Cable types (part of the catalog)
     this.version(3).stores({ cableTypes: 'id' })
+    // Company scope: catalog and project-list rows are stamped with the company they belong to (see companyScope.ts),
+    // so switching company never shows or overwrites another company's cached data.
+    this.version(4).stores({
+      projects: 'id, company_id', symbolSets: 'id, company_id', deviceTypes: 'id, symbol_set_id, company_id',
+      products: 'id, device_type_id, company_id', cableTypes: 'id, company_id',
+    })
   }
 }
 

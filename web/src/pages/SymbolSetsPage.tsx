@@ -19,6 +19,7 @@ import { useCatalog } from '../catalog/useCatalog'
 import type { SymbolSet } from '../markups/types'
 import { HARDWARE_FIELDS } from '../markups/types'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { UserMenu } from '../settings/UserMenu'
 
 type Draft = Omit<SymbolSet, 'id' | 'sort'> & { id?: string }
@@ -90,6 +91,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <span className="crumb">Catalog</span>
         <span className="spacer" />

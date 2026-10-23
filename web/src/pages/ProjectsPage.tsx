@@ -5,6 +5,7 @@ import { loadProjects } from '../offline/cache'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { UserMenu } from '../settings/UserMenu'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { Icon } from '../ui/Icon'
 
 interface Props { user: User; onSignOut: () => void }
@@ -34,6 +35,7 @@ export function ProjectsPage({ user }: Props) {
     <div className="page">
       <header className="topbar">
         <span className="brand"><Brand onChrome /></span>
+        <CompanySwitcher />
         <span className="spacer" />
         <Link to="/symbols" className="btn-link">Catalog</Link>
         <UserMenu />

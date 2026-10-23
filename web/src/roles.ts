@@ -56,3 +56,32 @@ export const ROLE_INFO: Record<Role, { label: string; description: string }> = {
   client: { label: 'Client', description: 'Read-only. No costs and no fields marked internal.' },
   viewer: { label: 'Viewer', description: 'Read-only.' },
 }
+
+// ---- Company roles (a person's standing in one company; mirrors server/src/roles.ts) ----
+// owner / admin manage the company; member can be added to projects; guest only sees projects they are invited to.
+
+export const COMPANY_ROLES = ['owner', 'admin', 'member', 'guest'] as const
+export type CompanyRole = (typeof COMPANY_ROLES)[number]
+
+export const isCompanyRole = (v: unknown): v is CompanyRole => typeof v === 'string' && (COMPANY_ROLES as readonly string[]).includes(v)
+
+export const COMPANY_ROLE_INFO: Record<CompanyRole, { label: string; description: string }> = {
+  owner: { label: 'Owner', description: 'Everything in the company, including who else is an owner.' },
+  admin: { label: 'Admin', description: 'Manages the company catalog, settings, members, storage and backups. Sees every project.' },
+  member: { label: 'Member', description: 'Can be added to projects, and can create projects when allowed.' },
+  guest: { label: 'Guest', description: 'Only sees projects they are invited to, and the catalog without costs.' },
+}
+
+const COMPANY_RANK: Record<CompanyRole, number> = { guest: 0, member: 1, admin: 2, owner: 3 }
+
+/** True when `role` is at least `min`. */
+export function companyRoleAtLeast(role: CompanyRole | null | undefined, min: CompanyRole): boolean {
+  return !!role && COMPANY_RANK[role] >= COMPANY_RANK[min]
+}
+/** Owners and admins manage the company. */
+export const isCompanyAdmin = (role: CompanyRole | null | undefined) => companyRoleAtLeast(role, 'admin')
+/** May this person create projects? Company admins always; members when granted; guests never. */
+export function canCreateProjectsIn(role: CompanyRole | null | undefined, granted: boolean | undefined): boolean {
+  if (!role || role === 'guest') return false
+  return isCompanyAdmin(role) || !!granted
+}

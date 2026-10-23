@@ -121,7 +121,9 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
               <>
                 {invite.emailed && <p className="muted small">Emailed to {invite.email}.</p>}
                 {invite.email_error && <div className="error">Email failed: {invite.email_error}</div>}
-                <CopyLink link={invite.link} note={`Send this to ${invite.email}. Valid until ${new Date(invite.expires_at).toLocaleDateString()}.`} />
+                {invite.link
+                  ? <CopyLink link={invite.link} note={`Send this to ${invite.email}. Valid until ${invite.expires_at ? new Date(invite.expires_at).toLocaleDateString() : 'used'}.`} />
+                  : <p className="muted small" role="status">{invite.added_to_company ? `${invite.email} already has an account: added to the project and the company.` : 'Added.'}</p>}
               </>
             )}
           </form>

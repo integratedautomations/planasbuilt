@@ -13,6 +13,10 @@ import { Db, createCompanyRow } from './db.js'
 import { Realtime } from './realtime.js'
 import type { Conn } from './realtime.js'
 import { Storage, validateS3Config } from './storage.js'
+import { Relayout } from './relayout.js'
+import type { FileCtx } from './fileLayout.js'
+import { photoCtx, planCtx } from './fileCtx.js'
+import { registerFileTools } from './fileTools.js'
 import type { S3Factory } from './storage.js'
 import { DEFAULTS, getSection, storageConfigOf } from './settings.js'
 import { registerCompanies, roleRank } from './companies.js'
@@ -52,6 +56,8 @@ function photoExt(b: Uint8Array): string | null {
 declare module '@fastify/jwt' {
   interface FastifyJWT { payload: AuthUser; user: AuthUser }
 }
+
+declare module 'fastify' { interface FastifyInstance { relayout: Relayout } }
 
 export interface AppOptions {
   db: Db
@@ -114,6 +120,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     primaryCompany ??= (await db.query<{ id: string }>('SELECT id FROM companies ORDER BY created_at, id LIMIT 1'))[0]?.id ?? null
     return primaryCompany
   }
+  /** How long removed files wait in _trash: the longest of the companies' settings (the trash is one folder for the install). */
+  async function trashDays() {
+    const rows = await db.query<{ d: string | null }>(
+      "SELECT s.value->>'trash_days' AS d FROM companies c LEFT JOIN settings s ON s.company_id = c.id AND s.key = 'retention'")
+    return Math.max(0, ...rows.map(r => (r.d == null ? DEFAULTS.retention.trash_days : Number(r.d) || 0)))
+  }
   const storage = new Storage(filesDir,
     async companyId => {
       const id = companyId ?? (await primaryCompanyId())
@@ -122,7 +134,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     s3Factory,
     async () => (await db.query<{ value: any }>("SELECT value->'s3' AS value FROM settings WHERE key = 'storage'"))
       .map(r => ({ ...DEFAULTS.storage.s3, ...(r.value ?? {}) }))
-      .filter(s => !validateS3Config(s)))
+      .filter(s => !validateS3Config(s)),
+    trashDays)
+  // Files moved after a rename and the admin's "Organize files" run in the background (relayout.ts). Tests drive it by hand.
+  const relayout = new Relayout(db, storage, { trashDays })
   const app = Fastify({
     logger: false,
     // Forwarding headers (X-Forwarded-For/Proto/Host) are honoured only from private/loopback peers, i.e. the cloudflared
@@ -130,6 +145,9 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     trustProxy: TRUSTED_PROXIES,
     bodyLimit: 10 * 1024 * 1024, // JSON bodies; file uploads stream via multipart (200MB cap below)
   })
+  if (!isTest) relayout.start()
+  app.decorate('relayout', relayout)
+  app.addHook('onClose', async () => relayout.stop())
   app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof HttpError) return reply.code(err.statusCode).send({ ...err.extra, error: err.message })
     const code = Number(err?.statusCode)
@@ -710,9 +728,12 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const b = (req.body ?? {}) as any
     const hasStatus = b.status !== undefined, hasCosts = b.editors_see_costs !== undefined
     const hasCable = b.cable_slack_pct !== undefined || b.cable_drop_ft !== undefined
-    if (!hasStatus && !hasCosts && !hasCable) return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
-    const access = await requireCap(req, reply, id, hasCosts ? 'members.manage' : 'plans.edit')
+    const hasName = b.name !== undefined
+    if (!hasStatus && !hasCosts && !hasCable && !hasName) return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
+    const access = await requireCap(req, reply, id, hasCosts || hasName ? 'members.manage' : 'plans.edit')
     if (!access) return
+    const newName = hasName ? String(b.name ?? '').trim().slice(0, 200) : ''
+    if (hasName && !newName) return reply.code(400).send({ error: 'Name is required' })
     if (hasStatus && b.status !== 'open' && b.status !== 'completed') return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
     if (hasCosts && typeof b.editors_see_costs !== 'boolean') return reply.code(400).send({ error: 'editors_see_costs must be true or false' })
     if (hasStatus && !accessCan(access, 'plans.edit')) return reply.code(403).send({ error: 'Not allowed' })
@@ -721,6 +742,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     if (b.cable_drop_ft !== undefined && numIn(b.cable_drop_ft, 10000) === null) return reply.code(400).send({ error: 'Drop length must be 0 to 10000 feet' })
     if (hasCable && !accessCan(access, 'plans.edit')) return reply.code(403).send({ error: 'Not allowed' })
     let project: any
+    // A new name also renames the project's folder on the file share (a background job, see relayout.ts).
+    if (hasName) [project] = await db.query('UPDATE projects SET name = $1 WHERE id = $2 RETURNING *', [newName, id])
     if (hasStatus)
       [project] = await db.query(
         `UPDATE projects SET status = $1, completed_at = CASE WHEN $1 = 'completed' THEN now() ELSE NULL END WHERE id = $2 RETURNING *`, [b.status, id])
@@ -836,17 +859,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const pageCount = up.pageCount
     const fields = file.fields as any
     const name = String(fields.name?.value || file.filename.replace(/\.pdf$/i, ''))
-    const fileKey = await storage.save('pdf', up.bytes, access.companyId)
+    const fileKey = await storage.save(await planCtx(db, id, name, 1, file.filename), up.bytes, access.companyId)
     try {
       const { doc, rev } = await db.transaction(async q => {
         const [doc] = await q('INSERT INTO documents (project_id, name) VALUES ($1,$2) RETURNING *', [id, name])
         const [rev] = await q(
-          `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by)
-           VALUES ($1, 1, $2, $3, $4) RETURNING *`, [doc.id, fileKey, pageCount, req.user.id])
+          `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by, original_name)
+           VALUES ($1, 1, $2, $3, $4, $5) RETURNING *`, [doc.id, fileKey, pageCount, req.user.id, file.filename.slice(0, 300)])
         return { doc, rev }
       })
       return { id: doc.id, name: doc.name, created_at: doc.created_at, revision_id: rev.id, revision: 1, page_count: pageCount }
-    } catch (e) { void storage.remove(fileKey); throw e }
+    } catch (e) { void storage.remove(fileKey, { hard: true }); throw e }
   })
 
   async function documentWithAccess(req: FastifyRequest, reply: FastifyReply, cap: Cap) {
@@ -948,15 +971,18 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return s
   }
 
-  interface NewRevision { kind: 'upload' | 'issued' | 'restore'; label: string; note: string; fileKey: string; pageCount: number; userId: string; snapshot?: Snapshot | null }
+  interface NewRevision { kind: 'upload' | 'issued' | 'restore'; label: string; note: string; fileKey: string; pageCount: number; userId: string; snapshot?: Snapshot | null; originalName?: string }
+  /** The number the next revision of a document will get (used only to name its file). */
+  const nextRevision = async (docId: string) =>
+    Number((await db.query<{ n: number }>('SELECT coalesce(max(revision), 0) + 1 AS n FROM document_revisions WHERE document_id = $1', [docId]))[0]?.n ?? 1)
   async function insertRevision(q: Q, docId: string, r: NewRevision) {
     const [rev] = await q(
-      `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by, kind, label, note, markups_snapshot, attachments_snapshot, scales_snapshot)
-       VALUES ($1, (SELECT coalesce(max(revision), 0) + 1 FROM document_revisions WHERE document_id = $1), $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO document_revisions (document_id, revision, file_key, page_count, uploaded_by, kind, label, note, markups_snapshot, attachments_snapshot, scales_snapshot, original_name)
+       VALUES ($1, (SELECT coalesce(max(revision), 0) + 1 FROM document_revisions WHERE document_id = $1), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id, revision, page_count, created_at, uploaded_by, kind, label, note`,
       [docId, r.fileKey, r.pageCount, r.userId, r.kind, r.label, r.note,
         r.snapshot ? JSON.stringify(r.snapshot.markups) : null, r.snapshot ? JSON.stringify(r.snapshot.attachments) : null,
-        r.snapshot ? JSON.stringify(r.snapshot.scales) : null])
+        r.snapshot ? JSON.stringify(r.snapshot.scales) : null, (r.originalName ?? '').slice(0, 300)])
     return rev
   }
 
@@ -973,17 +999,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const up = await readPdfUpload(file, reply, uploadMb(companyId))
     if (!up) return
     const pageCount = up.pageCount
-    const fileKey = await storage.save('pdf', up.bytes, companyId)
     const label = String((file.fields as any).label?.value ?? '').slice(0, 200)
     const note = String((file.fields as any).note?.value ?? '').slice(0, 2000)
+    const fileKey = await storage.save(await planCtx(db, doc.project_id, doc.name, await nextRevision(doc.id), file.filename, label), up.bytes, companyId)
     let rev: any
     try {
       rev = await db.transaction(async q => {
         await lockDocument(q, doc.id)
         await freezeLatest(q, doc.id)
-        return insertRevision(q, doc.id, { kind: 'upload', label, note, fileKey, pageCount, userId: req.user.id })
+        return insertRevision(q, doc.id, { kind: 'upload', label, note, fileKey, pageCount, userId: req.user.id, originalName: file.filename })
       })
-    } catch (e) { void storage.remove(fileKey); throw e }
+    } catch (e) { void storage.remove(fileKey, { hard: true }); throw e }
     const orphans = await db.query<{ id: string; page: number }>(
       'SELECT id, page FROM markups WHERE document_id = $1 AND NOT deleted AND page > $2 ORDER BY page', [doc.id, pageCount])
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
@@ -1142,7 +1168,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (e instanceof PageOpError) return reply.code(400).send({ error: e.message })
       return reply.code(400).send({ error: `Could not edit that PDF: ${(e as Error).message}` })
     }
-    const fileKey = await storage.save('pdf', edited.bytes, accessOf(req).companyId)
+    const fileKey = await storage.save(await planCtx(db, doc.project_id, doc.name, await nextRevision(doc.id), '', label), edited.bytes, accessOf(req).companyId)
     let deletedMarkups = 0
     let rev: any
     try { rev = await db.transaction(async q => {
@@ -1190,7 +1216,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
             [JSON.stringify(turned), req.user.id])
       }
       return insertRevision(q, doc.id, { kind: 'upload', label, note: '', fileKey, pageCount: edited.pageCount, userId: req.user.id })
-    }) } catch (e) { void storage.remove(fileKey); throw e }
+    }) } catch (e) { void storage.remove(fileKey, { hard: true }); throw e }
     realtime.revisionChanged(doc.id, rev.id, rev.revision, req.user.id, cid(req))
     realtime.scalesChanged(doc.id, req.user.id, cid(req))
     return { ...rev, mapping: mapping.map, deleted_markups: deletedMarkups }
@@ -2103,13 +2129,13 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   }
 
   /** Writes an uploaded photo to disk. Returns the key, or sends an error and returns null. */
-  async function savePhoto(file: any, reply: FastifyReply, companyId?: string | null) {
+  async function savePhoto(file: any, reply: FastifyReply, companyId: string | null | undefined, ctx: (ext: string) => Promise<FileCtx | string>) {
     if (!PHOTO_TYPES[file.mimetype]) { file.file.resume(); reply.code(400).send({ error: 'Only JPEG, PNG or WebP photos are supported' }); return null }
     const bytes = new Uint8Array(await file.toBuffer())
     if (file.file.truncated) { reply.code(413).send({ error: `Photo too large (${Math.round(photoMax(companyId) / 1048576)} MB max)` }); return null }
     const ext = photoExt(bytes) // what the bytes really are, not what the client said
     if (!ext) { reply.code(400).send({ error: 'That is not a valid JPEG, PNG or WebP image' }); return null }
-    return storage.save(ext, bytes, companyId)
+    return storage.save(await ctx(ext), bytes, companyId)
   }
 
   /** The company of a request when it has one (avatars are stored with it); never answers an error. */
@@ -2148,15 +2174,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (existing.markup_id !== m.id) return reply.code(409).send({ error: 'Attachment belongs to another markup' })
       return attRow(id)
     }
-    const key = await savePhoto(file, reply, companyId)
+    const at = new Date()
+    const key = await savePhoto(file, reply, companyId, ext => photoCtx(db, m.id, ext, String(f.caption?.value ?? ''), false, at))
     if (!key) return
     try {
       await db.query(
-        `INSERT INTO attachments (id, markup_id, file_key, caption, width, height, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [id, m.id, key, String(f.caption?.value ?? ''), optInt(f.width?.value), optInt(f.height?.value), req.user.id])
+        `INSERT INTO attachments (id, markup_id, file_key, caption, width, height, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, m.id, key, String(f.caption?.value ?? ''), optInt(f.width?.value), optInt(f.height?.value), req.user.id, at])
     } catch (e) {
-      removeFile(key)
+      void storage.remove(key, { hard: true })
       // lost a race with a concurrent retry of the same id
       const [again] = await db.query('SELECT markup_id FROM attachments WHERE id = $1', [id])
       if (again && again.markup_id === m.id) return attRow(id)
@@ -2184,7 +2211,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     ;(req as any).uploadMb = uploadMb(companyId)
     const file = await req.file({ limits: { fileSize: photoMax(companyId) } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No photo' })
-    const key = await savePhoto(file, reply, companyId)
+    const key = await savePhoto(file, reply, companyId, ext => photoCtx(db, a.markup_id, ext, a.caption, true, a.created_at))
     if (!key) return
     await db.query('UPDATE attachments SET annotated_key = $1 WHERE id = $2', [key, a.id])
     removeFile(a.annotated_key)
@@ -2222,7 +2249,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   app.post('/api/me/avatar', { preHandler: auth }, async (req, reply) => {
     const file = await req.file({ limits: { fileSize: 5 * 1024 * 1024 } })
     if (!file || file.fieldname !== 'photo') return reply.code(400).send({ error: 'No picture' })
-    const key = await savePhoto(file, reply, await softCompanyId(req))
+    const key = await savePhoto(file, reply, await softCompanyId(req), async ext => ({ kind: 'avatar' as const, ext, email: (await db.query<{ email: string }>('SELECT email FROM users WHERE id = $1', [req.user.id]))[0]?.email }))
     if (!key) return
     const [old] = await db.query('SELECT avatar_key FROM users WHERE id = $1', [req.user.id])
     const [row] = await db.query('UPDATE users SET avatar_key = $1, avatar_version = avatar_version + 1 WHERE id = $2 RETURNING avatar_version', [key, req.user.id])
@@ -2261,6 +2288,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     app, db, auth, fileAuth, storage, forgetUser, requireCap, requireCompany, companyCtx, companyMemberRemoved, sign, realtime, rl, keepsAnAdmin, dropFromProject,
     refreshAccess, sessionUser, publicUrl, inviteRateLimitMax: INVITE_RL_MAX, reloadRuntime,
   })
+  await registerFileTools({ app, db, auth, fileAuth, storage, relayout, requireCap, requireCompany, visibleMarkups })
   await registerBackups({ app, db, auth, requireCompany })
   await registerCompanies({
     app, db, auth, requireCompany, companyCtx, resolveCompany, forgetUser, forgetCompany, companyMemberRemoved, reloadRuntime, realtime,

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { OfflineBanner } from '../offline/OfflineBanner'
 import { UserMenu } from './UserMenu'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
@@ -50,6 +51,7 @@ export function PreferencesPage() {
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <span className="crumb">Preferences</span>
         <span className="spacer" />

@@ -19,7 +19,7 @@ export async function purgeCache() {
     const keepMarkups = new Set(queued.filter(i => i.kind === 'markup_put').map(i => i.targetId))
     await db.markups.filter(m => !keepMarkups.has(m.id)).delete()
     await Promise.all([db.projects, db.documents, db.pdfs, db.layers, db.symbolSets, db.deviceTypes,
-      db.products, db.scales, db.kv].map(t => t.clear()))
+      db.products, db.cableTypes, db.scales, db.kv].map(t => t.clear()))
     await db.attachments.filter(a => !keep.has(a.id)).delete()
     await db.photoBlobs.filter(b => !keep.has(b.attachment_id)).delete()
   })

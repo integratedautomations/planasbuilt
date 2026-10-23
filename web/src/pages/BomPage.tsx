@@ -13,6 +13,7 @@ import { db } from '../offline/db'
 import { loadDocuments, loadProject, loadSymbolSets } from '../offline/cache'
 import { areaOptions, buildRows } from '../schedule/rows'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { UserMenu } from '../settings/UserMenu'
 
 const SECTION_TITLE: Record<BomSection, string> = { devices: 'Devices', accessories: 'Accessories', unassigned: 'Unassigned devices (no product chosen)' }
@@ -79,6 +80,7 @@ export function BomPage({ user }: { user: User }) {
     <div className="page">
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+        <CompanySwitcher />
         <span className="muted">/</span>
         <Link to={`/projects/${projectId}`} className="crumb">{project?.name ?? '…'}</Link>
         <span className="muted">/</span>

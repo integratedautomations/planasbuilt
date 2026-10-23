@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api, ApiError, getToken, setToken, User } from './api'
 import { clearLocalData, db } from './offline/db'
 import { cacheUser, cachedUser } from './offline/user'
 import { resumeSync, setSyncUser } from './offline/sync'
 import { claimCache, purgeCache, releaseCache } from './offline/cacheOwner'
 import { ForeignNotice } from './offline/ForeignNotice'
-import { connect as connectRealtime, disconnect as disconnectRealtime } from './realtime/socket'
+import { connect as connectRealtime, disconnect as disconnectRealtime, setSocketCompany } from './realtime/socket'
+import { getActiveCompanyId, setActiveCompanyId, subscribeActiveCompany } from './company/activeCompany'
+import { listCompanies } from './company/api'
+import { adoptCompany, pathAfterSwitch } from './company/switcher'
+import type { CompanyRow } from './company/switcher'
+import { CompaniesPage } from './settings/CompaniesPage'
 import { setPrefsUser, usePrefs } from './prefs/store'
 import { applyTheme } from './prefs/theme'
 import { AuthPage } from './pages/AuthPage'
@@ -25,8 +30,22 @@ import { BackupAlert, BackupsPage } from './settings/BackupsPage'
 import { SessionContext } from './settings/session'
 import './settings/settings.css'
 
+/** The signed-in user. A remembered company that is no longer usable (403) is forgotten and the server picks one. */
+export async function fetchMe(): Promise<User> {
+  try { return await api<User>('/me') } catch (e) {
+    if (e instanceof ApiError && e.status === 403 && getActiveCompanyId()) { setActiveCompanyId(null); return api<User>('/me') }
+    throw e
+  }
+}
+
 export default function App() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const [user, setUser] = useState<User | null>(null)
+  const [companies, setCompanies] = useState<CompanyRow[]>([])
+  /** Bumped by an explicit company switch: remounts the pages so everything reloads for the new company. */
+  const [epoch, setEpoch] = useState(0)
+  const switching = useRef(false)
   const [loading, setLoading] = useState(!!getToken())
   /** The user whose local cache is ready to read (the previous user's data is purged first). */
   const [cacheFor, setCacheFor] = useState<string | null>(null)
@@ -35,13 +54,13 @@ export default function App() {
 
   useEffect(() => {
     if (getToken()) {
-      api<User>('/me').then(u => { cacheUser(u); setUser(u) }).catch(e => {
+      fetchMe().then(u => { adoptCompany(u); cacheUser(u); setUser(u) }).catch(e => {
         // Offline: keep the token and open with the last known user. Only a real rejection signs out.
         if (e instanceof ApiError) setToken(null)
         else setUser(cachedUser())
       }).finally(() => setLoading(false))
     }
-    const onSignedOut = () => { setSyncUser(null); releaseCache(); setUser(null) }
+    const onSignedOut = () => { setSyncUser(null); releaseCache(); setActiveCompanyId(null); setUser(null) }
     window.addEventListener('planmark:signed-out', onSignedOut)
     return () => window.removeEventListener('planmark:signed-out', onSignedOut)
   }, [])
@@ -56,10 +75,46 @@ export default function App() {
     return () => { live = false }
   }, [user])
 
+  const refreshCompanies = useCallback(async () => {
+    if (!user) return
+    try {
+      const rows = await listCompanies(user.platform_admin ? {} : { mine: true })
+      setCompanies(rows)
+    } catch { /* offline: keep what we had */ }
+  }, [user?.id, user?.platform_admin])
+  useEffect(() => { void refreshCompanies() }, [refreshCompanies])
+
+  const switchCompany = useCallback(async (id: string) => {
+    if (!user || id === getActiveCompanyId()) return
+    const previous = getActiveCompanyId()
+    switching.current = true
+    try {
+      setActiveCompanyId(id)
+      const next = await api<User>('/me')
+      adoptCompany(next)
+      setSocketCompany(next.company?.id ?? id)
+      cacheUser(next); setUser(next)
+      await refreshCompanies()
+      const to = pathAfterSwitch(location.pathname)
+      if (to !== location.pathname) navigate(to, { replace: true })
+      setEpoch(n => n + 1)
+    } catch (e) {
+      setActiveCompanyId(previous)
+      throw e
+    } finally { switching.current = false }
+  }, [user, location.pathname, navigate, refreshCompanies])
+
+  // The active company changed without the switcher (e.g. opening a project of another company): refresh who we are there.
+  useEffect(() => subscribeActiveCompany(id => {
+    if (switching.current || !id || !user || user.company?.id === id) return
+    fetchMe().then(u => { cacheUser(u); setUser(u); setSocketCompany(id) }).catch(() => {})
+  }), [user])
+
   if (loading || (user && cacheFor !== user.id)) return <div className="center muted">Loading…</div>
   // The sync user is set synchronously, before anything can drain the outbox under a stale identity.
   const signedIn = (token: string, u: User) => {
     setSyncUser({ id: u.id, name: u.name })
+    adoptCompany(u)
     setToken(token); cacheUser(u); setUser(u); resumeSync()
   }
   if (!user) return (
@@ -73,7 +128,7 @@ export default function App() {
   const signOut = async () => {
     setSyncUser(null) // first: nothing may be sent or read as this user from here on
     releaseCache()
-    setToken(null); cacheUser(null); setUser(null)
+    setToken(null); cacheUser(null); setActiveCompanyId(null); setUser(null); setCompanies([])
     disconnectRealtime() // the socket is the old user's: the next sign-in opens its own
     // Don't leave one user's plans on a shared device, but never throw away unsent field work:
     // with unsent changes everything else is purged and only what the queued work needs stays.
@@ -81,10 +136,10 @@ export default function App() {
     else await purgeCache()
   }
   return (
-    <SessionContext.Provider value={{ user, signOut }}>
+    <SessionContext.Provider value={{ user, signOut, companies, switchCompany, refreshCompanies }}>
     <ForeignNotice />
     {user.is_admin && <BackupAlert />}
-    <Routes>
+    <Routes key={epoch}>
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
       <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
       <Route path="/projects/:projectId/documents/:documentId" element={<ViewerPage />} />
@@ -96,6 +151,7 @@ export default function App() {
       <Route path="/settings" element={<SettingsPage user={user} onUser={u => { cacheUser(u); setUser(u) }} />} />
       <Route path="/preferences" element={<PreferencesPage />} />
       <Route path="/users" element={user.is_admin ? <UsersPage me={user} /> : <Navigate to="/" replace />} />
+      <Route path="/companies" element={user.platform_admin ? <CompaniesPage /> : <Navigate to="/" replace />} />
       <Route path="/backups" element={user.is_admin ? <BackupsPage /> : <Navigate to="/" replace />} />
       <Route path="/invite/:token" element={<Navigate to="/" replace />} />
       <Route path="/reset/:token" element={<Navigate to="/" replace />} />

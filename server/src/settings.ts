@@ -8,7 +8,7 @@ import { DEFAULT_PROJECT_SETTINGS, defaultsPart, mergeProjectSettings, readProje
 export interface CompanySettings { name: string; address: string; phone: string; prepared_by: string; logo_key: string; logo_type: string }
 export interface TagSettings { padding: 2 | 3 | 4 }
 export interface PhotoSettings { max_dimension: number }
-export interface RetentionSettings { mode: 'all' | 'keep'; keep_latest: number }
+export interface RetentionSettings { mode: 'all' | 'keep'; keep_latest: number; /** Days removed files wait in the _trash folder before they are deleted for good (0 = delete at once). */ trash_days: number }
 export interface StorageSettings { backend: 'local' | 's3'; s3: S3Config }
 
 /** Sign-in rules. lockout_limit 0 = the built-in default (10 failures). */
@@ -27,7 +27,7 @@ export const DEFAULTS = {
   company: { name: '', address: '', phone: '', prepared_by: '', logo_key: '', logo_type: '' } as CompanySettings,
   tags: { padding: 2 } as TagSettings,
   photos: { max_dimension: 2000 } as PhotoSettings,
-  retention: { mode: 'all', keep_latest: 5 } as RetentionSettings,
+  retention: { mode: 'all', keep_latest: 5, trash_days: 30 } as RetentionSettings,
   storage: {
     backend: 'local',
     s3: { endpoint: '', bucket: '', region: 'auto', accessKeyId: '', secret: '', pathStyle: false, prefix: '' },
@@ -99,7 +99,7 @@ export function mergeSection(key: SectionName, current: any, patch: any): { valu
       return { value: { max_dimension: int(patch.max_dimension, 800, 6000, current.max_dimension) } }
     case 'retention': {
       const mode = patch.mode === 'keep' ? 'keep' : patch.mode === 'all' ? 'all' : current.mode
-      return { value: { mode, keep_latest: int(patch.keep_latest, 1, 100, current.keep_latest) } }
+      return { value: { mode, keep_latest: int(patch.keep_latest, 1, 100, current.keep_latest), trash_days: patch.trash_days === 0 ? 0 : int(patch.trash_days, 1, 3650, current.trash_days) } }
     }
     case 'storage': {
       const backend = patch.backend === 's3' ? 's3' : patch.backend === 'local' ? 'local' : current.backend

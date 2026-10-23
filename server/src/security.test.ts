@@ -331,7 +331,7 @@ describe('s3 keys remember their bucket', () => {
     const pdf = await makePdf(1, 's3')
     const created = (await upload(`/api/projects/${project}/documents`, admin, mp({}, pdf))).json()
     const [row] = await db.query<{ file_key: string }>('SELECT file_key FROM document_revisions WHERE id = $1', [created.revision_id])
-    expect(row.file_key).toMatch(/^s3:bucket-one\/plans\/[0-9a-f-]{36}\.pdf$/)
+    expect(row.file_key).toMatch(/^s3:bucket-one\/plans\/.+\/Plans\/.+\/Rev 01 - \d{4}-\d{2}-\d{2} - .+\.pdf$/)
     // switch bucket and prefix: the old file must still resolve
     await api('PUT', '/api/settings', admin, { storage: { backend: 's3', s3: { ...s3, bucket: 'bucket-two', prefix: 'other' } } })
     const got = await app.inject(`/api/documents/${created.id}/file?token=${admin}`)

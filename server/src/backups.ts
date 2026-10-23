@@ -64,6 +64,11 @@ export interface Target {
   /** Folder on the remote (S3: prefix inside the bucket). */
   path: string
   retention_days: number
+  /**
+   * What the target receives. 'system': the whole install (database dump + the tar of all files), platform admin only.
+   * 'company': this company's own folder and a database export of its rows. Targets saved before this existed count as 'system'.
+   */
+  scope?: 'system' | 'company'
   config: Record<string, string>
   /** Encrypted secret values by field name. */
   secrets: Record<string, string>
@@ -154,7 +159,7 @@ export function buildConfig(targets: Target[], dec: (blob: string) => string): {
       out.push([`[${cname}]`, 'type = crypt', `remote = ${remote}`, 'filename_encryption = standard', 'directory_name_encryption = true', `password = ${obscure(dec(t.crypt.password))}`].join('\n'))
       remote = `${cname}:`
     }
-    list.push({ id: t.id, name: t.name, type: t.type, enabled: t.enabled, remote, retention_days: t.retention_days })
+    list.push({ id: t.id, name: t.name, type: t.type, enabled: t.enabled, remote, retention_days: t.retention_days, scope: t.scope ?? 'system' })
   }
   return { conf: out.join('\n\n') + (out.length ? '\n' : ''), targets: list }
 }
@@ -246,7 +251,7 @@ export async function registerBackups(ctx: BackupsContext) {
   }
 
   const view = (t: Target) => ({
-    id: t.id, name: t.name, type: t.type, enabled: t.enabled, path: t.path, retention_days: t.retention_days,
+    id: t.id, name: t.name, type: t.type, enabled: t.enabled, path: t.path, retention_days: t.retention_days, scope: t.scope ?? 'system',
     config: t.config,
     has_secret: Object.fromEntries(SPECS[t.type].secrets.map(s => [s.key, !!t.secrets[s.key]])),
     crypt: { enabled: t.crypt.enabled, has_password: !!t.crypt.password },
@@ -260,7 +265,7 @@ export async function registerBackups(ctx: BackupsContext) {
   }
 
   /** Validates a body against a stored target (or none) and returns the merged target. */
-  async function merge(body: any, cur: Target | null): Promise<{ t: Target } | { error: string }> {
+  async function merge(body: any, cur: Target | null, platform: boolean, companies: number): Promise<{ t: Target } | { error: string; status?: number }> {
     if (!body || typeof body !== 'object') return { error: 'Invalid request' }
     const type: TargetType = cur ? cur.type : body.type
     if (!TYPES.includes(type)) return { error: 'Unknown target type' }
@@ -269,6 +274,13 @@ export async function registerBackups(ctx: BackupsContext) {
       id: randomBytes(4).toString('hex'), name: '', type, enabled: true, path: '', retention_days: 30,
       config: {}, secrets: {}, crypt: { enabled: false, password: '' },
     }
+    // Scope: only a platform admin may create or change a system-level target (it carries every company's data).
+    if ('scope' in body && body.scope !== 'system' && body.scope !== 'company') return { error: 'scope must be "system" or "company"' }
+    if ((cur?.scope ?? (cur ? 'system' : null)) === 'system' && !platform) return { error: 'Only a platform admin can change a system-level target', status: 403 }
+    if ('scope' in body) {
+      if (body.scope === 'system' && !platform) return { error: 'Only a platform admin can make a target system-level', status: 403 }
+      t.scope = body.scope
+    } else if (!cur) t.scope = platform && companies <= 1 ? 'system' : 'company'
     if ('name' in body || !cur) t.name = clean(body.name, 80)
     if (!t.name) return { error: 'Give the target a name' }
     if ('enabled' in body) t.enabled = !!body.enabled
@@ -354,8 +366,9 @@ export async function registerBackups(ctx: BackupsContext) {
     const targets = await load(company.id)
     const cur = id ? targets.find(t => t.id === id) ?? null : null
     if (id && !cur) return reply.code(404).send({ error: 'Target not found' })
-    const r = await merge(req.body, cur)
-    if ('error' in r) return reply.code(400).send({ error: r.error })
+    const [{ n }] = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM companies')
+    const r = await merge(req.body, cur, !!req.user.isAdmin, n)
+    if ('error' in r) return reply.code(r.status ?? 400).send({ error: r.error })
     if (!cur) { // target ids are unique across companies (they name the shared rclone sections)
       const taken = new Set((await loadEvery()).map(e => e.t.id))
       while (taken.has(r.t.id)) r.t.id = randomBytes(4).toString('hex')
@@ -373,7 +386,9 @@ export async function registerBackups(ctx: BackupsContext) {
     if (!company) return
     const id = (req.params as any).id
     const targets = await load(company.id)
-    if (!targets.some(t => t.id === id)) return reply.code(404).send({ error: 'Target not found' })
+    const gone = targets.find(t => t.id === id)
+    if (!gone) return reply.code(404).send({ error: 'Target not found' })
+    if ((gone.scope ?? 'system') === 'system' && !req.user.isAdmin) return reply.code(403).send({ error: 'Only a platform admin can remove a system-level target' })
     const next = targets.filter(t => t.id !== id)
     await store(company.id, next)
     return { ok: true, warning: await writeFiles() }

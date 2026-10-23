@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import type { DocumentSummary, Project, User } from '../api'
 import { Brand } from '../Brand'
+import { CompanySwitcher } from '../company/CompanySwitcher'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import { cableSettings } from '../markups/cables'
 import type { Markup, SymbolSet } from '../markups/types'
@@ -89,6 +90,7 @@ export function WiringPage({ user }: { user: User }) {
       <div className="page">
         <header className="topbar">
           <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
+          <CompanySwitcher />
           <span className="muted">/</span>
           <Link to={`/projects/${pid}`} className="crumb">{project?.name ?? '…'}</Link>
           <span className="muted">/</span>

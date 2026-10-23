@@ -3,6 +3,8 @@ import type { FieldDef } from '../markups/types'
 
 export interface DeviceType {
   id: string
+  /** Set by the offline cache and the server: the company the row belongs to. */
+  company_id?: string
   symbol_set_id: string
   name: string
   icon: string
@@ -25,6 +27,7 @@ export type Accessory =
 
 export interface Product {
   id: string
+  company_id?: string
   /** null for standalone accessory products. */
   device_type_id: string | null
   kind: 'device' | 'accessory'
@@ -40,7 +43,7 @@ export interface Product {
 }
 
 /** A kind of cable (Cat6, 18/2...): drawn in `color`; removed ones stay listed as archived so existing cables keep their look. */
-export interface CableType { id: string; name: string; color: string; sort: number; archived?: boolean }
+export interface CableType { company_id?: string; id: string; name: string; color: string; sort: number; archived?: boolean }
 
 export interface CatalogData {
   device_types: DeviceType[]; products: Product[]
