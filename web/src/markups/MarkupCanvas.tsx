@@ -1,6 +1,6 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text, Transformer } from 'react-konva'
+import { Circle, Group, Label, Layer, Line, Rect, Shape, Stage, Tag, Text, Transformer } from 'react-konva'
 import Konva from 'konva'
 import { bakeBox, bakePath, boxFromDrag, pathFromPoints, hasDrawableGeometry, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
@@ -26,6 +26,11 @@ import { PLACE_ROTATE_SLOP_PX, angleLabel, faceAngle, placeAngle } from './place
 import type { Peer } from '../realtime/presence'
 import { REDLINE } from './canvasFonts'
 import { createTouchArbiter, isDoubleTap, LONG_PRESS_MS } from '../viewer/touchGesture'
+import { usePrefs } from '../prefs/store'
+import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } from './snap'
+import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
+import { GRID_DRAW_MIN_PX, gridStep as gridStepOf } from './snapConfig'
+import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
 
 // Only the left button drags markups: middle pans the plan and right box-selects.
 Konva.dragButtons = [0]
@@ -101,6 +106,8 @@ interface Props {
    * false to place the new device normally. Omit to always place.
    */
   onDeviceOverlap?: (target: Markup, placed: Markup) => boolean
+  /** Vector lines of the PDF page, indexed for snapping (null while loading / switched off / scanned pages). */
+  pdfLines?: SegIndex | null
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-radius']
@@ -112,7 +119,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-ra
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap } = props
+  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap, pdfLines } = props
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
@@ -158,6 +165,19 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   void nowTick
   /** Armed device tool: where the semi-transparent preview of the device follows the pointer (null when hidden). */
   const [devGhost, setDevGhost] = useState<Pt | null>(null)
+  /** Geometry of the cursor ghost (snapped and, with Align to walls, turned to the line under it). */
+  const [ghostGeo, setGhostGeo] = useState<BoxGeometry | null>(null)
+  // Snapping: settings from the user's prefs, an index of this page's markups, and the PDF line index from the viewer.
+  const snapSettings = usePrefs().snap
+  const markupIndex = useMemo(() => (snapSettings.on && (snapSettings.markups || snapSettings.devices) ? buildMarkupIndex(markups) : null),
+    [markups, snapSettings.on, snapSettings.markups, snapSettings.devices])
+  const snapEnv: SnapEnv = { settings: snapSettings, pdf: pdfLines ?? null, markups: markupIndex, gridStep: gridStepOf(snapSettings, scale) }
+  /** Where the pointer snapped to (indicator), in page space. */
+  const [snapMark, setSnapMark] = useState<{ x: number; y: number; kind: SnapKind } | null>(null)
+  /** A dragged device / box that turned to a line: what to commit on drop. */
+  const dragAlignRef = useRef<{ id: string; geometry: BoxGeometry } | null>(null)
+  /** Angle of the line a box drag started on (Align to walls): the drawn box takes this rotation. */
+  const boxAlignRef = useRef<number | null>(null)
   // Touch: nothing commits on pointerdown. The arbiter decides tap / drag / pinch; window listeners follow the finger
   // (the viewport captures the pointer for panning, so the stage never sees its move/up).
   const arb = useRef(createTouchArbiter())
@@ -206,6 +226,17 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
   const pointer = (): Pt => pointerOverride.current ?? stageRef.current!.getRelativePointerPosition() ?? { x: 0, y: 0 }
 
+  const liveZoom = () => stageRef.current?.scaleX() || zoom
+  const ctrlOf = (ev: unknown) => { const e = ev as { ctrlKey?: boolean; metaKey?: boolean } | null | undefined; return !!e && !!(e.ctrlKey || e.metaKey) }
+  const showMark = (hit: SnapHit | null) => setSnapMark(cur => (!hit ? null
+    : cur && cur.x === hit.point.x && cur.y === hit.point.y && cur.kind === hit.kind ? cur : { x: hit.point.x, y: hit.point.y, kind: hit.kind }))
+  /** Best snap for a pointer position (null with snapping off or Ctrl held); moves the indicator unless `mark` is false. */
+  function snapAt(p: Pt, ev: unknown, opts: SnapOpts = {}, mark = true): SnapHit | null {
+    const hit = snapActive(snapEnv, ctrlOf(ev)) ? snapPoint(snapEnv, p, liveZoom(), opts) : null
+    if (mark) showMark(hit)
+    return hit
+  }
+
   const newMarkup = (type: MarkupType, geometry: BoxGeometry | PathGeometry): Markup => ({
     id: uuid(), document_id: newBase.document_id, page: newBase.page, type, geometry,
     style: type === 'area' ? { ...AREA_STYLE } : { ...newBase.style }, text: type === 'stamp' ? newBase.stampText : '', layer_id: newBase.layer_id,
@@ -214,6 +245,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
 
   const finish = (m: Markup | null) => {
     placeRef.current = null
+    boxAlignRef.current = null
+    setSnapMark(null)
     setPlaceView(null)
     setDraft(null)
     dragStart.current = null
@@ -244,7 +277,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   }))
 
   // Leaving a tool abandons its half-drawn markup
-  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null); setDevGhost(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null); setDevGhost(null); setSnapMark(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
     while (node && node !== stageRef.current) {
@@ -272,15 +305,29 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     setPlaceView({ m, to: null, angle: null })
   }
 
+  /**
+   * Where and how a new device goes for a pointer position: snapped to a line / corner / grid and, with Align to walls, turned
+   * to the line it snapped to (a wall D sits with its flat side on the line, facing away from it toward the pointer).
+   */
+  function placement(p: Pt, set: SymbolSet, ev: unknown, mark = true): { geometry: BoxGeometry; at: Pt; c: Pt } {
+    const size = 24 * (props.deviceScale ?? 1)
+    const typeCov = newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null
+    const covFov = initialCoverage(set, typeCov, scale ?? null)
+    const hit = snapAt(p, ev, {}, mark)
+    const at = hit?.point ?? p
+    let geometry: BoxGeometry = { x: at.x - size / 2, y: at.y - size / 2, width: size, height: size, rotation: 0, ...(covFov ? { fov: covFov } : {}) }
+    if (hit && snapSettings.align && alignable(hit)) geometry = alignDevice(geometry, hit, p, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined)
+    return { geometry, at, c: deviceCenter(geometry) }
+  }
+
   /** Touch long-press on empty space with the device tool: place a device and let the finger turn it. False = not applicable (stack / overlap / no set). */
   function startPlace(p: Pt, cx: number, cy: number): boolean {
     const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
     if (!set || readOnly || placeRef.current) return false
     if (findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)) return false
-    if (onDeviceOverlap && findOverlapTarget(markups, p, set.id, newBase.deviceTypeId ?? null)) return false
-    const size = 24 * (props.deviceScale ?? 1)
-    const covFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
-    beginPlace(newMarkup('device', { x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0, ...(covFov ? { fov: covFov } : {}) }), p, cx, cy)
+    const pl = placement(p, set, null, false)
+    if (onDeviceOverlap && findOverlapTarget(markups, pl.at, set.id, newBase.deviceTypeId ?? null)) return false
+    beginPlace(newMarkup('device', pl.geometry), pl.c, cx, cy)
     return true
   }
 
@@ -294,7 +341,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
     const angle = placeAngle(pl.c, ptr, free)
     if (angle === null) return
-    pl.m = { ...pl.m, geometry: faceAngle(pl.base, angle) }
+    pl.m = { ...pl.m, geometry: withCenter(faceAngle(pl.base, angle), pl.c) }
     setPlaceView({ m: pl.m, to: ptr, angle })
   }
 
@@ -345,8 +392,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const p = pointer()
     const cal = tool === 'calibrate'
     if (tool === 'area-rect') {
-      dragStart.current = p
-      setDraft(newMarkup('area', pathFromPoints(rectPoints(p, p))))
+      const a = snapAt(p, e.evt, {}, false)?.point ?? p
+      dragStart.current = a
+      setDraft(newMarkup('area', pathFromPoints(rectPoints(a, a))))
       return
     }
     const t = (cal ? 'line' : tool) as MarkupType
@@ -361,7 +409,6 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (t === 'device') {
       const set = newBase.symbolSetId ? symbolSets.get(newBase.symbolSetId) : undefined
       if (!set) return
-      const size = 24 * (props.deviceScale ?? 1)
       const covFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
       // Close to a device of the same set: land exactly on it so it joins its stack
       const snap = findSnapTarget(markups, p, set.id, 1.2, newBase.deviceTypeId ?? null)
@@ -374,29 +421,28 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         }))
         return
       }
-      const placed = newMarkup('device', {
-        x: p.x - size / 2, y: p.y - size / 2, width: size, height: size, rotation: 0,
-        ...(covFov ? { fov: covFov } : {}),
-      })
+      const pl = placement(p, set, e.evt, false)
+      const placed = newMarkup('device', pl.geometry)
       // On top of a device of another type: the viewer may replace it or ask first
-      const over = onDeviceOverlap ? findOverlapTarget(markups, p, set.id, newBase.deviceTypeId ?? null) : null
+      const over = onDeviceOverlap ? findOverlapTarget(markups, pl.at, set.id, newBase.deviceTypeId ?? null) : null
       if (over && onDeviceOverlap!(over, placed)) { finish(null); return }
       // Mouse / pen: keep the placement open until release so the pointer can turn it. Touch taps place at once.
       if (e.evt.pointerType === 'touch') finish(placed)
-      else beginPlace(placed, p, e.evt.clientX, e.evt.clientY)
+      else beginPlace(placed, pl.c, e.evt.clientX, e.evt.clientY)
       return
     }
     if (t === 'count') {
       const grp = countGroup.current ?? (countGroup.current = { id: uuid(), n: 0 })
       grp.n++
-      const m = newMarkup('count', pathFromPoints([p]))
+      const m = newMarkup('count', pathFromPoints([snapAt(p, e.evt, {}, false)?.point ?? p]))
       commit([{ before: null, after: { ...m, fields: { group: grp.id, n: grp.n } } }])
       return
     }
     if (CLICK_PATHS.includes(t)) {
       const pts = clickPts.current
+      const sp = e.evt.shiftKey ? p : snapAt(p, e.evt, { extra: pts.slice(0, -1) }, false)?.point ?? p
       if (!pts.length) {
-        clickPts.current = [p, p]
+        clickPts.current = [sp, sp]
       } else {
         const first = pts[0]
         if (CLOSED.includes(t) && pts.length >= 4 && Math.hypot(p.x - first.x, p.y - first.y) < 10 / zoom) {
@@ -405,16 +451,19 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           finishClickPath()
           return
         }
-        const last = e.evt.shiftKey ? snap45(pts[pts.length - 2], p) : p
+        const last = e.evt.shiftKey ? snap45(pts[pts.length - 2], p) : sp
         clickPts.current = [...pts.slice(0, -1), last, last]
       }
       setDraft(newMarkup(t, pathFromPoints(clickPts.current)))
       return
     }
     if (DRAG_TOOLS.includes(t)) {
-      dragStart.current = p
-      freehandPts.current = [p]
-      const base = newMarkup(t, isBoxType(t) ? boxFromDrag(p, p) : pathFromPoints([p, p]))
+      const hit = t === 'freehand' || e.evt.shiftKey ? null : snapAt(p, e.evt, {}, false)
+      const a = hit?.point ?? p
+      boxAlignRef.current = hit && snapSettings.align && alignable(hit) && (t === 'rect' || t === 'cloud' || t === 'text') ? hit.angle : null
+      dragStart.current = a
+      freehandPts.current = [a]
+      const base = newMarkup(t, isBoxType(t) ? boxFromDrag(a, a) : pathFromPoints([a, a]))
       setDraft(cal ? { ...base, style: CAL_STYLE } : base)
     }
   }
@@ -423,8 +472,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (onCursor) onCursor(stageRef.current?.getRelativePointerPosition() ?? null)
     if (placeRef.current) { updatePlace(pointer(), e.evt.altKey, e.evt.clientX, e.evt.clientY); return }
     if (e.evt.pointerType === 'touch') { setDevGhost(null); setSnapHint(null) }
-    else if (tool === 'device' && !readOnly && newBase.symbolSetId) setDevGhost((e.evt.buttons & 4) ? null : pointer())
-    else if (devGhost) setDevGhost(null)
+    else if (tool === 'device' && !readOnly && newBase.symbolSetId && symbolSets.get(newBase.symbolSetId)) {
+      if (e.evt.buttons & 4) setDevGhost(null)
+      else { const pl = placement(pointer(), symbolSets.get(newBase.symbolSetId)!, e.evt); setDevGhost(pl.c); setGhostGeo(pl.geometry) }
+    } else if (devGhost) setDevGhost(null)
     if (marqueeStart.current) {
       const r = marqueeStart.current.right
       if (r && !r.moved) {
@@ -443,10 +494,18 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       } else setSnapHint(h => (h ? null : h))
       return
     }
-    if (!draft) return
-    const p = pointer()
+    if (!draft) {
+      // Hovering with a drawing tool: show where the first point would snap
+      if (isDrawTool && e.evt.pointerType !== 'touch' && !['freehand', 'stamp', 'legend', 'device'].includes(tool)) snapAt(pointer(), e.evt)
+      return
+    }
+    const raw = pointer()
     const shift = e.evt.shiftKey
-    if (CLICK_PATHS.includes(draft.type) && !dragStart.current) {
+    const clickPath = CLICK_PATHS.includes(draft.type) && !dragStart.current
+    const hit = shift || draft.type === 'freehand' ? null : snapAt(raw, e.evt, clickPath ? { extra: clickPts.current.slice(0, -1) } : {})
+    if (!hit) showMark(null)
+    const p = hit?.point ?? raw
+    if (clickPath) {
       const pts = clickPts.current
       const last = shift && pts.length > 1 ? snap45(pts[pts.length - 2], p) : p
       clickPts.current = [...pts.slice(0, -1), last]
@@ -463,7 +522,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       freehandPts.current.push(p)
       setDraft({ ...draft, geometry: pathFromPoints(freehandPts.current) })
     } else if (isBoxType(draft.type)) {
-      setDraft({ ...draft, geometry: boxFromDrag(a, p, shift || !!constrain) })
+      setDraft({ ...draft, geometry: boxAlignRef.current !== null ? boxFromDragAligned(a, p, boxAlignRef.current, shift || !!constrain) : boxFromDrag(a, p, shift || !!constrain) })
     } else {
       setDraft({ ...draft, geometry: pathFromPoints([a, shift ? snap45(a, p) : p]) })
     }
@@ -511,7 +570,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     } else if ('width' in g) {
       if (g.width < tiny && g.height < tiny) {
         // A click with the text tool drops a default-size box
-        finish(draft.type === 'text' ? { ...draft, geometry: { ...g, width: 180, height: 40 } } : null)
+        finish(draft.type === 'text' ? { ...draft, geometry: { ...g, width: 180, height: 40, ...(boxAlignRef.current !== null ? { rotation: boxAlignRef.current } : {}) } } : null)
       } else finish(draft)
     } else {
       const [, , x1, y1] = g.points
@@ -692,6 +751,18 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     commit(change)
   }
 
+  /** A point handle of a selected path is being dragged: its snapped position in the markup's local space, or null. */
+  function snapHandle(m: Markup, _index: number, lx: number, ly: number, ev: Event): { x: number; y: number } | null {
+    const g = m.geometry
+    if (!('points' in g) || !snapActive(snapEnv, ctrlOf(ev))) { showMark(null); return null }
+    const a = (g.rotation * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a)
+    const hit = snapPoint(snapEnv, { x: g.x + lx * cos - ly * sin, y: g.y + lx * sin + ly * cos }, liveZoom(), { skip: new Set([m.id]) })
+    showMark(hit)
+    if (!hit) return null
+    const dx = hit.point.x - g.x, dy = hit.point.y - g.y
+    return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos }
+  }
+
   /** The markups a Ctrl+drag of `id` copies (one device when dragging out of a stack). */
   function copySources(id: string): Markup[] {
     const grp = stacks.byId.get(id)
@@ -699,7 +770,42 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     return srcIds.map(i => byId.get(i)).filter((m): m is Markup => !!m && !lockedIds.has(m.id) && !isSheetArea(m))
   }
 
+  /**
+   * A markup is being dragged: line its handles (a device's centre, a box's corners and centre, a path's vertices) up with
+   * whatever snaps. A lone device or box also turns to the line it lands on when Align to walls is on.
+   */
+  function onShapeDragMove(e: Konva.KonvaEventObject<DragEvent>) {
+    const node = e.target
+    const id = markupIdOf(node)
+    const m = id ? byId.get(id) : undefined
+    if (!id || !m) return
+    const orig = m.geometry
+    if (node.rotation() !== orig.rotation) node.rotation(orig.rotation) // undo last frame's alignment before measuring
+    dragAlignRef.current = null
+    if (copyDrag.current || !snapActive(snapEnv, ctrlOf(e.evt))) { showMark(null); return }
+    const moving = new Set(selectedIds.includes(id) ? selectedIds : (stacks.byId.get(id)?.members.map(x => x.id) ?? [id]))
+    const cur: Markup = { ...m, geometry: { ...orig, x: node.x(), y: node.y() } }
+    const res = snapHandles(snapEnv, handlePoints(cur), liveZoom(), { skip: moving })
+    if (!res) { showMark(null); return }
+    showMark(res.hit)
+    const moved = { ...orig, x: node.x() + res.dx, y: node.y() + res.dy }
+    if (moving.size === 1 && snapSettings.align && alignable(res.hit) && 'width' in moved) {
+      let g: BoxGeometry | null = null
+      if (m.type === 'device') g = alignDevice(moved, res.hit, res.handle, typeMountOf(m, catalog))
+      else if (ALIGN_BOX_TYPES.has(m.type)) g = alignBox(moved, res.hit.point, res.hit.angle)
+      if (g) {
+        node.position({ x: g.x, y: g.y })
+        node.rotation(g.rotation)
+        dragAlignRef.current = { id, geometry: g }
+        if (g.fov && m.type === 'device') setFovOverride({ id, fov: g.fov })
+        return
+      }
+    }
+    node.position({ x: moved.x, y: moved.y })
+  }
+
   function onDragStart(e: Konva.KonvaEventObject<DragEvent>) {
+    dragAlignRef.current = null
     const id = markupIdOf(e.target)
     if (!id || e.target.name() !== 'markup' || readOnly || !(e.evt.ctrlKey || e.evt.metaKey)) return
     copyDrag.current = true
@@ -710,6 +816,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const wasCopy = copyDrag.current
     copyDrag.current = false
     setCopyGhosts(null)
+    setSnapMark(null)
+    const aligned = dragAlignRef.current
+    dragAlignRef.current = null
+    setFovOverride(cur => (cur && aligned && cur.id === aligned.id ? null : cur))
     const stage = stageRef.current
     const id = markupIdOf(e.target)
     if (!stage || !id || e.target.name() !== 'markup') return
@@ -717,13 +827,19 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (tc.cancelled || (tc.ev && !tc.dragged)) {
       // Drag interrupted by a second finger, or a "drag" that never left the tap slop: back to where it was
       const orig = byId.get(id)
-      if (orig) { e.target.position({ x: orig.geometry.x, y: orig.geometry.y }); e.target.getLayer()?.batchDraw() }
+      if (orig) { e.target.position({ x: orig.geometry.x, y: orig.geometry.y }); e.target.rotation(orig.geometry.rotation); e.target.getLayer()?.batchDraw() }
       setCopyGhosts(null)
       return
     }
     // Everything selected moves rigidly with the dragged node (a stack's members move as one step)
     const dragged = byId.get(id)
     if (!dragged) return
+    if (aligned && aligned.id === id && !wasCopy && !(e.evt.ctrlKey || e.evt.metaKey) && !lockedIds.has(id)) {
+      // A lone device / box that turned to the line it landed on: move and turn in one step
+      commit([{ before: dragged, after: { ...dragged, geometry: aligned.geometry } }])
+      if (!selectedIds.includes(id)) onSelect([id])
+      return
+    }
     const dx = e.target.x() - dragged.geometry.x, dy = e.target.y() - dragged.geometry.y
     if (dx === 0 && dy === 0) return
     const grp = stacks.byId.get(id)
@@ -788,6 +904,23 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       onPointerDown={onStageDown} onPointerMove={e => { if (e.evt.pointerType === 'touch') return; handleMove(e) }} onPointerUp={e => { if (e.evt.pointerType === 'touch') return; handleUp(e) }} onPointerLeave={() => { onCursor?.(null); setDevGhost(null) }}
       onDblClick={onDoubleClick}>
       <Layer>
+        {snapSettings.showGrid && snapEnv.gridStep > 0 && (
+          <Shape listening={false} stroke="rgba(25,113,194,0.3)" strokeWidth={1} strokeScaleEnabled={false} sceneFunc={(ctx, shape) => {
+            const stage = shape.getStage()
+            if (!stage) return
+            const z = stage.scaleX() || 1
+            const step = snapEnv.gridStep
+            if (step * z < GRID_DRAW_MIN_PX) return
+            const inv = stage.getAbsoluteTransform().copy().invert()
+            const a = inv.point({ x: 0, y: 0 }), b = inv.point({ x: stage.width(), y: stage.height() })
+            const x0 = Math.floor(a.x / step) * step, y0 = Math.floor(a.y / step) * step
+            if (((b.x - a.x) / step + 1) * 2 + ((b.y - a.y) / step + 1) * 2 > 6000) return
+            ctx.beginPath()
+            for (let x = x0; x <= b.x; x += step) { ctx.moveTo(x, a.y); ctx.lineTo(x, b.y) }
+            for (let y = y0; y <= b.y; y += step) { ctx.moveTo(a.x, y); ctx.lineTo(b.x, y) }
+            ctx.fillStrokeShape(shape)
+          }} />
+        )}
         {ordered.map(m => {
           const shown = pointOverride?.id === m.id && 'points' in m.geometry
             ? { ...m, geometry: { ...m.geometry, points: pointOverride.points } }
@@ -816,13 +949,15 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
               draggable={canDrag(m)}
               listening={!lockedIds.has(m.id) && !isDrawTool}
               editPoints={editable}
+              snapHandle={snapHandle}
               onPointsChange={(points, done) => {
                 if (!done) { setPointOverride({ id: m.id, points }); return }
                 setPointOverride(null)
+                setSnapMark(null)
                 if (touch.current.cancelled) return
                 commit([{ before: m, after: { ...m, geometry: { ...(m.geometry as PathGeometry), points } } }])
               }}
-              onDragStart={onDragStart} onDragEnd={onDragEnd} />
+              onDragStart={onDragStart} onDragMove={canDrag(m) ? onShapeDragMove : undefined} onDragEnd={onDragEnd} />
           )
         })}
         {copyGhosts?.map(g => (
@@ -839,7 +974,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         {devGhost && newBase.symbolSetId && symbolSets.get(newBase.symbolSetId) && (() => {
           const set = symbolSets.get(newBase.symbolSetId!)!
           const ghostFov = initialCoverage(set, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null, scale ?? null)
-          const gm = newMarkup('device', { x: devGhost.x - 12 * (props.deviceScale ?? 1), y: devGhost.y - 12 * (props.deviceScale ?? 1), width: 24 * (props.deviceScale ?? 1), height: 24 * (props.deviceScale ?? 1), rotation: 0, ...(ghostFov ? { fov: ghostFov } : {}) })
+          const gm = newMarkup('device', ghostGeo ?? { x: devGhost.x - 12 * (props.deviceScale ?? 1), y: devGhost.y - 12 * (props.deviceScale ?? 1), width: 24 * (props.deviceScale ?? 1), height: 24 * (props.deviceScale ?? 1), rotation: 0, ...(ghostFov ? { fov: ghostFov } : {}) })
           return (
             <Group opacity={0.5} listening={false}>
               <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost' }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}
@@ -870,6 +1005,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           )
         })()}
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
+        {snapMark && <SnapMarker x={snapMark.x} y={snapMark.y} kind={snapMark.kind} zoom={zoom} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}
         {peers?.map(p => {
@@ -923,7 +1059,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           </Group>
         ))}
         <Transformer ref={trRef} rotateEnabled keepRatio={selected.length > 0 && selected.every(m => m.type === 'device')} ignoreStroke flipEnabled={false}
-          rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={4}
+          rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={snapSettings.on && snapSettings.align ? 5 : 4}
           anchorSize={11} anchorCornerRadius={2} borderStroke={REDLINE} anchorStroke={REDLINE}
           boundBoxFunc={(oldBox, newBox) => (Math.abs(newBox.width) < 4 || Math.abs(newBox.height) < 4 ? oldBox : newBox)}
           onTransformEnd={onTransformEnd} />
@@ -937,3 +1073,21 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     </>
   )
 })
+
+/** The snap indicator: a small mark at the snapped point, shaped by what it snapped to. Sized in screen pixels. */
+function SnapMarker({ x, y, kind, zoom }: { x: number; y: number; kind: SnapKind; zoom: number }) {
+  const c = '#e8590c'
+  const common = { stroke: c, strokeWidth: 2, listening: false, fillEnabled: false } as const
+  return (
+    <Group x={x} y={y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
+      {kind === 'device' && <Circle radius={7} {...common} />}
+      {kind === 'endpoint' && <Rect x={-5} y={-5} width={10} height={10} {...common} />}
+      {kind === 'midpoint' && <Line points={[0, -6, 6, 5, -6, 5]} closed {...common} />}
+      {kind === 'edge' && <Line points={[-5, -5, 5, 5]} {...common} />}
+      {kind === 'edge' && <Line points={[-5, 5, 5, -5]} {...common} />}
+      {kind === 'pdf' && <Line points={[0, -7, 7, 0, 0, 7, -7, 0]} closed {...common} />}
+      {kind === 'grid' && <Line points={[-6, 0, 6, 0]} {...common} />}
+      {kind === 'grid' && <Line points={[0, -6, 0, 6]} {...common} />}
+    </Group>
+  )
+}

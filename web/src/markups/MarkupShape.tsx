@@ -40,6 +40,10 @@ interface Props {
   onFovChange?: (fov: Fov, done: boolean) => void
   onDragStart?: (e: Konva.KonvaEventObject<DragEvent>) => void
   onDragEnd?: (e: Konva.KonvaEventObject<DragEvent>) => void
+  /** Runs before the cone follows the dragged device: may move / turn the node (snapping). */
+  onDragMove?: (e: Konva.KonvaEventObject<DragEvent>) => void
+  /** A point handle is being dragged: returns the snapped local position, or null. Index is the point's index. */
+  snapHandle?: (m: Markup, index: number, x: number, y: number, ev: Event) => { x: number; y: number } | null
   onDblClick?: () => void
   /** Set on the drawn (top) member of a device stack. */
   stack?: StackView
@@ -59,15 +63,16 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 function MarkupShapeInner(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDblClick, showCones = true, stack, ghost, legendRows } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDragMove: onDragMoveProp, snapHandle, onDblClick, showCones = true, stack, ghost, legendRows } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && 'width' in g && showCones && hasCoverage(g.fov) ? g.fov : undefined
 
   // Keep the cone attached while the device is being dragged
   const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => {
+    if (e.target.name() === 'markup') onDragMoveProp?.(e)
     if (!fovRef.current || !('width' in g) || e.target.name() !== 'markup') return
-    const c = deviceCenter({ ...g, x: e.target.x(), y: e.target.y() })
+    const c = deviceCenter({ ...g, x: e.target.x(), y: e.target.y(), rotation: e.target.rotation() })
     fovRef.current.position(c)
   }
 
@@ -79,7 +84,7 @@ function MarkupShapeInner(props: Props) {
       )}
       <Group id={m.id} name="markup" x={g.x} y={g.y} rotation={g.rotation}
         draggable={draggable} listening={listening && !ghost} opacity={m.style.opacity}
-        onDragMove={fov ? onDragMove : undefined}
+        onDragMove={fov || onDragMoveProp ? onDragMove : undefined}
         onDragStart={onDragStart} onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
         {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
@@ -87,7 +92,7 @@ function MarkupShapeInner(props: Props) {
           : m.type === 'legend' ? <LegendBody m={m} g={g} rows={legendRows ?? []} />
           : <BoxBody m={m} g={g} />}
         {editPoints && 'points' in g && onPointsChange && (
-          <PointHandles points={g.points} zoom={zoom} onChange={onPointsChange} />
+          <PointHandles points={g.points} zoom={zoom} onChange={onPointsChange} snap={snapHandle ? (i, x, y, ev) => snapHandle(m, i, x, y, ev) : undefined} />
         )}
       </Group>
     </>
@@ -432,13 +437,15 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath }: { m: Markup; g: 
   }
 }
 
-function PointHandles({ points, zoom, onChange }: { points: number[]; zoom: number; onChange: (p: number[], done: boolean) => void }) {
+function PointHandles({ points, zoom, onChange, snap }: { points: number[]; zoom: number; onChange: (p: number[], done: boolean) => void; snap?: (index: number, x: number, y: number, ev: Event) => { x: number; y: number } | null }) {
   const handles = []
   for (let i = 0; i < points.length; i += 2) {
     const idx = i
     const move = (e: Konva.KonvaEventObject<DragEvent>, done: boolean) => {
       e.cancelBubble = true
       const next = points.slice()
+      const s = snap?.(idx / 2, e.target.x(), e.target.y(), e.evt)
+      if (s) e.target.position(s)
       next[idx] = e.target.x()
       next[idx + 1] = e.target.y()
       onChange(next, done)

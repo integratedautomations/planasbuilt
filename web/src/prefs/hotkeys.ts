@@ -45,6 +45,7 @@ export const COMMANDS: Command[] = [
   { id: 'edit.selectAll', label: 'Select all', group: 'Edit', combo: 'Ctrl+A' },
   { id: 'edit.escape', label: 'Cancel / deselect', group: 'Edit', combo: 'Escape' },
   { id: 'edit.finish', label: 'Finish drawing', group: 'Edit', combo: 'Enter' },
+  { id: 'snap.toggle', label: 'Toggle snapping', group: 'View', combo: 'Shift+S' },
   { id: 'select.boxMode', label: 'Toggle box select', group: 'Edit', combo: 'X' },
   { id: 'view.panHold', label: 'Pan (hold)', group: 'View', combo: 'Space' },
   { id: 'view.zoomIn', label: 'Zoom in', group: 'View', combo: '=' },

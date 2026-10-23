@@ -4,6 +4,8 @@ import { Icon } from '../ui/Icon'
 import { DeviceSizeControl, formatDeviceScale } from './DeviceSize'
 import { BOX_ICON, TOOLS } from '../markups/ToolRail'
 import type { Tool } from '../markups/types'
+import { MAGNET_ICON, SnapControls } from './SnapMenu'
+import { usePrefs } from '../prefs/store'
 
 interface Props {
   pageNum: number
@@ -15,6 +17,7 @@ interface Props {
   fitHint?: string
   prevHint?: string
   nextHint?: string
+  snapHint?: string
   /** Label of the current sheet scale, or null when none is set. */
   scaleLabel: string | null
   /** Content of the scale popover (the scale control). */
@@ -35,12 +38,13 @@ interface Props {
 export const ZOOM_PRESETS = [0.25, 0.5, 1, 2, 4]
 
 /** Floating bar at the bottom centre of the plan: page arrows and number, zoom controls and the sheet scale. */
-export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, scaleLabel, scalePanel, tool, onTool, hotkeys, deviceScale = 1, onDeviceScale, deviceScaleReadOnly, boxSelect, onBoxSelect }: Props) {
+export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHint, prevHint, nextHint, snapHint, scaleLabel, scalePanel, tool, onTool, hotkeys, deviceScale = 1, onDeviceScale, deviceScaleReadOnly, boxSelect, onBoxSelect }: Props) {
+  const snapOn = usePrefs().snap.on
   const [text, setText] = useState(String(pageNum))
-  const [menu, setMenu] = useState<'zoom' | 'scale' | 'devsize' | null>(null)
+  const [menu, setMenu] = useState<'zoom' | 'scale' | 'devsize' | 'snap' | null>(null)
   useEffect(() => setText(String(pageNum)), [pageNum])
   const commit = () => { const n = parseInt(text, 10); if (n) onGo(n); else setText(String(pageNum)) }
-  const toggle = (m: 'zoom' | 'scale' | 'devsize') => setMenu(cur => (cur === m ? null : m))
+  const toggle = (m: 'zoom' | 'scale' | 'devsize' | 'snap') => setMenu(cur => (cur === m ? null : m))
   return (
     <div className="nav-bar" data-no-pan onPointerDown={e => e.stopPropagation()} role="toolbar" aria-label="Plan navigation">
       {onTool && (['select', 'pan'] as Tool[]).map(t => {
@@ -74,6 +78,11 @@ export function NavBar({ pageNum, pageCount, onGo, zoom, onZoomBy, onFit, fitHin
       </span>
       <button className="icon-btn" onClick={() => onZoomBy(1.25)} title="Zoom in (=)" aria-label="Zoom in"><Icon name="plus" size={18} /></button>
       <span className="divider" />
+      <span className="nav-pop-wrap">
+        <button className={'icon-btn' + (snapOn ? ' active' : '')} aria-haspopup="dialog" aria-expanded={menu === 'snap'} aria-pressed={snapOn}
+          title={`Snapping ${snapOn ? 'on' : 'off'}${snapHint ? ` (${snapHint})` : ''}`} aria-label="Snapping" onClick={() => toggle('snap')}>{MAGNET_ICON}</button>
+        {menu === 'snap' && <div className="nav-pop nav-snap" role="dialog" aria-label="Snapping"><SnapControls hasScale={scaleLabel !== null} hint={snapHint} /></div>}
+      </span>
       {onDeviceScale && (
         <span className="nav-pop-wrap">
           <button className={'icon-btn' + (deviceScale !== 1 ? ' active' : '')} aria-haspopup="dialog" aria-expanded={menu === 'devsize'}

@@ -37,6 +37,8 @@ import { assignCombo, commandForEvent, commandLabel as commandLabelOf, entryIdOf
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
 import { HotkeyRecorder } from '../prefs/HotkeyRecorder'
 import { NavBar } from '../viewer/NavBar'
+import { SnapControls } from '../viewer/SnapMenu'
+import { usePageLines } from '../viewer/useSnapLines'
 import { centerIfOffscreen, unionBox } from '../viewer/visibility'
 import { OverlapPrompt } from '../markups/OverlapPrompt'
 import { decideOverlap, replacePrompt, replaceTargets } from '../markups/placeReplace'
@@ -678,6 +680,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
 
   const pageCount = pdf?.numPages ?? meta?.revisions[0]?.page_count ?? 0
   const pageScale = scales.get(pageNum) ?? null
+  // Vector lines of the plan page, for snapping (off when the master or PDF snap switch is off)
+  const snapLines = usePageLines(page, `${documentId}:${revParam ?? loadedRevision.current ?? 'cur'}:${pageNum}`, prefs.snap.on && prefs.snap.pdf)
 
   /** Saves a scale for this sheet, or for every sheet; keeps local state in step with the server. */
   async function saveScale(s: PageScale, allSheets: boolean) {
@@ -1100,6 +1104,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       case 'panel.layers': togglePanel('layers'); return true
       case 'edit.escape': if (focus) { setFocus(false); return true }; markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select'); setShapeLock(null); return true
       case 'edit.finish': markupRef.current?.finishDraft(); return true
+      case 'snap.toggle': setPref('snap', { ...getPrefs().snap, on: !getPrefs().snap.on }); return true
       case 'select.boxMode': setBoxMode(b => !b); setTool('select'); return true
       case 'view.zoomIn': zoomBy(1.25); return true
       case 'view.zoomOut': zoomBy(0.8); return true
@@ -1257,7 +1262,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       </div>
       {pickingWindow && pageSize && <WindowPicker page={pageNum} pageSize={pageSize} view={view} onDone={finishWindowPick} />}
       {!isPhone && (
-        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} tool={activeTool} onTool={chooseTool} hotkeys={hotkeys} deviceScale={deviceScale} onDeviceScale={changeDeviceScale} deviceScaleReadOnly={readOnly} boxSelect={boxMode && activeTool === 'select'} onBoxSelect={readOnly ? undefined : () => { setBoxMode(b => !(b && activeTool === 'select')); setTool('select') }} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined}
+        <NavBar pageNum={pageNum} pageCount={pageCount} onGo={goTo} zoom={zoom} onZoomBy={zoomBy} onFit={fit} tool={activeTool} onTool={chooseTool} hotkeys={hotkeys} deviceScale={deviceScale} onDeviceScale={changeDeviceScale} deviceScaleReadOnly={readOnly} boxSelect={boxMode && activeTool === 'select'} onBoxSelect={readOnly ? undefined : () => { setBoxMode(b => !(b && activeTool === 'select')); setTool('select') }} fitHint={hotkeys['view.fit'] || undefined} prevHint={hotkeys['view.prevPage'] || undefined} nextHint={hotkeys['view.nextPage'] || undefined} snapHint={hotkeys['snap.toggle'] || undefined}
           scaleLabel={pageScale?.label ?? null}
           scalePanel={<ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
             onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}
@@ -1270,7 +1275,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           peers={peersHere} onMarquee={onMarquee} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
           onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
-          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} calLine={calLine}
+          consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} pdfLines={snapLines} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
           newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
             deviceTypeId: activeTypeId, productId: activeProductId, deviceFields: productFields(activeProductId ? catalog.products.get(activeProductId) : undefined) }}
@@ -1454,6 +1459,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                 onClear={clearScale} onCalibrate={() => chooseTool('calibrate')} /></div>
               <MenuHeading>Device size</MenuHeading>
               <div className="vmenu-embed"><DeviceSizeControl value={deviceScale} readOnly={readOnly} onChange={changeDeviceScale} /></div>
+              <MenuHeading>Snapping</MenuHeading>
+              <div className="vmenu-embed"><SnapControls hasScale={!!pageScale} hint={hotkeys['snap.toggle'] || undefined} /></div>
             </>
           )}
           <MenuSep />

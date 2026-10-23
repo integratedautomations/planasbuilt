@@ -161,3 +161,11 @@
   touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
 }
 .viewer .nav-bar .icon-btn.active { background: var(--accent, #3b82f6); color: #fff; }
+
+/* Snap menu (bottom bar popover and phone menu) */
+.snap-menu { display: flex; flex-direction: column; gap: 2px; min-width: 200px; padding: 4px 2px; }
+.snap-row { display: flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; }
+.snap-row input[type='checkbox'] { width: 18px; height: 18px; }
+.snap-spacing input { width: 64px; }
+.snap-note { margin: 4px 0 0; }
+.nav-snap { padding: 8px 10px; }
