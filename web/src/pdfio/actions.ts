@@ -12,6 +12,7 @@ import { planImport } from './importPlan'
 import type { ImportPlan } from './importPlan'
 import type { KnownIds } from './importMap'
 import { buildReport } from './report'
+import { loadCompany } from '../settings/company'
 import { DEFAULT_REPORT_OPTIONS } from './reportOptions'
 import type { ReportOptions } from './reportOptions'
 import type { ReportPhoto } from './report'
@@ -79,8 +80,11 @@ export async function exportProjectReport(projectId: string, projectName: string
   }
   // Sections the project switched off stay out of the report; the logo is the project's own, else the company's.
   const sec = normalizeSettings(project?.settings).report.sections
+  const company = await loadCompany().catch(() => null)
   const allowed: ReportOptions = {
-    ...options, titlePage: options.titlePage && sec.title, includeSheets: options.includeSheets && sec.sheets,
+    ...options,
+    preparedBy: options.preparedBy.trim() || company?.prepared_by || '',
+    companyName: options.companyName.trim() || company?.name || '', titlePage: options.titlePage && sec.title, includeSheets: options.includeSheets && sec.sheets,
     includeDevices: options.includeDevices && sec.devices, photos: sec.photos ? options.photos : 'none',
     includeLegend: options.includeLegend && sec.legend, includeBom: options.includeBom && sec.bom, includeWiring: options.includeWiring && sec.wiring,
   }

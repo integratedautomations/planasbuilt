@@ -45,3 +45,17 @@ describe('page coordinate conversion', () => {
     expect([normRotation(-90), normRotation(450), normRotation(0), normRotation(180)]).toEqual([270, 90, 0, 180])
   })
 })
+
+import { relativeMatrix } from './coords'
+describe('relativeMatrix', () => {
+  it('cm(base) then cm(relative) equals cm(to)', () => {
+    const base = localMatrix({ llx: 0, lly: 0, width: 600, height: 400, rotation: 90 }, 120, 80, 35)
+    const to = localMatrix({ llx: 0, lly: 0, width: 600, height: 400, rotation: 90 }, 200, 50, 0)
+    const rel = relativeMatrix(base, to)
+    const [px, py] = [13, -7]
+    const viaRel = applyMatrix(base, ...applyMatrix(rel, px, py))
+    const direct = applyMatrix(to, px, py)
+    expect(viaRel[0]).toBeCloseTo(direct[0], 6)
+    expect(viaRel[1]).toBeCloseTo(direct[1], 6)
+  })
+})

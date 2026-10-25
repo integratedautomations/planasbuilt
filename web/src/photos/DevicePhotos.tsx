@@ -81,7 +81,7 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
     local: blobUrls.get(`${a.id}:${original ? 'original' : 'view'}`),
     saved: saved[a.id],
     unsynced: !!(a.pending || queued.has(a.id) || !online),
-    serverUrl: attachmentFileUrl(a.id, original ? 'original' : undefined, `${a.created_at}-${bump[a.id] ?? 0}`),
+    serverUrl: attachmentFileUrl(a.id, original ? 'original' : undefined, `${a.created_at}-${a.annotated_v ?? ''}-${bump[a.id] ?? 0}`),
   })
 
   const addFiles = async (files: FileList | null) => {
@@ -135,8 +135,8 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
           onDeleted={id => {
             const i = items.findIndex(a => a.id === id)
             const rest = items.filter(a => a.id !== id)
-            setItems(rest)
             setOpenId(rest.length ? rest[Math.min(i, rest.length - 1)].id : null)
+            setItems(rest)
           }} />
       )}
     </div>
@@ -163,6 +163,8 @@ function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, o
   const [orig, setOrig] = useState(false)
   const [annotating, setAnnotating] = useState(false)
   const [err, setErr] = useState('')
+  const [confirmDel, setConfirmDel] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const touch = useRef<{ x: number; y: number } | null>(null)
 
   const go = useCallback((d: number) => {
@@ -192,12 +194,13 @@ function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, o
   }
 
   const remove = async () => {
-    if (!window.confirm('Delete this photo? This cannot be undone.')) return
-    setErr('')
+    if (deleting) return
+    setErr(''); setDeleting(true)
     try {
       await queuePhotoDelete(a.id)
+      setConfirmDel(false)
       onDeleted(a.id)
-    } catch (e) { setErr((e as Error).message || 'Delete failed') }
+    } catch (e) { setErr((e as Error).message || 'Delete failed'); setDeleting(false) }
   }
 
   const src = srcFor(a, orig)
@@ -208,7 +211,7 @@ function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, o
         <span className="grow">{index + 1} / {items.length}</span>
         {a.has_annotation && <button className={orig ? 'on' : ''} onClick={() => setOrig(o => !o)}>{orig ? 'Showing original' : 'View original'}</button>}
         {!readOnly && <button onClick={() => setAnnotating(true)}>Annotate</button>}
-        {!readOnly && <button className="danger" onClick={remove}>Delete</button>}
+        {!readOnly && <button className="danger" onClick={() => setConfirmDel(true)}>Delete</button>}
         <button onClick={onClose}>Close</button>
       </div>
       <div className="pm-stage"
@@ -233,6 +236,13 @@ function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, o
         )}
       </div>
       {err && <div className="pm-caption" style={{ color: '#ff8787' }}>{err}</div>}
+      {confirmDel && (
+        <div className="pm-caption" role="alertdialog" aria-label="Confirm delete" style={{ position: 'absolute', left: 0, right: 0, top: 0, zIndex: 5, background: '#1b1b1f' }}>
+          <span className="grow">Delete this photo? This cannot be undone.</span>
+          <button onClick={() => setConfirmDel(false)} disabled={deleting}>Cancel</button>
+          <button className="danger" onClick={remove} disabled={deleting}>{deleting ? 'Deleting…' : 'Delete'}</button>
+        </div>
+      )}
       {annotating && (
         <PhotoAnnotator attachmentId={a.id} src={srcFor(a, true)} onClose={() => setAnnotating(false)}
           onSaved={blob => { setAnnotating(false); setOrig(false); onAnnotated(a.id, blob) }} />

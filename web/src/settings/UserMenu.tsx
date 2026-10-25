@@ -52,11 +52,11 @@ export function UserMenu() {
               {inviteErr && <span className="error small" role="alert">{inviteErr}</span>}
             </div>
           )}
-          <Link role="menuitem" to="/account"><Icon name="user" size={16} /> Account</Link>
-          {user.is_admin && <Link role="menuitem" to="/company"><Icon name="building" size={16} /> Company admin</Link>}
-          {!user.is_admin && <Link role="menuitem" to="/company/catalog"><Icon name="grid" size={16} /> Catalog</Link>}
-          {user.platform_admin && <Link role="menuitem" to="/platform"><Icon name="globe" size={16} /> Platform</Link>}
-          <button role="menuitem" onClick={signOut}>Sign out</button>
+          <Link role="menuitem" to="/account"><Icon name="user" size={18} /> Account</Link>
+          {user.is_admin && <Link role="menuitem" to="/company"><Icon name="building" size={18} /> Company admin</Link>}
+          {!user.is_admin && <Link role="menuitem" to="/company/catalog"><Icon name="grid" size={18} /> Catalog</Link>}
+          {user.platform_admin && <Link role="menuitem" to="/platform"><Icon name="globe" size={18} /> Platform</Link>}
+          <button role="menuitem" onClick={signOut}><Icon name="log-out" size={18} /> Sign out</button>
         </div>
       )}
     </div>

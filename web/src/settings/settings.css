@@ -46,7 +46,12 @@
   display: block; text-align: left; padding: 9px 12px; border: none; background: transparent; color: var(--text);
   border-radius: 6px; text-decoration: none; font: inherit; cursor: pointer; min-height: 0;
 }
+.user-menu-pop a, .user-menu-pop button { display: flex; align-items: center; gap: 10px; }
+.user-menu-pop svg { width: 18px; height: 18px; flex: 0 0 18px; color: var(--muted); }
 .user-menu-pop a:hover, .user-menu-pop button:hover { background: var(--surface-2); }
+.topbar .user-menu-pop .muted, .user-menu-pop .muted { color: var(--muted); }
+.user-menu-pop .user-menu-who { gap: 2px; }
+.user-menu-pop .user-menu-who .muted { word-break: break-all; }
 .user-menu-who { display: flex; flex-direction: column; padding: 8px 12px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 
 /* ---- Project and organization rules (status workflow, required fields, tags) ---- */

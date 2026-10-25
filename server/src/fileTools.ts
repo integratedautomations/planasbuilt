@@ -147,13 +147,19 @@ export async function registerFileTools(ctx: FileToolsContext) {
        FROM markups m JOIN documents d ON d.id = m.document_id
        LEFT JOIN symbol_sets ss ON ss.id = m.symbol_set_id LEFT JOIN device_types dt ON dt.id = m.device_type_id LEFT JOIN products pr ON pr.id = m.product_id
        WHERE d.project_id = $1 AND NOT m.deleted AND m.symbol_set_id IS NOT NULL ORDER BY d.name, m.page, m.tag, m.id`, [id])
-    const devices = (await visibleMarkups(access, rows)).map((r: any) => ({
-      plan: r.plan, page: r.page, tag: r.tag, symbol_set: r.symbol_set, device_type: r.device_type, status: r.status,
-      manufacturer: r.manufacturer, model: r.model, notes: r.text, photos: r.photos, fields: r.fields ?? {},
-    }))
-    const fieldKeys = [...new Set(devices.flatMap(d => Object.keys(d.fields)))].sort()
-    const head = ['plan', 'page', 'tag', 'symbol_set', 'device_type', 'status', 'manufacturer', 'model', 'notes', 'photos', ...fieldKeys]
-    const csv = '﻿' + [head, ...devices.map(d => [d.plan, d.page, d.tag, d.symbol_set, d.device_type, d.status, d.manufacturer, d.model, d.notes, d.photos, ...fieldKeys.map(k => d.fields[k])])]
+    const FIXED_FIELD_KEYS = new Set(['manufacturer', 'model', 'ip', 'mac', 'serial', 'room'])
+    const devices = (await visibleMarkups(access, rows)).map((r: any) => {
+      const f: Record<string, any> = r.fields ?? {}
+      return {
+        tag: r.tag, device_type: r.device_type, symbol_set: r.symbol_set, plan: r.plan, page: r.page, status: r.status,
+        manufacturer: r.manufacturer || f.manufacturer || '', model: r.model || f.model || '',
+        ip: f.ip ?? f.ip_address ?? '', mac: f.mac ?? '', serial: f.serial ?? f.serial_no ?? '',
+        room: f.room ?? f.area ?? '', notes: r.text, photos: r.photos, fields: f,
+      }
+    })
+    const fieldKeys = [...new Set(devices.flatMap(d => Object.keys(d.fields)))].filter(k => !FIXED_FIELD_KEYS.has(k)).sort()
+    const head = ['tag', 'type', 'set', 'plan', 'page', 'status', 'manufacturer', 'model', 'ip', 'mac', 'serial', 'room', 'notes', 'photos', ...fieldKeys]
+    const csv = '﻿' + [head, ...devices.map(d => [d.tag, d.device_type, d.symbol_set, d.plan, d.page, d.status, d.manufacturer, d.model, d.ip, d.mac, d.serial, d.room, d.notes, d.photos, ...fieldKeys.map(k => d.fields[k])])]
       .map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n'
     entries.push({ name: `${root}/devices.csv`, data: csv }, { name: `${root}/devices.json`, data: JSON.stringify({ project: names.project, company: names.company, exported_at: new Date().toISOString(), devices }, null, 2) })
 

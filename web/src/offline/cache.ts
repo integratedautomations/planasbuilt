@@ -17,7 +17,7 @@ import { cacheAllowed } from './cacheOwner'
 import { isForeign } from './owner'
 import { ackSnapshot, getSyncUser, mergeServerMarkups } from './sync'
 import { applyProjectSettings } from '../projectSettings'
-import { getActiveCompanyId, setActiveCompanyId, shouldAdoptOwner } from '../company/activeCompany'
+import { getActiveCompanyId, getSwitchGen, setActiveCompanyId, shouldAdoptOwner } from '../company/activeCompany'
 import { readScoped, replaceScoped, scopeId, stamp } from './companyScope'
 
 /** revisions are newest first. */
@@ -79,6 +79,7 @@ export const loadProjects = () => readThrough(
 
 export const loadProject = (id: string) => {
   const startedIn = getActiveCompanyId()
+  const gen = getSwitchGen()
   return readThrough(
   () => api<Project>(`/projects/${id}`),
   (p, company) => db.projects.put(stamp([p], company)[0]),
@@ -88,7 +89,7 @@ export const loadProject = (id: string) => {
   // A project belongs to one company: its catalog and settings are that company's, so follow it there.
   // The app listens for this change and remounts the pages, so the catalog and symbol sets reload for that company.
   const owner = r.data?.company_id
-  if (!r.fromCache && owner && shouldAdoptOwner(startedIn, getActiveCompanyId(), owner)) setActiveCompanyId(owner)
+  if (!r.fromCache && owner && shouldAdoptOwner(startedIn, getActiveCompanyId(), owner, gen)) setActiveCompanyId(owner)
   // The project's status list and rules apply everywhere statuses are shown, online or from the offline copy.
   applyProjectSettings(r.data?.settings)
   return r
@@ -291,11 +292,14 @@ export async function localPhotoUrl(id: string, variant: PhotoVariant): Promise<
 /** Best-effort: store the server's rendition of a photo so it can be shown offline later. */
 export async function cachePhotoView(a: Attachment): Promise<void> {
   const key = `${a.id}:view`
-  if (await db.photoBlobs.get(key)) return
+  const have = await db.photoBlobs.get(key)
+  // Keep the copy unless the server's annotated image changed since we cached it (and nothing local is queued for it).
+  if (have && (a.annotated_v === undefined || have.v === a.annotated_v || have.v === undefined && !a.has_annotation)) return
+  if (have && await db.outbox.where('targetId').equals(a.id).count()) return
   try {
     const res = await authFetch(attachmentFileUrl(a.id))
     if (!res.ok) return
-    await db.photoBlobs.put({ key, attachment_id: a.id, variant: 'view', blob: await res.blob(), cachedAt: Date.now() })
+    await db.photoBlobs.put({ key, attachment_id: a.id, variant: 'view', blob: await res.blob(), cachedAt: Date.now(), v: a.annotated_v })
   } catch { /* offline or storage full: it is only a cache */ }
 }
 

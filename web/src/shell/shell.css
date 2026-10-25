@@ -8,7 +8,8 @@ a.crumb:hover { text-decoration: underline; }
 .crumb-back:hover { background: rgb(255 255 255 / 0.14); }
 /* Desktop: the sub-bar dissolves into the top bar. Phone: it becomes a second row under the brand / switcher / avatar row. */
 .subbar { display: contents; }
-.subbar-catalog { display: none; }
+.subbar-catalog { display: inline-flex; align-items: center; flex-shrink: 0; padding: 6px 10px; border-radius: var(--radius); color: var(--chrome-text); font-weight: 600; font-size: 14px; text-decoration: none; }
+.subbar-catalog:hover { background: rgb(255 255 255 / 0.14); }
 @media (max-width: 640px) {
   .topbar:has(> .subbar) { flex-wrap: wrap; row-gap: 0; }
   .topbar > .subbar { display: flex; align-items: center; gap: 6px; order: 10; flex: 0 0 100%; min-width: 0; min-height: 44px; margin: 4px -10px -8px; padding: 0 10px; border-top: 1px solid rgb(255 255 255 / 0.14); }
@@ -19,13 +20,14 @@ a.crumb:hover { text-decoration: underline; }
   .crumb-item:not(.current) { max-width: 28%; }
   .crumb-item.current { flex: 1 1 0; }
   .crumb-item .crumb { font-size: 14px; }
-  .subbar-catalog { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-height: 44px; padding: 0 12px; margin-right: -6px; color: var(--chrome-text); font-weight: 600; font-size: 14px; text-decoration: none; }
-  .subbar-catalog:hover { text-decoration: underline; }
+  .subbar-catalog { justify-content: center; min-height: 44px; padding: 0 12px; margin-right: -6px; border-radius: 0; }
+  .subbar-catalog:hover { background: none; text-decoration: underline; }
 }
 
-.content.content-wide { max-width: 1100px; }
+.content.content-wide, .content.content-default { max-width: calc(var(--page-w) + 32px); }
 .content.content-full { max-width: none; }
 .content-wide, .content-default { width: 100%; }
+html:has(.content) { scrollbar-gutter: stable; }
 
 /* One tab style, for buttons and links. */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
@@ -37,7 +39,7 @@ a.crumb:hover { text-decoration: underline; }
 .tabs .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 /* Side-panel tabs in the viewer keep their compact look (they use plain buttons, not .tab). */
 .project-tabs-bar { background: var(--surface); border-bottom: 1px solid var(--border); }
-.project-tabs-bar .tabs { max-width: 1100px; margin: 0 auto; border-bottom: none; padding: 0 8px; }
+.project-tabs-bar .tabs { max-width: calc(var(--page-w) + 32px); margin: 0 auto; border-bottom: none; padding: 0; }
 .project-body { width: 100%; }
 
 /* Sectioned pages (Account, Company admin, Platform, project Settings): sidebar on desktop, list -> detail on phone. */
@@ -74,9 +76,7 @@ a.crumb:hover { text-decoration: underline; }
 /* Project pages: the shell gives a full-width column; each page picks its own readable width. */
 .content.project-content { padding-top: 16px; }
 .project-body { margin: 0 auto; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.pb-default { max-width: 860px; }
-.pb-wide { max-width: 1100px; }
-.pb-full { max-width: none; }
+.pb-default, .pb-wide, .pb-full { max-width: var(--page-w); }
 
 /* Cards of unequal height flow into columns instead of leaving holes in a grid. */
 .masonry { columns: 340px; column-gap: 16px; }
@@ -87,3 +87,57 @@ a.crumb:hover { text-decoration: underline; }
 .panel { min-width: 0; }
 .section-body .panel .row.wrap > h2:first-child { display: none; }
 .tabs .tab { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---- Phone tab strips: edge fade as a scroll hint ---- */
+@media (max-width: 640px) {
+  .tabs { -webkit-mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 28px), transparent 100%); mask-image: linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 28px), transparent 100%); }
+  .tabs::-webkit-scrollbar { display: none; }
+  .topbar .pp-complete { min-width: 36px; padding: 6px 10px; justify-content: center; }
+}
+
+/* ---- Empty state (icon + one sentence) ---- */
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 24px 12px; text-align: center; color: var(--muted); }
+.empty-state strong { color: var(--text); }
+
+/* ---- "More" actions menu ---- */
+.more-menu { position: relative; }
+.more-menu-btn { list-style: none; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 8px 12px; cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
+.more-menu-btn::-webkit-details-marker { display: none; }
+.more-menu-btn:hover { background: var(--surface-2); }
+.more-menu-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-popover); min-width: 220px; display: flex; flex-direction: column; padding: 4px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.28); }
+.more-menu-pop button { text-align: left; border: none; background: transparent; min-height: 40px; }
+.more-menu-pop button:hover:not(:disabled) { background: var(--surface-2); }
+
+/* ---- Project Members: add rows stack on phones ---- */
+.add-member-row > * { min-width: 0; }
+.add-member-row select, .add-member-row .role-select { flex: 1 1 160px; max-width: 100%; }
+.add-member-row .role-select select { width: 100%; }
+@media (max-width: 640px) {
+  .add-member-row { flex-direction: column; align-items: stretch; }
+  .add-member-row select, .add-member-row input, .add-member-row .role-select, .add-member-row button { width: 100%; max-width: none; flex: none; }
+  .members-panel .table-wrap { overflow-x: auto; }
+}
+
+/* ---- Preferences: one size for field labels, checkbox labels and number inputs ---- */
+.settings-card .field, .settings-card .snap-row { font-size: 14px; }
+.settings-card .snap-row { min-height: 32px; gap: 8px; }
+.settings-card .snap-row.snap-field { gap: 6px; min-height: 0; }
+.settings-card .snap-row.snap-field > span { font-size: 14px; }
+.settings-card .snap-row.snap-field input { width: 100%; max-width: none; min-width: 0; color: var(--text); }
+.settings-card .snap-row.snap-field input::placeholder { color: var(--text); opacity: 0.6; }
+.settings-card .snap-row.snap-spacing input { width: 100%; }
+
+/* ---- BOM on phones: each line becomes a card ---- */
+@media (max-width: 600px) {
+  .bom-lines, .bom-lines tbody, .bom-lines tfoot, .bom-lines tr, .bom-lines td { display: block; }
+  .bom-lines thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .bom-lines tr:not(.section-row) { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+  .bom-lines td { padding: 0; border: none; white-space: normal; overflow-wrap: anywhere; }
+  .bom-lines td:first-child { grid-column: 1 / -1; padding-bottom: 4px; }
+  .bom-lines td.num { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+  .bom-lines td.num::before { content: attr(data-label); color: var(--muted); font-family: var(--font-body); }
+  .bom-lines td:empty { display: none; }
+  .bom-lines .section-row td { padding: 6px 10px; border-radius: var(--radius); }
+  .bom-lines tfoot tr { background: var(--surface-2); }
+  .bom-lines tfoot td { border-top: none; }
+}

@@ -1,11 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { NavLink, Outlet, useParams } from 'react-router-dom'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { api } from '../api'
 import type { Project, User } from '../api'
 import { loadProject } from '../offline/cache'
 import { Icon } from '../ui/Icon'
 import { lockedFor } from '../projectSettings'
 import { can } from '../roles'
+import { useActiveTabIntoView } from '../ui/useActiveTabIntoView'
 import { PageShell } from './PageShell'
 import { projectTabs } from './projectTabs'
 
@@ -16,8 +17,10 @@ export const useProject = () => { const c = useContext(Ctx); if (!c) throw new E
 /** The tab strip: real links, so the browser's back button, reload and deep links all land on the same tab. */
 export function ProjectTabs({ projectId, canManage, platformAdmin, canSeeCosts }: { projectId: string; canManage: boolean; platformAdmin?: boolean; canSeeCosts?: boolean }) {
   const tabs = projectTabs(projectId, { canManage, platformAdmin, canSeeCosts })
+  const ref = useRef<HTMLElement>(null)
+  useActiveTabIntoView(ref, useLocation().pathname)
   return (
-    <nav className="tabs" aria-label="Project">
+    <nav className="tabs" aria-label="Project" ref={ref}>
       {tabs.map(t => (
         <NavLink key={t.id} to={t.to} end={t.end} className={({ isActive }) => `tab${isActive ? ' active' : ''}`} aria-current={undefined}>{t.label}</NavLink>
       ))}
@@ -52,10 +55,11 @@ export function ProjectShell({ user }: { user: User }) {
     <>
       {project?.status === 'completed' && <span className="muted small hide-narrow">Completed</span>}
       {canEdit && project && (
-        <button className="pp-complete" onClick={toggleComplete}>
+        <button className="pp-complete" onClick={toggleComplete}
+          aria-label={project.status === 'completed' ? 'Reopen project' : 'Mark project complete'} title={project.status === 'completed' ? 'Reopen project' : 'Mark project complete'}>
           {project.status === 'completed'
-            ? <><span className="hide-narrow">Reopen project</span><span className="show-narrow">Reopen</span></>
-            : <><span className="hide-narrow">Mark complete</span><span className="show-narrow" aria-label="Mark complete" title="Mark complete"><Icon name="check" size={16} /></span></>}
+            ? <><span className="hide-narrow">Reopen project</span><span className="show-narrow"><Icon name="undo" size={16} /></span></>
+            : <><span className="hide-narrow">Mark complete</span><span className="show-narrow"><Icon name="check" size={16} /></span></>}
         </button>
       )}
     </>

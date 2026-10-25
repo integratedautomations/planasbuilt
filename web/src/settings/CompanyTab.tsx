@@ -11,6 +11,7 @@ import { ProjectRulesForm } from './ProjectRulesForm'
 import { setCompanyCache } from './company'
 import type { AdminSettings } from './types'
 import { useAdminSettings } from './useAdminSettings'
+import { useSession } from './session'
 
 const PLACEHOLDERS = ['{name}', '{inviter}', '{company}', '{link}', '{days}']
 const SAMPLE = { name: 'Alex', inviter: 'Sam', company: 'Your Company', link: 'https://example.com/invite/...', days: '7' }
@@ -25,6 +26,7 @@ const rulesOf = (raw: unknown): ProjectRules => {
 /** Company profile and branding, plus what new projects and invitations start with. One form, one Save bar. */
 export function CompanyTab() {
   const { settings, setSettings, error, save } = useAdminSettings()
+  const session = useSession()
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
   const [logoVersion, setLogoVersion] = useState(0)
@@ -50,6 +52,7 @@ export function CompanyTab() {
         project_defaults: s.project_defaults,
       })
       setMsg('Saved')
+      void session?.refreshCompanies() // the header switcher shows the new company name
     } catch (e2) { setErr((e2 as Error).message) }
   }
 

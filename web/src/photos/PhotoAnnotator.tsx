@@ -168,7 +168,11 @@ export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: 
       const ctx = c.getContext('2d')!
       ctx.drawImage(img, 0, 0)
       ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.textBaseline = 'top'
-      for (const s of shapes) drawShape(ctx, s)
+      const final = [...shapes]
+      const d = draftRef.current
+      if (d) final.push(d)
+      if (textAt && textVal.trim()) final.push({ kind: 'text', color, width: 28 * k * (WIDTHS[wIdx][1] / 6), points: [textAt.x, textAt.y], text: textVal.trim() })
+      for (const s of final) drawShape(ctx, s)
       const blob = await new Promise<Blob>((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('Export failed')), 'image/jpeg', 0.9))
       await queuePhotoAnnotated(attachmentId, blob)
       onSaved(blob)

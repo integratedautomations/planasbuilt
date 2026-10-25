@@ -34,7 +34,7 @@ export function SectionLayout({ base, title, crumbs, sections, width = 'wide' }:
   const current = sections.find(s => s.id === r.current)!
   useEffect(() => {
     const el = stripRef.current?.querySelector<HTMLElement>('a.active')
-    el?.scrollIntoView?.({ inline: 'center', block: 'nearest' })
+    el?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
   }, [r.current])
   if (r.redirect) return <Navigate to={base} replace />
   return (

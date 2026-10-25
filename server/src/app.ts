@@ -2177,7 +2177,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   const PHOTO_MAX = 15 * 1024 * 1024
   /** Photos obey the smaller of their own cap and the organization's upload limit. */
   const photoMax = (companyId?: string | null) => Math.min(PHOTO_MAX, uploadBytes(companyId))
-  const ATT_COLUMNS = 'id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation'
+  const ATT_COLUMNS = "id, markup_id, caption, width, height, created_at, created_by, (annotated_key IS NOT NULL) AS has_annotation, md5(coalesce(annotated_key, '')) AS annotated_v"
 
   /** Deletes a stored file only when nothing else (a revision, a frozen snapshot, a photo, a setting) still points at it. */
   async function releaseFiles(keys: (string | null | undefined)[], companyId?: string | null) {

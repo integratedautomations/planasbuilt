@@ -1,5 +1,5 @@
 import { MountBadge } from '../catalog/MountBadge'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, post } from '../api'
 import type { User } from '../api'
 import { BtxImport } from '../catalog/BtxImport'
@@ -15,6 +15,7 @@ import { IconPicker } from '../catalog/icons/IconPicker'
 import { moveBefore } from '../prefs/chest'
 import type { DeviceType } from '../catalog/types'
 import { useCatalog } from '../catalog/useCatalog'
+import { Icon } from '../ui/Icon'
 import type { SymbolSet } from '../markups/types'
 import { HARDWARE_FIELDS } from '../markups/types'
 
@@ -38,6 +39,13 @@ export function CatalogPanel({ user }: { user: User }) {
   const [error, setError] = useState('')
   const { data, catalog, reload } = useCatalog()
   const admin = user.is_admin
+  const moreRef = useRef<HTMLDetailsElement>(null)
+  const closeMore = () => { if (moreRef.current) moreRef.current.open = false }
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => { if (moreRef.current?.open && !moreRef.current.contains(e.target as Node)) closeMore() }
+    window.addEventListener('pointerdown', onDown)
+    return () => window.removeEventListener('pointerdown', onDown)
+  }, [])
 
   const loadSets = () => api<SymbolSet[]>('/symbol-sets').then(setSets).catch(e => setError(e.message))
   useEffect(() => { void loadSets() }, [])
@@ -90,10 +98,17 @@ export function CatalogPanel({ user }: { user: User }) {
         <div className="row wrap">
           <h2>Catalog</h2>
           <span className="spacer" />
-          {catalog.canSeeCosts && <button onClick={() => exportCatalogExcel(data, sets).catch(e => setError(e.message))} title="Download the catalog as an Excel workbook">Export Excel</button>}
-          {admin && <button onClick={() => setDialog('excel')}>Import Excel</button>}
-          {admin && <button onClick={() => setDialog('btx')} title="Convert a Bluebeam Revu tool set into device types">Import Revu .btx</button>}
-          {admin && <button onClick={() => setDialog('library')} title="Add the built-in symbol sets and device types, or fill in missing icons and defaults. Never deletes anything.">Install / update standard library</button>}
+          {(catalog.canSeeCosts || admin) && (
+            <details className="more-menu" ref={moreRef}>
+              <summary className="more-menu-btn">More <Icon name="chevron-down" size={14} /></summary>
+              <div className="more-menu-pop">
+                {catalog.canSeeCosts && <button onClick={() => { closeMore(); exportCatalogExcel(data, sets).catch(e => setError(e.message)) }} title="Download the catalog as an Excel workbook">Export Excel</button>}
+                {admin && <button onClick={() => { closeMore(); setDialog('excel') }}>Import Excel</button>}
+                {admin && <button onClick={() => { closeMore(); setDialog('btx') }} title="Convert a Bluebeam Revu tool set into device types">Import Revu .btx</button>}
+                {admin && <button onClick={() => { closeMore(); setDialog('library') }} title="Add the built-in symbol sets and device types, or fill in missing icons and defaults. Never deletes anything.">Standard library</button>}
+              </div>
+            </details>
+          )}
           {admin && <button className="primary" onClick={() => setDraft({ ...EMPTY })}>New set</button>}
         </div>
         {error && <div className="error">{error}</div>}

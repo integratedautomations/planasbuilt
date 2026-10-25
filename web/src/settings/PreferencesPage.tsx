@@ -163,10 +163,11 @@ export function NotificationsPanel() {
     <div className="panel-main">
       <div className="masonry">
           <Section id="pref-notifications" title="Notifications">
-            <p className="muted small">Coming soon: there is no notification system yet, so these cannot be switched on.</p>
-            <Check label="Someone edits my plan" checked={false} disabled onChange={() => {}} />
-            <Check label="A backup fails" checked={false} disabled onChange={() => {}} />
-            <Check label="I am added to a project" checked={false} disabled onChange={() => {}} />
+            <div className="empty-state" role="status">
+              <Icon name="bell" size={28} />
+              <strong>Coming soon</strong>
+              <span className="muted small">Notifications for plan edits, failed backups and new projects are not available yet.</span>
+            </div>
           </Section>
 
       </div>

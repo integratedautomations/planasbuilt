@@ -340,6 +340,9 @@ describe('project folder zip', () => {
     const csv = files.get('HQ Tower East/devices.csv')!.toString('utf8')
     expect(csv.charCodeAt(0)).toBe(0xfeff)
     expect(csv).toContain('CAM-77')
+    const header = csv.slice(1, csv.indexOf('\r\n')).split(',')
+    expect(header.slice(0, 13)).toEqual(['tag', 'type', 'set', 'plan', 'page', 'status', 'manufacturer', 'model', 'ip', 'mac', 'serial', 'room', 'notes'])
+    expect(new Set(header).size).toBe(header.length) // no duplicated columns
     expect(csv).toContain('Dome Camera')
     const json = JSON.parse(files.get('HQ Tower East/devices.json')!.toString('utf8'))
     expect(json.devices[0]).toMatchObject({ tag: 'CAM-77', device_type: 'Dome Camera', plan: 'Ground floor' })

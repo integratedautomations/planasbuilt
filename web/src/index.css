@@ -32,6 +32,8 @@
   --info: #1971c2;
   --canvas-bg: #4A5E77;
   --radius: 8px;
+  /* One content column for every page: heading, tab bar and body line up. Wide tables scroll inside it. */
+  --page-w: 1200px;
   /* control height: [data-density] on the app root sets it (prefs/density.ts); the viewer uses it */
   --h-btn: 36px;
   /* Layering: popovers sit above page chrome, modals above popovers, toasts above everything. */
@@ -117,8 +119,8 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .topbar .icon-btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.12); }
 .topbar .icon-btn.active { color: #fff; background: rgb(255 255 255 / 0.18); }
 .topbar .divider { background: rgb(255 255 255 / 0.25); }
-.company-switcher { max-width: 190px; min-width: 0; text-overflow: ellipsis; }
-@media (max-width: 520px) { .company-switcher { max-width: 32vw; flex: 0 1 auto; min-height: 36px; padding: 4px 6px; font-size: 13px; } }
+.company-switcher { max-width: 260px; min-width: 0; text-overflow: ellipsis; }
+@media (max-width: 520px) { .company-switcher { max-width: 46vw; flex: 0 1 auto; min-height: 36px; padding: 4px 6px; font-size: 13px; } }
 .crumb { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- Project page: plan cards, menus, responsive toolbar ---- */
@@ -152,7 +154,7 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
   .topbar { gap: 6px; padding: 8px 10px; }
   .topbar .pp-complete { white-space: nowrap; flex-shrink: 0; }
 }
-.content { width: 100%; max-width: 860px; margin: 0 auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 16px; }
+.content { width: 100%; max-width: calc(var(--page-w) + 32px); margin: 0 auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 16px; }
 .content .row input { flex: 1; min-width: 0; }
 
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -175,7 +177,7 @@ a.list-item:hover { border-color: var(--accent); }
 .icon-btn { min-width: 40px; padding: 6px 10px; display: inline-grid; place-items: center; font-size: 18px; line-height: 1; border-color: transparent; background: transparent; border-radius: var(--radius); }
 .page-indicator { display: flex; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
 .page-indicator .muted { white-space: nowrap; }
-.page-input { width: 60px; min-width: 60px; text-align: center; padding: 6px; }
+.page-input { color: var(--text); opacity: 1; -webkit-text-fill-color: currentColor; width: 60px; min-width: 60px; text-align: center; padding: 6px; }
 .zoom-label { min-width: 64px; font-variant-numeric: tabular-nums; }
 .divider { width: 1px; align-self: stretch; background: var(--border); margin: 4px; }
 .viewer-body { flex: 1; display: flex; min-height: 0; }
@@ -604,10 +606,9 @@ input.invalid { border-color: var(--danger); }
 .icon-pick-row input[type="file"] { flex: 1; min-width: 0; }
 
 /* Catalog page: fluid, full width */
-.content.content-wide { max-width: none; padding: 16px clamp(12px, 2.5vw, 40px); }
-.catalog-grid { grid-template-columns: minmax(200px, 18vw) minmax(0, 1fr); }
+.catalog-grid { grid-template-columns: minmax(220px, 22%) minmax(0, 1fr); }
 .catalog-grid > section { min-width: 0; }
-.catalog-grid > nav { position: sticky; top: 8px; max-height: calc(100vh - 90px); overflow-y: auto; }
+.catalog-grid > nav { position: static; max-height: none; overflow: visible; }
 .catalog-nav button { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .product-table { min-width: 900px; }
 .product-table input:not(.num):not([type="checkbox"]) { min-width: 110px; }
@@ -618,7 +619,6 @@ input.invalid { border-color: var(--danger); }
 .type-handle { cursor: grab; display: grid; place-items: center; width: 28px; color: var(--muted); user-select: none; }
 .type-move { display: flex; flex-direction: column; justify-content: center; gap: 2px; }
 .type-move button { padding: 0 8px; min-height: 22px; line-height: 1; }
-@media (max-width: 1100px) { .catalog-grid { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); } }
 @media (max-width: 800px) { .catalog-grid { grid-template-columns: minmax(0, 1fr); } .catalog-grid > nav { position: static; max-height: none; } }
 
 .name-modal form.report-dialog { width: min(560px, 100%); max-height: 92vh; overflow-y: auto; }
@@ -656,7 +656,7 @@ input.invalid { border-color: var(--danger); }
 .mount-seg button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px 4px 8px; }
 
 /* Project roles */
-.role-select { display: inline-flex; flex-direction: column; gap: 2px; max-width: 320px; }
+.role-select { display: inline-flex; flex-direction: column; gap: 2px; max-width: 320px; min-width: 0; }
 .role-desc { white-space: normal; }
 .scope-list { display: flex; flex-wrap: wrap; gap: 4px 16px; }
 

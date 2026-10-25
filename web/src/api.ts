@@ -121,6 +121,8 @@ export type RevisionUpload = DocumentRevision & { orphaned_markups: number; orph
 export interface Attachment {
   id: string; markup_id: string; caption: string; width: number; height: number
   created_at: string; created_by: string; has_annotation: boolean
+  /** Changes whenever the annotated image is replaced (cache-buster). */
+  annotated_v?: string
 }
 export const attachmentFileUrl = (id: string, variant?: 'original' | 'annotated', v?: string | number) =>
   `/api/attachments/${id}/file?` + [variant ? `variant=${variant}` : '', v !== undefined ? `v=${encodeURIComponent(String(v))}` : ''].filter(Boolean).join('&')

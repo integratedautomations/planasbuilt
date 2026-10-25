@@ -69,3 +69,17 @@ export function boundsOf(points: [number, number][]): [number, number, number, n
   for (const [x, y] of points) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y) }
   return [x0, y0, x1, y1]
 }
+
+/** `to` expressed relative to `base`: `cm(base)` followed by `cm(relativeMatrix(base, to))` has the same effect as `cm(to)` alone. */
+export function relativeMatrix(base: Matrix, to: Matrix): Matrix {
+  const [a, b, c, d, e, f] = base
+  const det = a * d - b * c || 1
+  const ia = d / det, ib = -b / det, ic = -c / det, id = a / det
+  const ie = (c * f - d * e) / det, iff = (b * e - a * f) / det
+  const [ta, tb, tc, td, te, tf] = to
+  return [
+    ia * ta + ic * tb, ib * ta + id * tb,
+    ia * tc + ic * td, ib * tc + id * td,
+    ia * te + ic * tf + ie, ib * te + id * tf + iff,
+  ]
+}

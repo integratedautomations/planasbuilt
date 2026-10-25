@@ -4,6 +4,7 @@ import type { CompanyRole } from '../roles'
 import { createCompany, listCompanies, listMembers, patchCompany, patchMember, putMember, removeMember } from '../company/api'
 import type { CompanyMember, CompanyRow } from '../company/api'
 import { useSession } from './session'
+import { useConfirm } from '../ui/ConfirmDialog'
 
 /** Platform admins: every company, create / rename / archive, and who belongs to each. */
 export function CompaniesPanel() {
@@ -95,6 +96,7 @@ function CompanyCard({ c, open, onToggle, onChanged, onError }: {
 
 function CompanyMembers({ companyId, onError, onChanged }: { companyId: string; onError: (m: string) => void; onChanged: () => Promise<void> }) {
   const [members, setMembers] = useState<CompanyMember[] | null>(null)
+  const { ask, dialog } = useConfirm()
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<CompanyRole>('member')
   const [canCreate, setCanCreate] = useState(false)
@@ -104,6 +106,7 @@ function CompanyMembers({ companyId, onError, onChanged }: { companyId: string; 
 
   return (
     <div>
+      {dialog}
       <h4>Members</h4>
       {members === null ? <p className="muted">Loading…</p> : (
         <div className="table-wrap">
@@ -126,7 +129,7 @@ function CompanyMembers({ companyId, onError, onChanged }: { companyId: string; 
                       onChange={e => run(() => patchMember(companyId, m.user_id, { can_create_projects: e.target.checked }))} />
                   </td>
                   <td className="num">
-                    <button className="danger" onClick={() => { if (confirm(`Remove ${m.name} from this company?`)) void run(() => removeMember(companyId, m.user_id)) }}>Remove</button>
+                    <button className="danger" onClick={async () => { if (await ask(`Remove ${m.name} from this company?`, 'Remove')) void run(() => removeMember(companyId, m.user_id)) }}>Remove</button>
                   </td>
                 </tr>
               ))}

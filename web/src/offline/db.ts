@@ -30,7 +30,7 @@ export type AttachmentRow = Attachment & { pending?: boolean }
  *  - 'view': what the grid/viewer shows (annotated if any, else original); also filled as a cache of server photos
  */
 export type PhotoVariant = 'original' | 'annotated' | 'view'
-export interface PhotoBlobRow { key: string; attachment_id: string; variant: PhotoVariant; blob: Blob; cachedAt: number }
+export interface PhotoBlobRow { key: string; attachment_id: string; variant: PhotoVariant; blob: Blob; cachedAt: number; v?: string }
 
 export type OutboxKind =
   | 'markup_put' | 'markup_delete'

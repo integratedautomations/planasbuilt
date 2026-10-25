@@ -1090,23 +1090,31 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           <Group key={`${p.clientId}:vp`} x={p.viewport.x} y={p.viewport.y} listening={false}>
             <Rect width={p.viewport.w} height={p.viewport.h} stroke={p.color} strokeWidth={1.5 / zoom} dash={[8 / zoom, 5 / zoom]} opacity={0.5} />
             <Group scaleX={1 / zoom} scaleY={1 / zoom}>
-              <Label opacity={0.7}>
+              {/* Keep the name on the page when their view starts beyond its edge */}
+              <Label opacity={0.7} x={Math.max(0, -p.viewport.x) * zoom} y={Math.max(0, -p.viewport.y) * zoom}>
                 <Tag fill={p.color} />
                 <Text text={p.name} fill="#fff" fontSize={10} padding={2} />
               </Label>
             </Group>
           </Group>
         ))}
-        {peers?.map(p => general.showCursors && p.cursor && (
+        {peers?.map(p => general.showCursors && p.cursor && (() => {
+          // Keep the name label inside the stage: flip to the other side of the cursor near an edge
+          const lw = Math.min(160, p.name.length * 6.5 + 6)
+          const sx = p.cursor.x * zoom, sy = p.cursor.y * zoom
+          const flipX = sx + 12 + lw > width && sx - 12 - lw >= 0
+          const flipY = sy + 18 + 18 > height && sy - 18 - 18 >= 0
+          return (
           // Sized in screen pixels: the group is scaled by 1/zoom
           <Group key={p.clientId} x={p.cursor.x} y={p.cursor.y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
             <Line points={[0, 0, 0, 16, 4, 12.5, 7.5, 19, 10.5, 17.5, 7, 11.5, 12, 11]} closed fill={p.color} stroke="#fff" strokeWidth={1} lineJoin="round" />
-            <Label x={12} y={18}>
+            <Label x={flipX ? -12 - lw : 12} y={flipY ? -18 - 18 + 14 : 18}>
               <Tag fill={p.color} cornerRadius={3} />
-              <Text text={p.name} fill="#fff" fontSize={11} padding={3} />
+              <Text text={p.name} fill="#fff" fontSize={11} padding={3} width={lw} ellipsis wrap="none" />
             </Label>
           </Group>
-        ))}
+          )
+        })())}
         <Transformer ref={trRef} rotateEnabled keepRatio={selected.length > 0 && selected.every(m => m.type === 'device')} ignoreStroke flipEnabled={false}
           rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]} rotationSnapTolerance={snapSettings.on && snapSettings.align ? 5 : 4}
           anchorSize={11} anchorCornerRadius={2} borderStroke={REDLINE} anchorStroke={REDLINE}

@@ -7,7 +7,7 @@ import type { LegendRow } from '../markups/legend'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { BoxGeometry, Markup, PathGeometry, SymbolSet } from '../markups/types'
-import { applyMatrix, boundsOf, localMatrix, localToDisplay } from './coords'
+import { applyMatrix, boundsOf, localMatrix, localToDisplay, relativeMatrix } from './coords'
 import type { Matrix, PageBox } from './coords'
 import { hexToRgb, Ops, wrapText } from './stream'
 import type { ExtGState, RGB } from './stream'
@@ -318,7 +318,8 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
           const dc = localToDisplay(b.x, b.y, b.rotation || 0)(cx, cy)
           const CM = localMatrix(box, dc.x, dc.y, 0)
           const poly = sectorPoints(rangePx(fov, ctx.ppf), fov.angle, fov.direction)
-          ops.save().cm(CM).gs('GC', { ca: (fov.opacity ?? COVERAGE_OPACITY) * opacity, CA: opacity })
+          // The stream is already inside the device's own matrix (M): express the page-space matrix relative to it.
+          ops.save().cm(relativeMatrix(M, CM)).gs('GC', { ca: (fov.opacity ?? COVERAGE_OPACITY) * opacity, CA: opacity })
           ops.fill(color).stroke(color).width(1.5).dash(undefined).poly(poly, true).paint(true, true)
           ops.restore()
           for (let i = 0; i + 1 < poly.length; i += 2) extra.push(applyMatrix(CM, poly[i], poly[i + 1]))

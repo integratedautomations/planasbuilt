@@ -3,6 +3,7 @@ import { api } from '../api'
 import type { LinkResult, Member, Role, User } from '../api'
 import { EMPTY_SCOPE, ROLE_INFO } from '../roles'
 import type { Scope } from '../roles'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { CopyLink } from './CopyLink'
 import { RoleSelect, ScopePicker } from './RoleSelect'
 
@@ -29,6 +30,7 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
     if (canManage) api<Person[]>('/users/directory').then(setPeople).catch(() => {})
   }, [reload, canManage])
 
+  const { ask, dialog } = useConfirm()
   async function run(fn: () => Promise<unknown>) {
     setError('')
     try { await fn(); await reload() } catch (e) { setError((e as Error).message) }
@@ -38,8 +40,8 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
     run(() => api(`/projects/${projectId}/members`, { method: 'PUT', body: JSON.stringify({ email: m.email, role }) }))
   const saveScope = (m: Row, scope: Scope) =>
     run(async () => { await api(`/projects/${projectId}/members`, { method: 'PUT', body: JSON.stringify({ email: m.email, role: m.role, scope }) }); setScopeOf(null) })
-  const remove = (m: Row) => {
-    if (confirm(`Remove ${m.name} from this project?`)) void run(() => api(`/projects/${projectId}/members/${m.id}`, { method: 'DELETE' }))
+  const remove = async (m: Row) => {
+    if (await ask(`Remove ${m.name} from this project?`, 'Remove')) void run(() => api(`/projects/${projectId}/members/${m.id}`, { method: 'DELETE' }))
   }
   const addExisting = (e: FormEvent) => {
     e.preventDefault()
@@ -62,6 +64,7 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
 
   return (
     <section className="members-panel">
+      {dialog}
       <div className="table-wrap">
         <table className="data-table">
           <thead><tr><th>Name</th><th>Email</th><th>Role</th>{canManage && <th />}</tr></thead>
@@ -99,7 +102,7 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
         <div className="settings-grid">
           <form className="card settings-card" onSubmit={addExisting}>
             <h4>Add an existing user</h4>
-            <div className="row wrap">
+            <div className="row wrap add-member-row">
               <select value={pick} aria-label="User to add" onChange={e => setPick(e.target.value)}>
                 <option value="">Choose a person…</option>
                 {available.map(p => <option key={p.id} value={p.id}>{p.name} ({p.email})</option>)}
@@ -111,7 +114,7 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
           </form>
           <form className="card settings-card" onSubmit={sendInvite}>
             <h4>Invite someone new</h4>
-            <div className="row wrap">
+            <div className="row wrap add-member-row">
               <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)} required />
               <RoleSelect value={inviteRole} onChange={setInviteRole} />
               <button className="primary">Create invite</button>

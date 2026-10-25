@@ -5,3 +5,4 @@
 .wiring-qa { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
 .link-btn { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
 @media (max-width: 640px) { .wiring-pages { overflow-x: auto; } .wiring-svg { min-width: 900px; } }
+.wiring-empty { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }

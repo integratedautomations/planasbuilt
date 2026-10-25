@@ -96,12 +96,21 @@ export function WiringPage({ user }: { user: User }) {
           {wiring && (
             <p className="muted small">
               {wiring.counts.devices} device{wiring.counts.devices === 1 ? '' : 's'}, {wiring.counts.hubs} hub{wiring.counts.hubs === 1 ? '' : 's'}, {wiring.counts.cables} cable run{wiring.counts.cables === 1 ? '' : 's'}.
-              Hubs are panels, controllers, switches, recorders, power supplies and racks. Click a device to open it on its plan.
+              Hubs are panels, controllers, switches, recorders, power supplies and racks.{wiring.hubs.length > 0 && ' Click a device to open it on its plan.'}
             </p>
           )}
-          {wiring && wiring.hubs.length === 0 && <p className="muted">No cabled hubs yet. Draw cable runs with the Cable tool: ends that snap to a device centre lock to that device.</p>}
+          {wiring && wiring.hubs.length === 0 && (
+            <div className="wiring-empty" role="status">
+              <strong>{wiring.counts.cables > 0 ? 'No riser to show yet' : 'No cable runs yet'}</strong>
+              <span className="muted">
+                {wiring.counts.cables > 0
+                  ? `${wiring.counts.cables} cable run${wiring.counts.cables === 1 ? '' : 's'} drawn, but none connect to a panel or switch. Connect a run to a hub (panel, controller, switch, recorder or power supply) and it appears here.`
+                  : 'Draw cable runs with the Cable tool. Ends that snap to a device centre lock to that device.'}
+              </span>
+            </div>
+          )}
           <div className="wiring-pages">
-            {pages.map((p, i) => <RiserSvg key={i} page={p} catalog={catalog} symbolSets={setMap} onDevice={openOnPlan} />)}
+            {wiring && wiring.hubs.length > 0 && pages.map((p, i) => <RiserSvg key={i} page={p} catalog={catalog} symbolSets={setMap} onDevice={openOnPlan} />)}
           </div>
           {wiring && (wiring.notConnected.devices.length > 0 || wiring.notConnected.cables.length > 0) && (
             <section className="wiring-qa" aria-label="Not connected">

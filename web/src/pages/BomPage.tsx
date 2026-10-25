@@ -115,7 +115,7 @@ export function BomPage({ user }: { user: User }) {
         )}
         {bom.lines.length === 0 ? <p className="muted">No devices to list.</p> : (
           <div className="table-scroll">
-            <table className="bom-table">
+            <table className="bom-table bom-lines">
               <thead>
                 <tr><th>Item</th><th className="num">Qty</th>{costs && <><th className="num">Unit cost</th><th className="num">Ext cost</th><th className="num">Labor hrs</th><th className="num">Ext labor</th></>}</tr>
               </thead>
@@ -125,7 +125,7 @@ export function BomPage({ user }: { user: User }) {
                 ))}
               </tbody>
               <tfoot>
-                <tr><td>Total</td><td className="num">{bom.totals.qty}</td>{costs && <><td /><td className="num">{money(bom.totals.cost)}</td><td /><td className="num">{hours(bom.totals.labor)}</td></>}</tr>
+                <tr><td>Total</td><td className="num" data-label="Qty">{bom.totals.qty}</td>{costs && <><td /><td className="num" data-label="Ext cost">{money(bom.totals.cost)}</td><td /><td className="num" data-label="Ext labor">{hours(bom.totals.labor)}</td></>}</tr>
               </tfoot>
             </table>
           </div>
@@ -146,12 +146,12 @@ function SectionRows({ title, lines, unassigned, costs }: { title: string; lines
             {l.accessoryQty > 0 && l.section !== 'accessories' && <span className="chip" title="Includes accessory quantity">+{l.accessoryQty} as accessory</span>}
             {l.group && <div className="muted small">{l.group}</div>}
           </td>
-          <td className="num">{l.qty}</td>
+          <td className="num" data-label="Qty">{l.qty}</td>
           {costs && <>
-            <td className="num">{unassigned ? '' : money(l.unitCost)}</td>
-            <td className="num">{unassigned ? '' : money(l.extCost)}</td>
-            <td className="num">{unassigned ? '' : hours(l.laborHours)}</td>
-            <td className="num">{unassigned ? '' : hours(l.extLabor)}</td>
+            <td className="num" data-label="Unit cost">{unassigned ? '' : money(l.unitCost)}</td>
+            <td className="num" data-label="Ext cost">{unassigned ? '' : money(l.extCost)}</td>
+            <td className="num" data-label="Labor hrs">{unassigned ? '' : hours(l.laborHours)}</td>
+            <td className="num" data-label="Ext labor">{unassigned ? '' : hours(l.extLabor)}</td>
           </>}
         </tr>
       ))}

@@ -188,11 +188,18 @@ function DeviceBody({ m, g, set, iconSrc, typeMount, zoom, stack }: { m: Markup;
 
 function LegendIcon({ src, color, size, mount }: { src: string; color: string; size: number; mount?: Mount }) {
   const img = useImage(src || undefined)
-  if (img) return <KImage image={img} width={size} height={size} />
+  // Type icons are light glyphs meant to sit on the colored symbol (as on the plan), so the symbol is always drawn.
   const r = size * 0.38
-  return mount && mount !== 'ceiling'
-    ? <Line x={size / 2} y={size / 2} points={mountShape(mount, r).outline} closed fill={color} lineJoin="round" />
-    : <Circle x={size / 2} y={size / 2} radius={r} fill={color} />
+  const shape = mountShape(mount ?? 'ceiling', r)
+  const ir = iconRect(shape)
+  return (
+    <>
+      {mount && mount !== 'ceiling'
+        ? <Line x={size / 2} y={size / 2} points={shape.outline} closed fill={color} lineJoin="round" />
+        : <Circle x={size / 2} y={size / 2} radius={r} fill={color} />}
+      {img && <KImage image={img} x={size / 2 + ir.x} y={size / 2 + ir.y} width={ir.size} height={ir.size} listening={false} />}
+    </>
+  )
 }
 
 /** Count legend: title, then one row per device type/product with icon, name, code and count. Height follows the rows. */

@@ -47,3 +47,16 @@ describe('importing a device keeps its mount override', () => {
     expect((sanitizeMarkup({ ...base, geometry: geom })!.geometry as BoxGeometry).mount).toBeUndefined()
   })
 })
+
+describe('coverage cone in exported PDFs', () => {
+  it('is drawn in page space even when the device is rotated', () => {
+    const fov = { direction: -90, angle: 90, range: 60 }
+    const plain = buildAnnot(device({ fov }), { box: pbox, ppf: null, set, textWidth: approxTextWidth })!
+    const rotated = buildAnnot(device({ fov, rotation: 90 }), { box: pbox, ppf: null, set, textWidth: approxTextWidth })!
+    expect(plain.ap.gstates.GC).toBeDefined()
+    expect(rotated.ap.gstates.GC).toBeDefined()
+    // the annotation rect covers the cone, i.e. it is much bigger than the 24pt device
+    expect(plain.rect[2] - plain.rect[0]).toBeGreaterThan(40)
+    expect(buildAnnot(device({ fov }), { box: pbox, ppf: null, set, textWidth: approxTextWidth, showCones: false })!.ap.gstates.GC).toBeUndefined()
+  })
+})

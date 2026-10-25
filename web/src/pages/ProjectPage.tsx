@@ -81,6 +81,9 @@ export function ProjectPage({ user }: { user: User }) {
   const [revNotice, setRevNotice] = useState('')
   const [openRevs, setOpenRevs] = useState<string | null>(null)
   const [issuing, setIssuing] = useState<DocumentSummary | null>(null)
+  const [renaming, setRenaming] = useState<DocumentSummary | null>(null)
+  const [newName, setNewName] = useState('')
+  const [renameBusy, setRenameBusy] = useState(false)
   const [revs, setRevs] = useState<DocumentRevision[]>([])
   const fileInput = useRef<HTMLInputElement>(null)
   const [offlineState, setOfflineState] = useState<Map<string, { offline: boolean }>>(new Map())
@@ -199,6 +202,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     } catch (err) { setError((err as Error).message) }
   }
 
+  async function submitRename(e: React.FormEvent) {
+    e.preventDefault()
+    if (!renaming) return
+    const name = newName.trim()
+    if (!name) { setError('Give the plan a name'); return }
+    setRenameBusy(true); setError('')
+    try {
+      const updated = await api<{ name: string }>(`/documents/${renaming.id}`, { method: 'PATCH', body: JSON.stringify({ name }) })
+      const id = renaming.id
+      setDocs(ds => ds.map(d => d.id === id ? { ...d, name: updated.name ?? name } : d))
+      setRenaming(null)
+    } catch (err) { setError((err as Error).message) } finally { setRenameBusy(false) }
+  }
+
   async function remove(doc: DocumentSummary) {
     if (!confirm(`Delete "${doc.name}"? This removes the plan and its markups.`)) return
     await api(`/documents/${doc.id}`, { method: 'DELETE' })
@@ -270,6 +287,11 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                     </button>
                   )}
                   {canEdit && (
+                    <button role="menuitem" className="vmenu-item" onClick={() => { setRenaming(d); setNewName(d.name) }}>
+                      <span className="vmenu-label">Rename</span>
+                    </button>
+                  )}
+                  {canEdit && (
                     <button role="menuitem" className="vmenu-item" title="Freeze this plan's PDF and all markups as a named revision" onClick={() => setIssuing(d)}>
                       <span className="vmenu-label">Issue revision</span>
                     </button>
@@ -303,6 +325,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         )}
         {reportOpen && project && (
           <ReportDialog projectName={project.name} docs={docs} busy={!!reporting} onGenerate={asBuiltReport} onClose={() => setReportOpen(false)} />
+        )}
+        {renaming && (
+          <div className="name-modal" onPointerDown={e => e.stopPropagation()}>
+            <form onSubmit={submitRename} onKeyDown={e => { if (e.key === 'Escape') setRenaming(null) }}>
+              <div className="panel-heading">Rename plan</div>
+              <label className="field-row">Name
+                <input autoFocus value={newName} onChange={e => setNewName(e.target.value)} aria-label="Plan name" onFocus={e => e.currentTarget.select()} />
+              </label>
+              <div className="row">
+                <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
+                <button type="submit" className="primary" disabled={renameBusy}>{renameBusy ? 'Saving…' : 'Rename'}</button>
+              </div>
+            </form>
+          </div>
         )}
         {issuing && (
           <IssueRevisionDialog documentId={issuing.id} documentName={issuing.name} nextRevision={issuing.revision + 1}

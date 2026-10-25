@@ -9,7 +9,7 @@ import { ForeignNotice } from './offline/ForeignNotice'
 import { DataSafetyBanner, SignInRecoveryNotice } from './offline/DataSafety'
 import { requestPersistence } from './offline/storagePersist'
 import { connect as connectRealtime, disconnect as disconnectRealtime, setSocketCompany } from './realtime/socket'
-import { getActiveCompanyId, setActiveCompanyId, subscribeActiveCompany } from './company/activeCompany'
+import { beginSwitch, endSwitch, getActiveCompanyId, setActiveCompanyId, subscribeActiveCompany } from './company/activeCompany'
 import { acceptInvitation, declineInvitation, listCompanies, listInvitations } from './company/api'
 import { adoptCompany, pathAfterSwitch } from './company/switcher'
 import type { CompanyRow } from './company/switcher'
@@ -108,8 +108,12 @@ export default function App() {
     const previous = userRef.current?.company?.id ?? null
     const my = ++seq.current
     switching.current++
+    beginSwitch()
     try {
       setActiveCompanyId(id)
+      // Leave the page of the old company right away, so it cannot re-load its project and pull the app back.
+      const away = pathAfterSwitch(location.pathname)
+      if (away !== location.pathname) navigate(away, { replace: true })
       const next = await api<User>('/me')
       if (my !== seq.current) return // a newer switch took over: its answer decides
       adoptCompany(next)
@@ -123,7 +127,7 @@ export default function App() {
     } catch (e) {
       if (my === seq.current) setActiveCompanyId(previous)
       throw e
-    } finally { switching.current-- }
+    } finally { switching.current--; endSwitch() }
   }, [user, location.pathname, navigate, refreshCompanies])
 
   const answerInvitation = useCallback(async (id: string, accept: boolean) => {
