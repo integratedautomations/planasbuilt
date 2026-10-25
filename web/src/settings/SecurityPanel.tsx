@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import type { AdminSettings } from './types'
 import { useAdminSettings } from './useAdminSettings'
 
@@ -25,7 +26,7 @@ export function SecurityPanel() {
       <p className="muted small">These apply to the whole installation, for every company.</p>
       <div className="tidy-grid">
         <section className="card settings-card">
-          <h3>Sign-in and sessions</h3>
+          <h3><Icon name="key" size={18} /> Sign-in and sessions</h3>
           <label className="field">Stay signed in for (days)
             <input type="number" min={1} max={365} value={s.security.session_days} onChange={e => patch('security', { session_days: Number(e.target.value) })} />
           </label>
@@ -42,7 +43,7 @@ export function SecurityPanel() {
         </section>
 
         <section className="card settings-card">
-          <h3>Uploads and trash</h3>
+          <h3><Icon name="trash" size={18} /> Uploads and trash</h3>
           <label className="field">Largest file (MB)
             <input type="number" min={1} max={1024} value={s.uploads.max_upload_mb} onChange={e => patch('uploads', { max_upload_mb: Number(e.target.value) })} />
           </label>

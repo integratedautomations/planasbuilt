@@ -21,6 +21,10 @@ import { detectStacks } from '../markups/stacks'
 import type { Stack } from '../markups/stacks'
 import { ToolRail } from '../markups/ToolRail'
 import { ToolChest } from '../markups/ToolChest'
+import { ChestRow } from '../markups/ChestRow'
+import { chestOfEntry, chestOptions, loadChest, resolveChest, saveChest } from '../markups/chestChips'
+import { fieldsFromPreset, PRESETS_CHANGED } from '../legend/presets'
+import type { LegendPreset } from '../legend/presets'
 import { buildToolEntries, activeEntryId, entryCommand } from '../markups/toolEntries'
 import type { ToolEntry } from '../markups/toolEntries'
 import { ContextMenu } from '../markups/ContextMenu'
@@ -57,7 +61,7 @@ import type { LegendRow } from '../markups/legend'
 import { annotationModeFor, setShowOriginalAnnots, showOriginalAnnots } from '../pdfio/annotVisibility'
 import { areaBounds, areaPathIn, buildAreaIndex, deviceCounts, isArea, isSheetArea, parentChoices } from '../markups/areas'
 import { useMarkups } from '../markups/useMarkups'
-import { invalidatePdf, loadDocMeta, loadLayers, loadPdfBytes, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
+import { invalidatePdf, loadDocMeta, loadLayers, loadPdfBytes, loadLegendPresets, loadProject, loadScales, loadSymbolSets } from '../offline/cache'
 import { OfflineMissError } from '../offline/classify'
 import { SyncIndicator } from '../offline/SyncIndicator'
 import { useSyncStatus } from '../offline/hooks'
@@ -272,6 +276,8 @@ export function ViewerPage() {
   const [newTypeSetId, setNewTypeSetId] = useState<string | null>(null)
   /** Device type / product the Device tool places; the product defaults to the type's default. */
   const [activeTypeId, setActiveTypeId] = useState<string | null>(null)
+  const [legendPresets, setLegendPresets] = useState<LegendPreset[]>([])
+  const [legendPresetId, setLegendPresetId] = useState<string | null>(null)
   const [activeProductId, setActiveProductId] = useState<string | null>(null)
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null)
   const [hidden, toggleHidden] = useLayerFlags(projectId, 'hidden')
@@ -434,6 +440,15 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     })
   useEffect(() => { syncStage(view.current) })
 
+  // Legend presets (Tool chest "Legends"): loaded with the catalog, refreshed when one is saved or someone else changes them.
+  useEffect(() => {
+    let cancelled = false
+    const reload = () => { loadLegendPresets().then(r => { if (!cancelled) setLegendPresets(r.data) }).catch(() => {}) }
+    reload()
+    window.addEventListener(PRESETS_CHANGED, reload)
+    return () => { cancelled = true; window.removeEventListener(PRESETS_CHANGED, reload) }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     loadDocMeta(documentId).then(r => { if (!cancelled) { setMeta(r.data); setDeviceScaleState(clampDeviceScale(r.data.device_scale ?? 1)) } }).catch(e => { if (!cancelled) setError(e.message) })
@@ -496,7 +511,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       }),
       onSocket('markups_reset', () => { void storeRef.current.reload(); setSelectedIds([]) }),
       onSocket('layers', () => { loadLayers(projectId).then(r => setLayers(r.data)).catch(() => {}) }),
-      onSocket('symbol_sets', () => { loadSymbolSets().then(r => setSymbolSetList(r.data)).catch(() => {}) }),
+      onSocket('symbol_sets', () => { loadSymbolSets().then(r => setSymbolSetList(r.data)).catch(() => {}); loadLegendPresets().then(r => setLegendPresets(r.data)).catch(() => {}) }),
       onSocket('markup', msg => {
         if (!msg.applied || msg.op !== 'delete') return
         // The selected markup was deleted by someone else: deselect it and say so.
@@ -591,7 +606,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     for (const m of pageMarkups) {
       if (m.type !== 'legend') continue
       const s = legendSettings(m)
-      out.set(m.id, computeLegendRows(allMarkups.values(), catalog, scopeOf(s.scope, m.page), { groupBy: s.groupBy, symbolSets, areaIndex }))
+      out.set(m.id, computeLegendRows(allMarkups.values(), catalog, scopeOf(s.scope, m.page), { groupBy: s.groupBy, symbolSets, areaIndex, setIds: s.setIds, showZero: s.showZero }))
     }
     return out
   }, [pageMarkups, allMarkups, catalog, symbolSets, areaIndex])
@@ -1031,7 +1046,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     setSearchParams(p => { p.delete('compare'); return p }, { replace: true })
   }, [compareParam, revList.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toolEntries = useMemo(() => buildToolEntries(symbolSetList, catalogData.device_types), [symbolSetList, catalogData.device_types])
+  const toolEntries = useMemo(() => buildToolEntries(symbolSetList, catalogData.device_types, legendPresets), [symbolSetList, catalogData.device_types, legendPresets])
   // The symbol set itself is no longer a tool (only its device types are): drop favorites and recents that pointed at one
   useEffect(() => {
     const p = getPrefs()
@@ -1055,8 +1070,32 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     if (e.setId) setActiveSetId(e.setId)
     if (e.tool === 'device') { setActiveTypeId(e.typeId ?? null); setActiveProductId(e.typeId ? defaultProductId(catalog, e.typeId) : null) }
     chooseTool(e.tool, e.shape ?? null)
+    setLegendPresetId(e.tool === 'legend' ? e.legendPresetId ?? null : null)
     if (e.tool !== 'select' && e.tool !== 'pan') setPref('recent', pushRecent(getPrefs().recent, e.id))
   }, [chooseTool, catalog])
+
+  // Phone tool row: pick a chest (Favorites, Recent, Shapes, Measure, a symbol set); its tools show as chips docked under the header.
+  const chests = useMemo(() => chestOptions(toolEntries, prefs.favorites, prefs.recent, readOnly), [toolEntries, prefs.favorites, prefs.recent, readOnly])
+  const [chestSaved, setChestSaved] = useState(() => loadChest(projectId))
+  const [showChestList, setShowChestList] = useState(false)
+  const chest = resolveChest(chests, chestSaved)
+  const pickChest = useCallback((id: string) => { setChestSaved(id); saveChest(projectId, id) }, [projectId])
+  useEffect(() => { setChestSaved(loadChest(projectId)) }, [projectId])
+  const currentEntryId = activeEntryId(tool, shapeLock, activeTypeId)
+  const chestRowOn = isPhone && !readOnly && !focus && !!chest && tool !== 'select' && tool !== 'pan'
+  useEffect(() => {
+    if (!isPhone || readOnly || tool === 'select' || tool === 'pan' || !chest) return
+    // The row follows a tool picked elsewhere (hotkey, Device button, favorite)
+    const target = tool === 'device' && !activeTypeId ? chests.find(o => o.id === `set:${activeSetId}`) ?? null : chestOfEntry(chests, currentEntryId)
+    if (target && target.id !== chest.id && !chest.entries.some(e => e.id === currentEntryId)) pickChest(target.id)
+  }, [isPhone, readOnly, tool, chests, chest, currentEntryId, activeTypeId, activeSetId, pickChest])
+  useEffect(() => {
+    // Tapping Device with no type chosen uses the row: start on the chest's first device type
+    if (!isPhone || readOnly || tool !== 'device' || activeTypeId || !chest?.id.startsWith('set:')) return
+    const first = chest.entries[0]
+    if (!first?.typeId) return
+    setActiveSetId(first.setId ?? null); setActiveTypeId(first.typeId); setActiveProductId(defaultProductId(catalog, first.typeId))
+  }, [isPhone, readOnly, tool, activeTypeId, chest, catalog])
 
   const setPanel = useCallback((id: PanelId, open: boolean) => {
     if (isPhone) {
@@ -1205,7 +1244,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   if (orphaned.count > 0) banners.push({ id: 'orphaned', level: 'warn', text: `${orphaned.count} markup${orphaned.count === 1 ? ' is' : 's are'} on page${orphaned.pages.length === 1 ? '' : 's'} ${orphaned.pages.join(', ')}, which Rev ${meta?.revisions[0]?.revision ?? ''} of this plan no longer has. They are kept in the Markups list.` })
 
   const viewportEl = (
-    <div className={'viewport tool-' + activeTool} ref={viewportRef} onContextMenu={e => e.preventDefault()}>
+    <div className={'viewport tool-' + activeTool + (chestRowOn ? ' has-chest-row' : '')} ref={viewportRef} onContextMenu={e => e.preventDefault()}>
       {error && <div className="error floating">{error}</div>}
       {!page && !error && !notCached && <div className="center muted">Loading plan…</div>}
       {notCached && <div className="center muted">Plan not available offline.</div>}
@@ -1214,6 +1253,9 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       )}
       {(activeTool === 'area' || activeTool === 'area-rect') && (
         <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
+      )}
+      {chestRowOn && chest && (
+        <ChestRow options={chests} chest={chest} activeId={currentEntryId} onChest={pickChest} onPick={pickEntry} onMore={() => setShowChestList(true)} />
       )}
       {focus ? <button className="focus-exit" title={`Exit focus mode (${hotkeys['view.focus'] || 'Esc'})`} aria-label="Exit focus mode" onClick={() => setFocus(false)}><Icon name="maximize" size={18} /></button> : <StatusChip banners={banners} />}
       {(activeTool === 'device' || (!hasSelection && drawStyleTool)) && (
@@ -1224,7 +1266,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                 <span className="set-icon" style={{ background: activeSet?.color }}>{activeSet?.icon && <img src={activeSet.icon} alt="" />}</span>
                 <span className="ellipsis">{activeTypeId ? catalog.types.get(activeTypeId)?.name : activeSet?.name ?? 'Device'}</span>
               </>}>
-              <div className="device-sets">
+              {!chestRowOn && <div className="device-sets">
                 {symbolSetList.length === 0 && <span className="muted small">No symbol sets yet. An admin can add them under Symbols.</span>}
                 {symbolSetList.map(set => (
                   <button key={set.id} className={'palette-item' + (set.id === activeSetId ? ' on' : '')}
@@ -1238,8 +1280,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                     <span>{set.name}</span>
                   </button>
                 ))}
-              </div>
-              {(catalog.typesBySet.get(activeSetId ?? '') ?? []).length > 0 && (
+              </div>}
+              {!chestRowOn && (catalog.typesBySet.get(activeSetId ?? '') ?? []).length > 0 && (
                 <select className="palette-select" aria-label="Device type" value={activeTypeId ?? ''}
                   onChange={e => { const id = e.target.value || null; setActiveTypeId(id); setActiveProductId(id ? defaultProductId(catalog, id) : null) }}>
                   <option value="">Any type</option>
@@ -1307,7 +1349,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} pdfLines={snapLines} cableDefaults={cableDefaults} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
           newBase={{ document_id: documentId, page: pageNum, layer_id: activeLayerId, style: defaultStyle, stampText, symbolSetId: activeSetId,
-            deviceTypeId: activeTypeId, productId: activeProductId, deviceFields: productFields(activeProductId ? catalog.products.get(activeProductId) : undefined) }}
+            deviceTypeId: activeTypeId, productId: activeProductId, deviceFields: productFields(activeProductId ? catalog.products.get(activeProductId) : undefined),
+            legendFields: (() => { const lp = legendPresetId ? legendPresets.find(x => x.id === legendPresetId) : undefined; return lp ? fieldsFromPreset(lp) : undefined })() }}
           onCreated={m => {
             if (m.type === 'legend') { openPanel('props'); setTool('select'); setSelectedIds([m.id]); return }
             if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
@@ -1349,7 +1392,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }}
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
       stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack} cableDefaults={cableDefaults}
-      onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets}
+      onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets} legendRows={legendRowsById}
       pinned={prefs.propsPinned} onPinned={v => setPref('propsPinned', v)}
       areas={areasProps}
       measure={{
@@ -1445,11 +1488,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           onPick={id => navigate(`/projects/${projectId}/documents/${id}`)} />
         <SyncIndicator compact={isPhone} />
         <span className="spacer" />
-        {isPhone && (
-          <button type="button" className="page-pill" aria-haspopup="dialog" aria-expanded={showThumbs} aria-label={`Page ${pageNum} of ${pageCount || '?'}, open page list`}
-            onClick={() => setShowThumbs(v => !v)}>{pageNum}/{pageCount || '…'} <Icon name="chevron-down" size={12} /></button>
-        )}
-        <Avatars peers={peers} max={isPhone ? 1 : 4} onJump={jumpToPeer} />
+        {!isPhone && <Avatars peers={peers} max={4} onJump={jumpToPeer} />}
         {!readOnly && !isPhone && (
           <>
             <button className="icon-btn" onClick={() => { store.undo(); setSelectedIds([]) }} disabled={!store.canUndo} title={'Undo (' + hotkeys['edit.undo'] + ')'} aria-label="Undo"><Icon name="undo" size={20} /></button>
@@ -1532,6 +1571,14 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <Link to="/account/preferences" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Preferences</span></Link>
           <Link to="/account" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Account</span></Link>
         </MoreMenu>
+        {isPhone && (
+          <div className="viewer-subrow">
+            <button type="button" className="page-pill" aria-haspopup="dialog" aria-expanded={showThumbs} aria-label={`Page ${pageNum} of ${pageCount || '?'}, open page list`}
+              onClick={() => setShowThumbs(v => !v)}>Page {pageNum}/{pageCount || '…'} <Icon name="chevron-down" size={12} /></button>
+            <span className="spacer" />
+            <Avatars peers={peers} max={2} onJump={jumpToPeer} />
+          </div>
+        )}
       </header>
       )}
       {isPhone ? (
@@ -1551,6 +1598,17 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             {showPanel && !focus && sidePanelEl}
           </div>
           {toast && <div className="live-toast" role="status">{toast}</div>}
+          {showChestList && (
+            <>
+              <div className="sheet-scrim" onClick={() => setShowChestList(false)} aria-hidden />
+              <div className="more-sheet chest-sheet" role="dialog" aria-label="All tools">
+                <div className="more-sheet-grip" aria-hidden />
+                <div className="more-sheet-tabs"><strong className="chest-sheet-title">All tools</strong><span className="spacer" />
+                  <button className="icon-btn more-sheet-close" aria-label="Close" onClick={() => setShowChestList(false)}><Icon name="x" size={18} /></button></div>
+                <div className="more-sheet-body chest-sheet-body" onClick={e => { if ((e.target as HTMLElement).closest('.chest-pick, .chest-cell')) setShowChestList(false) }}>{panelNodes.tools}</div>
+              </div>
+            </>
+          )}
           {showList && markupsListEl(false)}
           {showCompare && (
             <div className="compare-view" role="dialog" aria-label="Compare revisions">

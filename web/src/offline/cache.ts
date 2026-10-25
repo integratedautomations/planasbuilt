@@ -9,6 +9,7 @@ import { api, ApiError, authFetch, documentFileUrl, attachmentFileUrl } from '..
 import type { Attachment, DocumentSummary, Project } from '../api'
 import type { Layer, Markup, SymbolSet } from '../markups/types'
 import type { CatalogData } from '../catalog/types'
+import type { LegendPreset } from '../legend/presets'
 import { isOfflineError, OfflineMissError } from './classify'
 import { db } from './db'
 import type { AttachmentRow, PhotoVariant, ScaleRow } from './db'
@@ -129,6 +130,15 @@ export const loadSymbolSets = () => readThrough(
   async (rows, company) => { await db.transaction('rw', db.symbolSets, () => replaceScoped(db.symbolSets, rows, company)) },
   async company => nonEmpty(await readScoped(db.symbolSets, company)),
   'Symbol sets',
+  true,
+)
+
+/** Saved legend presets, kept offline per company like the catalog. */
+export const loadLegendPresets = () => readThrough(
+  () => api<LegendPreset[]>('/legend-presets'),
+  async (rows, company) => { await db.kv.put({ key: `legendPresets:${company}`, value: rows }) },
+  async company => (await db.kv.get(`legendPresets:${company}`))?.value as LegendPreset[] | undefined,
+  'Legend presets',
   true,
 )
 

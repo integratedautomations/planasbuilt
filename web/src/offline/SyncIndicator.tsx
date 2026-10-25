@@ -70,6 +70,7 @@ export function SyncIndicator({ compact }: { compact?: boolean } = {}) {
         <span className="dot" />{!compact && text}
         {!compact && live !== 'idle' && s.online && <span className="live-text hide-sm">{live === 'live' ? ' · Live' : ' · Reconnecting…'}</span>}
       </button>
+      {open && clickable && <div className="sync-scrim" onClick={() => setOpen(false)} aria-hidden />}
       {open && clickable && (
         <div className="sync-pop" role="dialog" aria-label="Sync status">
           <p className="small">
@@ -101,7 +102,7 @@ export function SyncIndicator({ compact }: { compact?: boolean } = {}) {
               onChange={e => { void restore(e.target.files?.[0]); e.target.value = '' }} />
           </div>
           {msg && <p className="small" role="status">{msg}</p>}
-          <button onClick={() => setOpen(false)}>Close</button>
+          <button className="sync-close" onClick={() => setOpen(false)}>Close</button>
         </div>
       )}
     </span>

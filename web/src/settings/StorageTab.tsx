@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import { api } from '../api'
 import { formatBytes } from './types'
 import type { CleanupPreview, Usage } from './types'
@@ -65,7 +66,7 @@ export function StorageTab() {
   return (
     <div className="settings-grid">
       <section className="card settings-card wide">
-        <h3>Storage used</h3>
+        <h3><Icon name="folder" size={18} /> Storage used</h3>
         {usageError && <div className="error">{usageError}</div>}
         {!usage ? <p className="muted">Calculating…</p> : (
           <>
@@ -94,7 +95,7 @@ export function StorageTab() {
       </section>
 
       <section className="card settings-card">
-        <h3>Where files are stored</h3>
+        <h3><Icon name="cloud-backup" size={18} /> Where files are stored</h3>
         <label className="field">Storage for new files
           <select value={s.storage.backend} onChange={e => setSettings({ ...s, storage: { ...s.storage, backend: e.target.value as 'local' | 's3' } })}>
             <option value="local">This server's disk</option>
@@ -125,7 +126,7 @@ export function StorageTab() {
       </section>
 
       <section className="card settings-card">
-        <h3>Plan revisions</h3>
+        <h3><Icon name="layers" size={18} /> Plan revisions</h3>
         <label className="field">Revision retention
           <select value={s.retention.mode} onChange={e => setSettings({ ...s, retention: { ...s.retention, mode: e.target.value as 'all' | 'keep' } })}>
             <option value="all">Keep every revision</option>

@@ -437,7 +437,12 @@ describe('milestone 1 api', () => {
       const orig = await file()
       expect(orig.rawPayload.equals(jpg)).toBe(true)
       expect(orig.headers['content-type']).toBe('image/jpeg')
-      expect(orig.headers['cache-control']).toBe('private, max-age=31536000, immutable')
+      // The shown copy is replaced when a photo is re-annotated, so it revalidates; only the untouched original is immutable.
+      expect(orig.headers['cache-control']).toBe('private, no-cache')
+      expect(orig.headers.etag).toBeTruthy()
+      const revalidated = await app.inject({ url: `/api/attachments/${aid}/file?token=${admin}`, headers: { 'if-none-match': String(orig.headers.etag) } })
+      expect(revalidated.statusCode).toBe(304)
+      expect((await file('&variant=original')).headers['cache-control']).toBe('private, max-age=31536000, immutable')
 
       const ann = await send('PUT', `/api/attachments/${aid}/annotated`, admin, {}, png2, 'image/png')
       expect(ann.json().has_annotation).toBe(true)
@@ -446,6 +451,7 @@ describe('milestone 1 api', () => {
       const def = await file()
       expect(def.rawPayload.equals(Buffer.concat([png2, png2]))).toBe(true)
       expect(def.headers['content-type']).toBe('image/png')
+      expect(def.headers.etag).not.toBe(orig.headers.etag) // a new annotation never revalidates to the old image
       expect((await file('&variant=original')).rawPayload.equals(jpg)).toBe(true)
 
       expect((await app.inject({ method: 'DELETE', url: `/api/attachments/${aid}`, headers: h })).json()).toEqual({ ok: true })

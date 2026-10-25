@@ -540,6 +540,18 @@ async function upgradeToCompanies(db: Db) {
     for (const t of ['projects', 'symbol_sets', 'device_types', 'products', 'cable_types', 'revu_mappings'])
       await q(`CREATE INDEX IF NOT EXISTS ${t}_company ON ${t}(company_id)`)
 
+    // Saved legend settings (Legends section of the Tool chest); optionally attached to a symbol set.
+    await q(`CREATE TABLE IF NOT EXISTS legend_presets (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      set_id uuid REFERENCES symbol_sets(id) ON DELETE SET NULL,
+      settings jsonb NOT NULL DEFAULT '{}',
+      sort int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`)
+    await q('CREATE INDEX IF NOT EXISTS legend_presets_company ON legend_presets(company_id)')
+
     // Each company's folder on the file share: assigned once (oldest company first, so existing paths keep their folder), unique
     // without case. Companies that had to take "name (2)" have their files queued to move out of the folder they used to share.
     await q('ALTER TABLE companies ADD COLUMN IF NOT EXISTS folder text')

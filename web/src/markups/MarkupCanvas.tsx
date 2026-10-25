@@ -68,7 +68,9 @@ interface Props {
   /** Template for new markups: document, page, layer and current style. */
   newBase: { document_id: string; page: number; layer_id: string | null; style: MarkupStyle; stampText: string; symbolSetId: string | null
     /** Device type and product being placed, and the field values the product prefills. */
-    deviceTypeId?: string | null; productId?: string | null; deviceFields?: Record<string, string | number | boolean> }
+    deviceTypeId?: string | null; productId?: string | null; deviceFields?: Record<string, string | number | boolean>
+    /** Fields a new legend starts with (from a legend preset); the default legend when absent. */
+    legendFields?: Record<string, string> }
   symbolSets: Map<string, SymbolSet>
   catalog: Catalog
   /** Set true when the markup layer owns the current pointer (so the viewport doesn't pan). */
@@ -431,7 +433,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
     const t = (cal ? 'line' : tool) as MarkupType
     if (t === 'legend') {
-      finish({ ...newMarkup('legend', { x: p.x, y: p.y, width: 260, height: 120, rotation: 0 }), style: { ...newBase.style, stroke: '#343a40', fill: '#ffffff', strokeWidth: 1, fontSize: 12 }, fields: legendFields(DEFAULT_LEGEND) })
+      finish({ ...newMarkup('legend', { x: p.x, y: p.y, width: 260, height: 120, rotation: 0 }), style: { ...newBase.style, stroke: '#343a40', fill: '#ffffff', strokeWidth: 1, fontSize: 12 }, fields: newBase.legendFields ?? legendFields(DEFAULT_LEGEND) })
       return
     }
     if (t === 'stamp') {

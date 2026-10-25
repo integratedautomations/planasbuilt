@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildCatalog } from '../catalog/catalog'
-import { DEFAULT_LEGEND, legendFields, legendLayout, legendRows, legendSettings, scopeOf } from './legend'
+import { DEFAULT_LEGEND, legendFields, legendItems, legendLayout, legendRows, legendSettings, moveManual, scopeOf, sortLegendRows } from './legend'
+import { fieldsFromPreset, presetPayload, settingsFromPreset } from '../legend/presets'
 import { DEFAULT_STYLE } from './types'
 import type { Markup, SymbolSet } from './types'
 
@@ -66,7 +67,7 @@ describe('legendRows', () => {
 
 describe('legend settings', () => {
   it('round-trips through fields and tolerates garbage', () => {
-    const s = { scope: 'area:x', groupBy: 'product' as const, columns: ['name' as const, 'count' as const], title: 'Devices' }
+    const s = { ...DEFAULT_LEGEND, scope: 'area:x', groupBy: 'product' as const, columns: ['name' as const, 'count' as const], title: 'Devices' }
     expect(legendSettings({ fields: legendFields(s) })).toEqual(s)
     expect(legendSettings({})).toEqual(DEFAULT_LEGEND)
     expect(legendSettings({ fields: { columns: 'bogus', groupBy: 'nope' } })).toEqual({ ...DEFAULT_LEGEND, title: 'Legend' })
@@ -76,8 +77,61 @@ describe('legend settings', () => {
   })
   it('lays out an auto height from the row count', () => {
     const one = legendLayout([], DEFAULT_LEGEND, 200, 12)
-    const five = legendLayout(new Array(5).fill(0).map((_, i) => ({ key: String(i), name: 'x', code: '', icon: '', color: '', count: 1 })), DEFAULT_LEGEND, 200, 12)
+    const five = legendLayout(new Array(5).fill(0).map((_, i) => ({ key: String(i), name: 'x', code: '', manufacturer: '', model: '', description: '', setId: 's1', setName: 'Fire', setSort: 0, icon: '', color: '', count: 1 })), DEFAULT_LEGEND, 200, 12)
     expect(five.height - one.height).toBeCloseTo(4 * five.rowH)
     expect(five.widths.name).toBeGreaterThan(20)
+  })
+})
+
+describe('legend sorting, columns and filters', () => {
+  const rows = legendRows(markups, catalog, { kind: 'document' }, { symbolSets: sets, groupBy: 'type+product' })
+  it('sorts by name, code, count and manual order', () => {
+    const names = (sort: Parameters<typeof sortLegendRows>[1]['sort'], manual: string[] = []) => sortLegendRows(rows, { sort, manual }).map(r => r.name)
+    expect(names('name')).toEqual(['Fire', 'Horn', 'Smoke - Acme SD100', 'Smoke - Acme SD200'])
+    expect(names('count-desc')[0]).toBe('Smoke - Acme SD100')
+    expect(names('count-asc').at(-1)).toBe('Smoke - Acme SD100')
+    expect(names('code').slice(0, 2)).toEqual(['Smoke - Acme SD100', 'Smoke - Acme SD200']) // rows with a code first
+    const keys = rows.map(r => r.key)
+    expect(sortLegendRows(rows, { sort: 'manual', manual: [keys[3], keys[0]] }).map(r => r.key).slice(0, 2)).toEqual([keys[3], keys[0]])
+  })
+  it('moves rows and columns one step', () => {
+    expect(moveManual(['a', 'b', 'c'], 'c', -1)).toEqual(['a', 'c', 'b'])
+    expect(moveManual(['a', 'b', 'c'], 'a', -1)).toEqual(['a', 'b', 'c'])
+  })
+  it('adds a sub-header per symbol set when grouped', () => {
+    const items = legendItems(rows, { sort: 'name', manual: [], groupBySet: true })
+    expect(items[0]).toMatchObject({ kind: 'header', label: 'Fire' })
+    expect(items.filter(i => i.kind === 'header')).toHaveLength(1)
+    expect(legendLayout(rows, { ...DEFAULT_LEGEND, groupBySet: true }, 300, 12).height).toBeGreaterThan(legendLayout(rows, DEFAULT_LEGEND, 300, 12).height)
+  })
+  it('lists zero-count types and limits to chosen sets', () => {
+    const none = legendRows([], catalog, { kind: 'document' }, { symbolSets: sets, showZero: true })
+    expect(none.map(r => [r.name, r.count])).toEqual([['Horn', 0], ['Smoke', 0]])
+    expect(legendRows(markups, catalog, { kind: 'document' }, { symbolSets: sets, setIds: ['other'] })).toEqual([])
+    expect(legendRows(markups, catalog, { kind: 'document' }, { symbolSets: sets, setIds: ['s1'] }).length).toBeGreaterThan(0)
+  })
+  it('fills manufacturer, model and description from the product', () => {
+    const r = legendRows(markups, catalog, { kind: 'sheet', page: 1 }, { symbolSets: sets, groupBy: 'product' }).find(x => x.code === 'SD100')!
+    expect(r).toMatchObject({ manufacturer: 'Acme', model: 'SD100', setName: 'Fire' })
+  })
+  it('round-trips the new settings and tolerates bad columns/widths', () => {
+    const s = { ...DEFAULT_LEGEND, columns: ['icon' as const, 'manufacturer' as const, 'model' as const, 'count' as const], sort: 'count-desc' as const, manual: ['a', 'b'], groupBySet: true, showZero: true, setIds: ['s1'], widths: { model: 2 }, aligns: { count: 'center' as const } }
+    expect(legendSettings({ fields: legendFields(s) })).toEqual(s)
+    expect(legendSettings({ fields: { widths: 'name:-1,bogus:2,model:x', aligns: 'name:diagonal', sort: 'nope' } })).toMatchObject({ widths: {}, aligns: {}, sort: 'name' })
+    const L = legendLayout([], { ...DEFAULT_LEGEND, columns: ['name', 'model'], widths: { name: 1, model: 3 } }, 200, 12)
+    expect(L.widths.model).toBeCloseTo(L.widths.name * 3)
+  })
+})
+
+describe('legend presets', () => {
+  it('round-trips settings and attaches a set', () => {
+    const s = { ...DEFAULT_LEGEND, scope: 'area:zz', sort: 'set' as const, columns: ['name' as const, 'description' as const, 'count' as const], groupBySet: true }
+    const payload = presetPayload('  Fire legend ', s, 's1')
+    expect(payload).toMatchObject({ name: 'Fire legend', set_id: 's1' })
+    expect(payload.settings.scope).toBe('sheet') // an area id means nothing in another document
+    const back = settingsFromPreset(payload)
+    expect(back).toMatchObject({ sort: 'set', groupBySet: true, columns: ['name', 'description', 'count'], setIds: ['s1'] })
+    expect(legendSettings({ fields: fieldsFromPreset(payload) })).toEqual(back)
+    expect(settingsFromPreset({ settings: payload.settings, set_id: null }).setIds).toEqual([])
   })
 })

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Icon } from '../ui/Icon'
 import { api } from '../api'
 import { useAdminSettings } from './useAdminSettings'
 
@@ -26,7 +27,7 @@ export function MailTab() {
   return (
     <div className="settings-grid">
       <section className="card settings-card">
-        <h3>Email (SMTP)</h3>
+        <h3><Icon name="mail" size={18} /> Email (SMTP)</h3>
         <p className="muted small">Optional. With email set up, invites and password resets are also emailed. Without it, copy the link and send it yourself.</p>
         <label className="field">SMTP host<input value={m.host} placeholder="smtp.example.com" onChange={e => patch({ host: e.target.value })} /></label>
         <div className="row wrap">
@@ -42,7 +43,7 @@ export function MailTab() {
         <div className="row"><button className="primary" onClick={submit}>Save changes</button>{msg && <span className="muted small" role="status">{msg}</span>}</div>
       </section>
       <section className="card settings-card">
-        <h3>Send a test email</h3>
+        <h3><Icon name="mail" size={18} /> Send a test email</h3>
         <p className="muted small">Save the settings first, then send a test.</p>
         <div className="row"><input type="email" placeholder="you@example.com" value={to} onChange={e => setTo(e.target.value)} />
           <button disabled={!to} onClick={sendTest}>Send test</button></div>

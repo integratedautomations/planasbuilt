@@ -1,4 +1,5 @@
 import { NavLink, useSearchParams } from 'react-router-dom'
+import { Icon } from '../ui/Icon'
 import type { User } from '../api'
 import { can } from '../roles'
 import { PROJECT_SECTIONS, ProjectSettingsTab } from '../settings/ProjectSettingsTab'
@@ -19,7 +20,7 @@ export function ProjectSettingsPage({ user }: { user: User }) {
     <ProjectBody width="wide">
       <nav className="tabs sub-tabs" aria-label="Settings sections">
         {visible.map(s => (
-          <NavLink key={s.id} to={`?section=${s.id}`} replace className={`tab${section === s.id ? ' active' : ''}`}>{s.label}</NavLink>
+          <NavLink key={s.id} to={`?section=${s.id}`} replace className={() => `tab${section === s.id ? ' active' : ''}`}><Icon name={s.icon} size={16} /> {s.label}</NavLink>
         ))}
       </nav>
       <ProjectSettingsTab project={project} onProject={setProject} section={section} platformAdmin={!!user.platform_admin} />

@@ -3,7 +3,7 @@ import { renderToString } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { legacyRedirect, projectTabs } from './projectTabs'
 import { ProjectTabs } from './ProjectShell'
-import { pickSection } from './SectionLayout'
+import { pickSection, resolveSection } from './SectionLayout'
 import { pathAfterSwitch } from '../company/switcher'
 import { shouldAdoptOwner } from '../company/activeCompany'
 import { DEFAULT_LAYOUT } from '../prefs/layout'
@@ -80,5 +80,16 @@ describe('company switch from a project page', () => {
     // opening a project of another company directly still follows it
     expect(shouldAdoptOwner('A', 'A', 'B')).toBe(true)
     expect(shouldAdoptOwner('A', 'A', 'A')).toBe(false)
+  })
+})
+
+describe('section tab routing', () => {
+  const ids = ['profile', 'preferences', 'notifications']
+  it('selects the URL section, defaulting to the first with no extra click', () => {
+    expect(resolveSection(ids, 'preferences')).toEqual({ current: 'preferences', redirect: false, explicit: true })
+    expect(resolveSection(ids, undefined)).toEqual({ current: 'profile', redirect: false, explicit: false })
+  })
+  it('redirects unknown sections to the area root', () => {
+    expect(resolveSection(ids, 'nope').redirect).toBe(true)
   })
 })

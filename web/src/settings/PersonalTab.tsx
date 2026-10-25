@@ -1,4 +1,5 @@
 import { FormEvent, useRef, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import { api, setToken, User } from '../api'
 import { UserAvatar } from '../ui/UserAvatar'
 
@@ -47,7 +48,7 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
   return (
     <div className="settings-grid">
       <section className="card settings-card">
-        <h3>Profile</h3>
+        <h3><Icon name="user" size={18} /> Profile</h3>
         <div className="row">
           <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} size={56} />
           <button type="button" onClick={() => fileRef.current?.click()}>{user.avatar != null ? 'Change picture' : 'Upload picture'}</button>
@@ -63,7 +64,7 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
       </section>
 
       <section className="card settings-card">
-        <h3>Change password</h3>
+        <h3><Icon name="lock" size={18} /> Change password</h3>
         <form className="stack" onSubmit={changePassword}>
           <label className="field">Current password<input type="password" autoComplete="current-password" value={pw.current} onChange={e => setPw({ ...pw, current: e.target.value })} required /></label>
           <label className="field">New password (8+ characters)<input type="password" autoComplete="new-password" minLength={8} value={pw.next} onChange={e => setPw({ ...pw, next: e.target.value })} required /></label>

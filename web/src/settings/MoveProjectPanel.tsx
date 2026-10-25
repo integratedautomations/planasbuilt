@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import type { Project } from '../api'
 import { describeMove, listCompanies, moveProject } from '../company/api'
 import type { CompanyRow, MoveResult } from '../company/api'
@@ -23,7 +24,7 @@ export function MoveProjectPanel({ project, onMoved }: { project: Project; onMov
   }
   return (
     <section className="card settings-card">
-      <h3>Move to another company</h3>
+      <h3><Icon name="move" size={18} /> Move to another company</h3>
       <p className="muted small">The project, its plans and photos move together. Catalog entries it uses are matched by name in the other company, or copied there when missing.</p>
       <div className="row wrap">
         <select value={target} aria-label="Company to move to" onChange={e => setTarget(e.target.value)}>

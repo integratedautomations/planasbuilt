@@ -6,8 +6,8 @@ import type { FormEvent, PointerEvent as RPointerEvent } from 'react'
 import { STATUSES } from './types'
 import type { Layer, Markup, MarkupStyle, SymbolSet } from './types'
 import { DeviceFields } from './DeviceFields'
-import { legendFields, legendSettings, LEGEND_COLUMNS } from './legend'
-import type { LegendSettings } from './legend'
+import { LegendPanel } from './LegendPanel'
+import type { LegendRow } from './legend'
 import { Attribution, HistorySection } from './MarkupInfo'
 import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
@@ -101,6 +101,8 @@ interface Props {
   onAddLayer: (name: string) => Promise<void>
   textRef: React.RefObject<HTMLTextAreaElement | null>
   symbolSets: Map<string, SymbolSet>
+  /** Live rows of each legend on this page (for manual row ordering). */
+  legendRows?: Map<string, LegendRow[]>
   /** Per-viewer display options shown at the top of the Layers tab. */
   display: { showCones: boolean; onShowCones: (v: boolean) => void; deviceScale?: number; onDeviceScale?: (v: number) => void; deviceScaleReadOnly?: boolean }
   /** Device stacks on this page and the actions the stack panel needs. */
@@ -281,53 +283,11 @@ function StackMembers({ stack, set, onPick }: { stack: Stack; set?: SymbolSet; o
 }
 
 function LegendProperties(p: Props) {
-  const { selected, readOnly, onUpdate, onDelete, areas } = p
-  const m = selected[0]
-  const s = legendSettings(m)
-  const set = (patch: Partial<LegendSettings>, key: string) => onUpdate(x => ({ ...x, fields: { ...(x.fields ?? {}), ...legendFields({ ...legendSettings(x), ...patch }) } }), `legend.${key}`)
-  const areaName = (a: Markup) => a.text.trim() || (a.fields?.sheet === true ? 'Sheet' : 'Unnamed area')
+  const m = p.selected[0]
   return (
-    <div className="panel-body">
-      <div className="panel-heading">Legend</div>
-      <fieldset disabled={readOnly} className="stack">
-        <label className="field">Title
-          <input value={s.title} onChange={e => set({ title: e.target.value }, 'title')} />
-        </label>
-        <label className="field">Counts devices on
-          <select value={s.scope} onChange={e => set({ scope: e.target.value }, 'scope')}>
-            <option value="sheet">This sheet</option>
-            <option value="document">Whole document</option>
-            {areas.pageAreas.map(a => <option key={a.id} value={`area:${a.id}`}>Area: {areaName(a)}</option>)}
-            {s.scope.startsWith('area:') && !areas.pageAreas.some(a => `area:${a.id}` === s.scope) && <option value={s.scope}>Area (other sheet)</option>}
-          </select>
-        </label>
-        <label className="field">Group by
-          <select value={s.groupBy} onChange={e => set({ groupBy: e.target.value as LegendSettings['groupBy'] }, 'group')}>
-            <option value="type">Device type</option>
-            <option value="product">Product</option>
-            <option value="type+product">Device type + product</option>
-          </select>
-        </label>
-        <div className="field">Columns
-          <div className="stack">
-            {LEGEND_COLUMNS.map(c => (
-              <label key={c.key} className="check">
-                <input type="checkbox" checked={s.columns.includes(c.key)} onChange={e => {
-                  const next = LEGEND_COLUMNS.map(x => x.key).filter(k => (k === c.key ? e.target.checked : s.columns.includes(k)))
-                  if (next.length) set({ columns: next }, 'columns')
-                }} /> {c.label}
-              </label>
-            ))}
-          </div>
-        </div>
-        <label className="field">Text size
-          <input type="range" min={8} max={28} value={m.style.fontSize} onChange={e => onUpdate(x => ({ ...x, style: { ...x.style, fontSize: Number(e.target.value) } }), 'legend.font')} />
-        </label>
-      </fieldset>
-      <p className="muted small">The table updates as devices are placed. Drag the side handles to change its width; the height follows the rows.</p>
+    <LegendPanel m={m} readOnly={p.readOnly} onUpdate={p.onUpdate} onDelete={p.onDelete} pageAreas={p.areas.pageAreas} symbolSets={p.symbolSets} rows={p.legendRows?.get(m.id) ?? []}>
       <LayerSelect {...p} />
-      {!readOnly && <button className="danger" onClick={onDelete}>Delete legend</button>}
-    </div>
+    </LegendPanel>
   )
 }
 

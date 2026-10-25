@@ -6,10 +6,21 @@
 a.crumb:hover { text-decoration: underline; }
 .crumb-back { display: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; }
 .crumb-back:hover { background: rgb(255 255 255 / 0.14); }
+/* Desktop: the sub-bar dissolves into the top bar. Phone: it becomes a second row under the brand / switcher / avatar row. */
+.subbar { display: contents; }
+.subbar-catalog { display: none; }
 @media (max-width: 640px) {
-  .crumb-back { display: inline-flex; }
-  .crumb-item:not(.current) { display: none; }
-  .crumb-item.current .crumb-sep { display: none; }
+  .topbar:has(> .subbar) { flex-wrap: wrap; row-gap: 0; }
+  .topbar > .subbar { display: flex; align-items: center; gap: 6px; order: 10; flex: 0 0 100%; min-width: 0; min-height: 44px; margin: 4px -10px -8px; padding: 0 10px; border-top: 1px solid rgb(255 255 255 / 0.14); }
+  .crumb-back { display: inline-flex; width: 44px; height: 44px; margin-left: -8px; }
+  .subbar .crumbs { flex: 1 1 0; min-width: 0; overflow: hidden; }
+  .crumb-item { flex: 0 1 auto; gap: 4px; }
+  .crumb-item + .crumb-item { margin-left: 4px; }
+  .crumb-item:not(.current) { max-width: 28%; }
+  .crumb-item.current { flex: 1 1 0; }
+  .crumb-item .crumb { font-size: 14px; }
+  .subbar-catalog { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-height: 44px; padding: 0 12px; margin-right: -6px; color: var(--chrome-text); font-weight: 600; font-size: 14px; text-decoration: none; }
+  .subbar-catalog:hover { text-decoration: underline; }
 }
 
 .content.content-wide { max-width: 1100px; }
@@ -39,13 +50,22 @@ a.crumb:hover { text-decoration: underline; }
 .section-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .section-body > h2 { margin-bottom: -4px; }
 .section-back { display: none; align-self: flex-start; }
-@media (max-width: 760px) {
-  .section-layout { grid-template-columns: 1fr; }
-  .section-layout.has-detail .section-nav { display: none; }
-  .section-layout.no-detail .section-body { display: none; }
-  .section-nav { position: static; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 4px; }
-  .section-nav .chev { display: inline; }
-  .section-back { display: inline-flex; }
+.section-nav a { justify-content: flex-start; }
+.section-nav a svg, .section-tabstrip a svg { flex: 0 0 auto; }
+.section-title { display: flex; align-items: center; gap: 8px; }
+.section-tabs { display: none; }
+.settings-card > h3 svg, .card > h3 > svg { vertical-align: -3px; margin-right: 8px; color: var(--muted); }
+@media (max-width: 640px) {
+  .section-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .section-nav { display: none; }
+  .section-tabs { display: block; position: sticky; top: 0; z-index: 5; margin: -4px -12px 0; padding: 0 12px; background: var(--bg); border-bottom: 1px solid var(--border); }
+  .section-tabs::before, .section-tabs::after { content: ''; position: absolute; top: 0; bottom: 0; width: 20px; z-index: 1; pointer-events: none; }
+  .section-tabs::before { left: 0; background: linear-gradient(to right, var(--bg), transparent); }
+  .section-tabs::after { right: 0; background: linear-gradient(to left, var(--bg), transparent); }
+  .section-tabstrip { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+  .section-tabstrip::-webkit-scrollbar { display: none; }
+  .section-tabstrip a { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 12px 12px; min-height: 44px; border-bottom: 3px solid transparent; color: var(--muted); font-weight: 600; white-space: nowrap; text-decoration: none; }
+  .section-tabstrip a.active { color: var(--text); border-bottom-color: var(--accent); }
 }
 /* Horizontal sub-tabs inside a project's Settings use the same .tabs style. */
 .save-bar { display: flex; flex-direction: column; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; border-top: 1px solid var(--border); z-index: 2; }
@@ -66,3 +86,4 @@ a.crumb:hover { text-decoration: underline; }
 .panel-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .panel { min-width: 0; }
 .section-body .panel .row.wrap > h2:first-child { display: none; }
+.tabs .tab { display: inline-flex; align-items: center; gap: 6px; }

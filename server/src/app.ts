@@ -1478,6 +1478,64 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return { ok: true }
   })
 
+  // ---- Legend presets: saved legend settings, company-wide; editors and admins manage them ----
+  const cleanLegendPreset = (b: any): { name: string; set_id: string | null; settings: Record<string, string> } | null => {
+    const name = String(b?.name ?? '').trim().slice(0, 80)
+    if (!name || !b || typeof b.settings !== 'object' || b.settings === null || Array.isArray(b.settings)) return null
+    const settings: Record<string, string> = {}
+    for (const [k, v] of Object.entries(b.settings as Record<string, unknown>)) {
+      if (!/^[A-Za-z]{1,24}$/.test(k) || typeof v !== 'string' || v.length > 2000) return null
+      settings[k] = v
+    }
+    if (Object.keys(settings).length > 30) return null
+    const set_id = b.set_id && /^[0-9a-f-]{36}$/i.test(String(b.set_id)) ? String(b.set_id) : null
+    return { name, set_id, settings }
+  }
+  const PRESET_COLUMNS = 'id, name, set_id, settings, sort'
+
+  app.get('/api/legend-presets', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply)
+    if (!company) return
+    return db.query(`SELECT ${PRESET_COLUMNS} FROM legend_presets WHERE company_id = $1 ORDER BY sort, created_at`, [company.id])
+  })
+
+  app.post('/api/legend-presets', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply, 'member')
+    if (!company) return
+    const p = cleanLegendPreset(req.body)
+    if (!p) return reply.code(400).send({ error: 'A name and the legend settings are required' })
+    if (p.set_id && !(await db.query('SELECT 1 FROM symbol_sets WHERE id = $1 AND company_id = $2', [p.set_id, company.id])).length) return reply.code(400).send({ error: 'No such symbol set' })
+    const [row] = await db.query(
+      `INSERT INTO legend_presets (company_id, name, set_id, settings, sort)
+       VALUES ($1,$2,$3,$4,(SELECT coalesce(max(sort),0)+1 FROM legend_presets WHERE company_id = $1)) RETURNING ${PRESET_COLUMNS}`,
+      [company.id, p.name, p.set_id, JSON.stringify(p.settings)])
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
+    return row
+  })
+
+  app.put('/api/legend-presets/:id', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply, 'member')
+    if (!company) return
+    const p = cleanLegendPreset(req.body)
+    if (!p) return reply.code(400).send({ error: 'A name and the legend settings are required' })
+    if (p.set_id && !(await db.query('SELECT 1 FROM symbol_sets WHERE id = $1 AND company_id = $2', [p.set_id, company.id])).length) return reply.code(400).send({ error: 'No such symbol set' })
+    const [row] = await db.query(
+      `UPDATE legend_presets SET name=$1, set_id=$2, settings=$3 WHERE id=$4 AND company_id=$5 RETURNING ${PRESET_COLUMNS}`,
+      [p.name, p.set_id, JSON.stringify(p.settings), (req.params as any).id, company.id])
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
+    return row
+  })
+
+  app.delete('/api/legend-presets/:id', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply, 'member')
+    if (!company) return
+    const gone = await db.query('DELETE FROM legend_presets WHERE id = $1 AND company_id = $2 RETURNING id', [(req.params as any).id, company.id])
+    if (!gone.length) return reply.code(404).send({ error: 'Not found' })
+    realtime.symbolSetsChanged(req.user.id, cid(req), company.id)
+    return { ok: true }
+  })
+
   // ---- Catalog: device types and products ----
   const cleanFields = (v: any) => cleanSymbolSet({ name: 'x', tag_prefix: 'x', fields: v })?.fields ?? []
   const numOr0 = (v: any) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 0 }
@@ -2274,11 +2332,17 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const variant = (req.query as any)?.variant
     const key = variant === 'original' ? a.file_key : variant === 'annotated' ? a.annotated_key : (a.annotated_key ?? a.file_key)
     if (!key) return reply.code(404).send({ error: 'No such variant' })
+    if (variant !== 'original' && req.headers['if-none-match'] === `"${key}"`) return reply.code(304).header('Cache-Control', 'private, no-cache').header('ETag', `"${key}"`).send()
     const stream = await storage.open(key, accessOf(req).companyId)
     if (!stream) return reply.code(404).send({ error: 'File missing' })
     const ext = key.slice(key.lastIndexOf('.') + 1)
     fileHeaders(reply, EXT_TYPES[ext] ?? 'application/octet-stream', `photo-${a.id}.${ext}`)
-    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    if (variant === 'original') reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    else {
+      // The shown/annotated file is replaced when a photo is re-annotated, so it must revalidate (the key changes per annotation).
+      reply.header('Cache-Control', 'private, no-cache')
+      reply.header('ETag', `"${key}"`)
+    }
     return reply.send(stream)
   })
 

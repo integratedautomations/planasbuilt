@@ -10,6 +10,7 @@ import { queuePhotoCaption, queuePhotoCreate, queuePhotoDelete, subscribe } from
 import { uuid } from '../uuid'
 import { compressPhoto } from './compress'
 import { PhotoAnnotator } from './PhotoAnnotator'
+import { pickPhotoSrc } from './photoSrc'
 import './photos.css'
 
 type Attachment = AttachmentRow
@@ -23,6 +24,8 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
   const [loadErr, setLoadErr] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
   const [blobUrls, setBlobUrls] = useState<Map<string, string>>(new Map())
+  // Fresh blob URL of the markup saved this session; the server copy is stale until the queued upload lands.
+  const [saved, setSaved] = useState<Record<string, string>>({})
   const [queued, setQueued] = useState<Set<string>>(new Set())
   const { online, pending } = useSyncStatus()
 
@@ -73,11 +76,13 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
     return () => { cancel = true; setTimeout(() => made.forEach(URL.revokeObjectURL), 1000) }
   }, [ids, pending, bump])
 
-  const srcFor: SrcFor = (a, original) => {
-    const local = blobUrls.get(`${a.id}:${original ? 'original' : 'view'}`)
-    if (local && (a.pending || queued.has(a.id) || !online)) return local
-    return attachmentFileUrl(a.id, original ? 'original' : undefined, `${a.created_at}-${bump[a.id] ?? 0}`)
-  }
+  const srcFor: SrcFor = (a, original) => pickPhotoSrc({
+    original: !!original,
+    local: blobUrls.get(`${a.id}:${original ? 'original' : 'view'}`),
+    saved: saved[a.id],
+    unsynced: !!(a.pending || queued.has(a.id) || !online),
+    serverUrl: attachmentFileUrl(a.id, original ? 'original' : undefined, `${a.created_at}-${bump[a.id] ?? 0}`),
+  })
 
   const addFiles = async (files: FileList | null) => {
     if (!files) return
@@ -122,7 +127,8 @@ export function DevicePhotos({ markupId, readOnly }: Props) {
         <Viewer key={openId} items={items} index={openIdx} readOnly={readOnly} srcFor={srcFor}
           onIndex={i => setOpenId(items[i].id)} onClose={() => setOpenId(null)}
           onCaption={(id, caption) => setItems(it => it.map(a => a.id === id ? { ...a, caption } : a))}
-          onAnnotated={id => {
+          onAnnotated={(id, blob) => {
+            setSaved(m => ({ ...m, [id]: URL.createObjectURL(blob) }))
             setBump(b => ({ ...b, [id]: (b[id] ?? 0) + 1 }))
             setItems(it => it.map(a => a.id === id ? { ...a, has_annotation: true } : a))
           }}
@@ -141,7 +147,7 @@ interface ViewerProps {
   items: Attachment[]; index: number; readOnly: boolean; srcFor: SrcFor
   onIndex: (i: number) => void; onClose: () => void
   onCaption: (id: string, caption: string) => void
-  onAnnotated: (id: string) => void
+  onAnnotated: (id: string, blob: Blob) => void
   onDeleted: (id: string) => void
 }
 
@@ -229,7 +235,7 @@ function Viewer({ items, index, readOnly, srcFor, onIndex, onClose, onCaption, o
       {err && <div className="pm-caption" style={{ color: '#ff8787' }}>{err}</div>}
       {annotating && (
         <PhotoAnnotator attachmentId={a.id} src={srcFor(a, true)} onClose={() => setAnnotating(false)}
-          onSaved={() => { setAnnotating(false); setOrig(false); onAnnotated(a.id) }} />
+          onSaved={blob => { setAnnotating(false); setOrig(false); onAnnotated(a.id, blob) }} />
       )}
     </div>
   )

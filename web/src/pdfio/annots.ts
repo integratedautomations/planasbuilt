@@ -2,7 +2,7 @@ import { COVERAGE_OPACITY, hasCoverage, rangePx, sectorPoints } from '../markups
 import { cloudArcs } from '../markups/geometry'
 import { iconRect, mountShape, outlineAt, resolveMount, wallFacing } from '../markups/mount'
 import type { Mount } from '../markups/mount'
-import { legendLayout, legendSettings } from '../markups/legend'
+import { legendAlign, legendCell, legendLayout, legendSettings } from '../markups/legend'
 import type { LegendRow } from '../markups/legend'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
@@ -275,24 +275,33 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         let x0 = L.pad
         const colX: Record<string, number> = {}
         for (const c of s.columns) { colX[c] = x0; x0 += L.widths[c] }
-        rows.forEach((r, i) => {
+        L.items.forEach((it, i) => {
           const top = L.titleH + L.pad + i * L.rowH
           const base = top + L.rowH / 2 + fs * 0.35
-          if (s.columns.includes('icon')) {
-            const d = L.rowH * 0.64
-            ops.fill(hexToRgb(r.color) ?? GRAY).dash(undefined)
-            if (!r.mount || r.mount === 'ceiling') ops.ellipse(colX.icon + L.rowH * 0.5, top + L.rowH / 2, d / 2, d / 2)
-            else ops.poly(outlineAt(mountShape(r.mount, d / 2), colX.icon + L.rowH * 0.5, top + L.rowH / 2), true)
-            ops.paint(true, false)
+          if (it.kind === 'header') {
+            ops.fill([0.945, 0.953, 0.961]).dash(undefined).rect(L.pad / 2, top, w - L.pad, L.rowH).paint(true, false)
+            ops.text(fit(it.label, w - L.pad * 2, fs, true), L.pad, base, fs, ink, true)
+            return
           }
-          if (s.columns.includes('name')) ops.text(fit(r.name, L.widths.name - 4, fs), colX.name, base, fs, ink)
-          if (s.columns.includes('code')) ops.text(fit(r.code, L.widths.code - 4, fs), colX.code, base, fs, [0.29, 0.31, 0.34])
-          if (s.columns.includes('count')) {
-            const t = String(r.count)
-            ops.text(t, colX.count + L.widths.count - 4 - ctx.textWidth(t, fs, true), base, fs, ink, true)
+          const r = it.row
+          for (const c of s.columns) {
+            if (c === 'icon') {
+              const d = L.rowH * 0.64
+              ops.fill(hexToRgb(r.color) ?? GRAY).dash(undefined)
+              if (!r.mount || r.mount === 'ceiling') ops.ellipse(colX.icon + L.rowH * 0.5, top + L.rowH / 2, d / 2, d / 2)
+              else ops.poly(outlineAt(mountShape(r.mount, d / 2), colX.icon + L.rowH * 0.5, top + L.rowH / 2), true)
+              ops.paint(true, false)
+              continue
+            }
+            const bold = c === 'count'
+            const t = fit(legendCell(r, c), L.widths[c] - 4, fs, bold)
+            const tw = ctx.textWidth(t, fs, bold)
+            const al = legendAlign(s, c)
+            const x = al === 'right' ? colX[c] + L.widths[c] - 4 - tw : al === 'center' ? colX[c] + (L.widths[c] - 4 - tw) / 2 : colX[c]
+            ops.text(t, x, base, fs, c === 'name' || c === 'count' ? ink : [0.29, 0.31, 0.34], bold)
           }
         })
-        if (!rows.length) ops.text('No devices', L.pad, L.titleH + L.pad + fs, fs, GRAY)
+        if (!L.items.length) ops.text('No devices', L.pad, L.titleH + L.pad + fs, fs, GRAY)
         spec.subtype = 'Stamp'; spec.stampName = 'Legend'; spec.borderWidth = 0
         pad = (m.style.strokeWidth || 1) / 2 + 1
         spec.contents = ['Legend', s.title, ...rows.map(r => `${r.name}: ${r.count}`)].filter(Boolean).join(' | ')

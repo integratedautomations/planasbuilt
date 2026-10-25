@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { Icon } from '../ui/Icon'
+import type { IconName } from '../ui/Icon'
 import type { ReactNode } from 'react'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
 import { DENSITY_PREFS } from '../prefs/density'
@@ -31,8 +33,9 @@ function Check({ label, hint, checked, onChange, disabled }: { label: string; hi
   )
 }
 
+const SECTION_ICONS: Record<string, IconName> = { Placing: 'pin', Viewing: 'eye', Touch: 'device-size', Snapping: 'ruler', Hotkeys: 'keyboard', Notifications: 'bell' }
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
-  return <section className="card settings-card" id={id} aria-labelledby={`${id}-h`}><h3 id={`${id}-h`}>{title}</h3>{children}</section>
+  return <section className="card settings-card" id={id} aria-labelledby={`${id}-h`}><h3 id={`${id}-h`}>{SECTION_ICONS[title] && <Icon name={SECTION_ICONS[title]} size={18} />} {title}</h3>{children}</section>
 }
 
 /** Personal preferences: placing, viewing, touch, notifications, snapping and hotkeys. Everything follows the user to every device. */

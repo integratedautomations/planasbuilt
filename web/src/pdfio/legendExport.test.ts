@@ -51,4 +51,11 @@ describe('legend export', () => {
     expect(readAnnotations(doc)[0].annots).toHaveLength(0)
     expect(out.length).toBeGreaterThan(pdfBytes.length)
   })
+
+  it('exports a sorted, grouped legend with the extra columns', async () => {
+    const pdfBytes = await blank()
+    const fancy: Markup = { ...legend, fields: legendFields({ ...DEFAULT_LEGEND, columns: ['name', 'manufacturer', 'set', 'count'], sort: 'count-desc', groupBySet: true, showZero: true, aligns: { name: 'center' }, widths: { set: 2 } }) }
+    const out = await exportFlattened({ pdfBytes, markups: [dev('1', 50), dev('2', 100), fancy], symbolSets: new Map([[set.id, set]]), scales: new Map(), catalog })
+    expect((await PDFDocument.load(out)).getPageCount()).toBe(1)
+  })
 })

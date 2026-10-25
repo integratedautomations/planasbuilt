@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Icon } from '../ui/Icon'
+import type { IconName } from '../ui/Icon'
 import { api } from '../api'
 import type { Markup, SymbolSet } from '../markups/types'
 import type { Project } from '../api'
@@ -12,13 +14,13 @@ import { ProjectRulesForm } from './ProjectRulesForm'
 import type { RulesPart } from './ProjectRulesForm'
 
 export type ProjectSection = 'general' | 'rules' | 'tags' | 'cables' | 'report' | 'move'
-export const PROJECT_SECTIONS: { id: ProjectSection; label: string; platform?: boolean }[] = [
-  { id: 'general', label: 'General' },
-  { id: 'rules', label: 'Rules' },
-  { id: 'tags', label: 'Tags' },
-  { id: 'cables', label: 'Cable defaults' },
-  { id: 'report', label: 'Report' },
-  { id: 'move', label: 'Move to another company', platform: true },
+export const PROJECT_SECTIONS: { id: ProjectSection; label: string; icon: IconName; platform?: boolean }[] = [
+  { id: 'general', icon: 'settings', label: 'General' },
+  { id: 'rules', icon: 'rules', label: 'Rules' },
+  { id: 'tags', icon: 'tag', label: 'Tags' },
+  { id: 'cables', icon: 'cable', label: 'Cable defaults' },
+  { id: 'report', icon: 'file', label: 'Report' },
+  { id: 'move', icon: 'move', label: 'Move to another company', platform: true },
 ]
 
 const rulesOf = (p: Project): ProjectRules => {
@@ -97,7 +99,7 @@ export function ProjectSettingsTab({ project, onProject, section = 'general', pl
     <div className="project-settings stack">
       {section === 'general' && (
         <section className="card settings-card">
-          <h3>General</h3>
+          <h3><Icon name="settings" size={18} /> General</h3>
           <p className="muted small">Changes here apply as soon as you tick them.</p>
           <label className="check" title="Project managers and admins always see costs">
             <input type="checkbox" checked={project.editors_see_costs !== false} onChange={e => void setCosts(e.target.checked)} /> Editors see unit costs and labor hours
@@ -113,14 +115,14 @@ export function ProjectSettingsTab({ project, onProject, section = 'general', pl
 
       {section === 'cables' && (
         <section className="card settings-card">
-          <h3>Cable defaults</h3>
+          <h3><Icon name="cable" size={18} /> Cable defaults</h3>
           <CableDefaults project={project} canEdit onSaved={onProject} />
         </section>
       )}
 
       {section === 'report' && (
         <section className="card settings-card">
-          <h3>Report logo</h3>
+          <h3><Icon name="file" size={18} /> Report logo</h3>
           <p className="muted small">Shown on the as-built report title page. Without one, the company logo is used. PNG or JPEG, 2 MB max. Uploading applies at once.</p>
           <div className="row">
             {settings.report.has_logo ? <img className="logo-preview" alt="Project logo" src={logoUrl || undefined} /> : <span className="muted small">Using the company logo</span>}

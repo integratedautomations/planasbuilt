@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import { api, companyLogoUrl } from '../api'
 import type { CompanyInfo } from '../api'
 import { useAuthedUrl } from '../useAuthedUrl'
@@ -81,7 +82,7 @@ export function CompanyTab() {
       <p className="muted small -mt">Shown on the as-built report and in emails. These settings are for this company only.</p>
       <div className="tidy-grid">
       <section className="card settings-card">
-        <h3>Company</h3>
+        <h3><Icon name="building" size={18} /> Company</h3>
         <label className="field">Company name<input value={s.company.name} onChange={e => patch({ name: e.target.value })} /></label>
         <label className="field">Address<textarea rows={3} value={s.company.address} onChange={e => patch({ address: e.target.value })} /></label>
         <label className="field">Phone<input value={s.company.phone} onChange={e => patch({ phone: e.target.value })} /></label>
@@ -98,14 +99,14 @@ export function CompanyTab() {
       </section>
 
       <section className="card settings-card">
-        <h3>Report defaults</h3>
+        <h3><Icon name="file" size={18} /> Report defaults</h3>
         <p className="muted small">Filled into the as-built report title page. People can still change them for each report.</p>
         <label className="field">Prepared by<input value={s.company.prepared_by} onChange={e => patch({ prepared_by: e.target.value })} placeholder="e.g. Field Services Team" /></label>
         <p className="muted small">The report also uses the company name and address above.</p>
       </section>
 
       <section className="card settings-card">
-        <h3>Tags</h3>
+        <h3><Icon name="tag" size={18} /> Tags</h3>
         <label className="field">Tag number digits
           <select value={s.tags.padding} onChange={e => setSettings({ ...s, tags: { padding: Number(e.target.value) as 2 | 3 | 4 } })}>
             <option value={2}>2 digits (CAM-01)</option>
@@ -117,7 +118,7 @@ export function CompanyTab() {
       </section>
 
       <section className="card settings-card">
-        <h3>Photos</h3>
+        <h3><Icon name="camera" size={18} /> Photos</h3>
         <label className="field">Longest side (pixels)
           <input type="number" min={800} max={6000} step={100} value={s.photos.max_dimension}
             onChange={e => setSettings({ ...s, photos: { max_dimension: Number(e.target.value) } })} />
@@ -130,7 +131,7 @@ export function CompanyTab() {
       <h3 className="group-title">Invitations</h3>
       <div className="tidy-grid">
         <section className="card settings-card">
-          <h3>Invite email</h3>
+          <h3><Icon name="mail" size={18} /> Invite email</h3>
           <label className="field">Sender name in the text
             <input value={s.invite.sender_name} placeholder="Blank = the name of the person who invites" onChange={e => patchInvite({ sender_name: e.target.value })} />
           </label>

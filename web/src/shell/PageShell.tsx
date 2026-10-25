@@ -11,7 +11,7 @@ export interface Crumb { label: string; to?: string }
 export type ContentWidth = 'default' | 'wide' | 'full'
 
 /**
- * The chrome every non-viewer page shares: brand, company switcher, a breadcrumb trail with a back link, optional header
+ * The chrome every non-viewer page shares: brand, company switcher, a breadcrumb trail (on phones: a second row under the header with the back arrow and a Catalog link) with a back link, optional header
  * actions and the avatar menu. `width` picks the content column: default 860, wide 1100, full = fills the screen (tables).
  */
 export function PageShell({ crumbs = [], actions, width = 'default', className = '', children, below }: {
@@ -25,18 +25,21 @@ export function PageShell({ crumbs = [], actions, width = 'default', className =
       <header className="topbar">
         <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
         <CompanySwitcher />
-        {parent?.to && <Link to={parent.to} className="crumb-back" aria-label={`Back to ${parent.label}`} title={`Back to ${parent.label}`}><Icon name="arrow-left" size={18} /></Link>}
-        <nav className="crumbs" aria-label="Breadcrumb">
-          {crumbs.map((c, i) => {
-            const last = i === crumbs.length - 1
-            return (
-              <span key={i} className={`crumb-item${last ? ' current' : ''}`}>
-                {i > 0 && <span className="muted crumb-sep">/</span>}
-                {c.to && !last ? <Link to={c.to} className="crumb">{c.label}</Link> : <span className="crumb" title={c.label} aria-current={last ? 'page' : undefined}>{c.label}</span>}
-              </span>
-            )
-          })}
-        </nav>
+        <div className="subbar">
+          {parent?.to && <Link to={parent.to} className="crumb-back" aria-label={`Back to ${parent.label}`} title={`Back to ${parent.label}`}><Icon name="arrow-left" size={18} /></Link>}
+          <nav className="crumbs" aria-label="Breadcrumb">
+            {crumbs.map((c, i) => {
+              const last = i === crumbs.length - 1
+              return (
+                <span key={i} className={`crumb-item${last ? ' current' : ''}`}>
+                  {i > 0 && <span className="muted crumb-sep">/</span>}
+                  {c.to && !last ? <Link to={c.to} className="crumb">{c.label}</Link> : <span className="crumb" title={c.label} aria-current={last ? 'page' : undefined}>{c.label}</span>}
+                </span>
+              )
+            })}
+          </nav>
+          <Link to="/company/catalog" className="subbar-catalog">Catalog</Link>
+        </div>
         <span className="spacer" />
         {actions}
         <UserMenu />

@@ -13,7 +13,7 @@ const COLORS = [['Red', '#e03131'], ['Yellow', '#ffd43b'], ['White', '#ffffff'],
 const WIDTHS = [['Thin', 3], ['Medium', 6], ['Thick', 12]] as const
 const TOOLS: [Kind, string][] = [['pen', 'Pen'], ['arrow', 'Arrow'], ['rect', 'Box'], ['text', 'Text']]
 
-interface Props { attachmentId: string; /** URL of the unannotated original (server or local blob) */ src: string; onClose: () => void; onSaved: () => void }
+interface Props { attachmentId: string; /** URL of the unannotated original (server or local blob) */ src: string; onClose: () => void; onSaved: (saved: Blob) => void }
 
 export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: Props) {
   const src = useAuthedUrl(rawSrc)
@@ -171,7 +171,7 @@ export function PhotoAnnotator({ attachmentId, src: rawSrc, onClose, onSaved }: 
       for (const s of shapes) drawShape(ctx, s)
       const blob = await new Promise<Blob>((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('Export failed')), 'image/jpeg', 0.9))
       await queuePhotoAnnotated(attachmentId, blob)
-      onSaved()
+      onSaved(blob)
     } catch (e) {
       setErr((e as Error).message || 'Save failed')
       setSaving(false)

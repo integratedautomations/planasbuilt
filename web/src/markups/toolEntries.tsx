@@ -25,6 +25,8 @@ export interface ToolEntry {
   image?: string
   /** Device-type entries: 1-4 character abbreviation shown under the icon in grid view. */
   initials?: string
+  /** Legend-preset entries: the preset this entry places (its settings become the new legend's). */
+  legendPresetId?: string
 }
 
 /** Short label for a device type: its tag prefix (letters/digits, max 4), else the first letters of its words (max 3), else the first 3 letters. */
@@ -50,10 +52,10 @@ const GROUPS: Record<string, string> = {
 const SQUARE_ICON = icon(<rect x="5" y="5" width="14" height="14" rx="1" />)
 const CIRCLE_ICON = icon(<circle cx="12" cy="12" r="7" />)
 
-export const GROUP_ORDER = ['Select / Navigate', 'Shapes', 'Text', 'Measure', 'Site']
+export const GROUP_ORDER = ['Select / Navigate', 'Shapes', 'Text', 'Measure', 'Site', 'Legends']
 
 /** Everything the Tool chest lists, in display order. Device types replace the generic Device tool. */
-export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = []): ToolEntry[] {
+export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = [], presets: { id: string; name: string; set_id: string | null }[] = []): ToolEntry[] {
   const base: ToolEntry[] = []
   for (const t of TOOLS) {
     if (t.tool === 'device') continue
@@ -68,7 +70,15 @@ export function buildToolEntries(sets: SymbolSet[], types: DeviceType[] = []): T
       id: `type:${t.id}`, label: t.name, group: s.name, icon: deviceIcon, tool: 'device' as Tool, setId: s.id, typeId: t.id, color: s.color, mount: t.mount, image: t.icon || s.icon, initials: entryInitials(t.name, t.tag_prefix || s.tag_prefix),
     })),
   ])
-  return [...GROUP_ORDER.flatMap(g => base.filter(e => e.group === g)), ...devices]
+  // Legend presets: their own "Legends" group, or inside the symbol set they are attached to
+  const legendIcon = TOOLS.find(t => t.tool === 'legend')!.icon
+  const setName = new Map(sets.map(s => [s.id, s.name]))
+  const legends: ToolEntry[] = presets.map(p => ({
+    id: `legend:${p.id}`, label: p.name, group: (p.set_id && setName.get(p.set_id)) || 'Legends', icon: legendIcon, tool: 'legend' as Tool, legendPresetId: p.id,
+  }))
+  const inSet = (e: ToolEntry) => e.group !== 'Legends'
+  const grouped = [...GROUP_ORDER.flatMap(g => base.filter(e => e.group === g)), ...legends.filter(e => !inSet(e))]
+  return [...grouped, ...devices, ...legends.filter(inSet)]
 }
 
 /** Groups in display order: the fixed groups, then one per symbol set. */

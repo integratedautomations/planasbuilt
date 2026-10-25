@@ -13,7 +13,7 @@ import { STATUSES } from './types'
 import { clampAngle, COVERAGE_OPACITY, formatRange, hasCoverage, normDeg, rangeFeet, rangePx, withRangePx } from './coverage'
 import type { BoxGeometry, Fov, Markup, PathGeometry, Status, SymbolSet } from './types'
 import { useImage } from './useImage'
-import { legendLayout, legendSettings } from './legend'
+import { legendAlign, legendCell, legendLayout, legendSettings } from './legend'
 import type { LegendRow } from './legend'
 
 interface Props {
@@ -211,17 +211,26 @@ function LegendBody({ m, g, rows }: { m: Markup; g: BoxGeometry; rows: LegendRow
       {s.title.trim() && (
         <Text text={s.title} x={L.pad} y={L.pad * 0.8} width={g.width - L.pad * 2} height={L.titleH} fontSize={fs * 1.2} fontStyle="bold" fill={ink} fontFamily={font} listening={false} />
       )}
-      {rows.length === 0 && (
+      {L.items.length === 0 && (
         <Text text="No devices" x={L.pad} y={L.titleH + L.pad} fontSize={fs} fill="#868e96" fontFamily={font} listening={false} />
       )}
-      {rows.map((r, i) => {
+      {L.items.map((it, i) => {
         const y = L.titleH + L.pad + i * L.rowH
+        if (it.kind === 'header') {
+          return (
+            <Group key={`h:${it.label}:${i}`} y={y} listening={false}>
+              <Rect x={L.pad / 2} width={g.width - L.pad} height={L.rowH} fill="#f1f3f5" />
+              <Text text={it.label} x={L.pad} width={g.width - L.pad * 2} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fontStyle="bold" fill={ink} fontFamily={font} />
+            </Group>
+          )
+        }
+        const r = it.row
         return (
           <Group key={r.key} y={y} listening={false}>
-            {s.columns.includes('icon') && <Group x={colX.icon + L.rowH * 0.1}><LegendIcon src={r.icon} color={r.color} size={L.rowH * 0.8} mount={r.mount} /></Group>}
-            {s.columns.includes('name') && <Text text={r.name} x={colX.name} width={L.widths.name - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill={ink} fontFamily={font} />}
-            {s.columns.includes('code') && <Text text={r.code} x={colX.code} width={L.widths.code - 4} height={L.rowH} verticalAlign="middle" wrap="none" ellipsis fontSize={fs} fill="#495057" fontFamily={FONT_MONO} />}
-            {s.columns.includes('count') && <Text text={String(r.count)} x={colX.count} width={L.widths.count - 4} height={L.rowH} align="right" verticalAlign="middle" fontSize={fs} fontStyle="bold" fill={ink} fontFamily={FONT_MONO} />}
+            {s.columns.map(c => c === 'icon'
+              ? <Group key={c} x={colX.icon + L.rowH * 0.1}><LegendIcon src={r.icon} color={r.color} size={L.rowH * 0.8} mount={r.mount} /></Group>
+              : <Text key={c} text={legendCell(r, c)} x={colX[c]} width={L.widths[c] - 4} height={L.rowH} align={legendAlign(s, c)} verticalAlign="middle" wrap="none" ellipsis
+                  fontSize={fs} fontStyle={c === 'count' ? 'bold' : 'normal'} fill={c === 'name' || c === 'count' ? ink : '#495057'} fontFamily={c === 'name' || c === 'description' || c === 'set' || c === 'manufacturer' ? font : FONT_MONO} />)}
           </Group>
         )
       })}

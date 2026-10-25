@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Icon } from '../ui/Icon'
 import { Link } from 'react-router-dom'
 import { UserAvatar } from '../ui/UserAvatar'
 import { useSession } from './session'
@@ -51,10 +52,10 @@ export function UserMenu() {
               {inviteErr && <span className="error small" role="alert">{inviteErr}</span>}
             </div>
           )}
-          <Link role="menuitem" to="/account">Account</Link>
-          {user.is_admin && <Link role="menuitem" to="/company">Company admin</Link>}
-          {!user.is_admin && <Link role="menuitem" to="/company/catalog">Catalog</Link>}
-          {user.platform_admin && <Link role="menuitem" to="/platform">Platform</Link>}
+          <Link role="menuitem" to="/account"><Icon name="user" size={16} /> Account</Link>
+          {user.is_admin && <Link role="menuitem" to="/company"><Icon name="building" size={16} /> Company admin</Link>}
+          {!user.is_admin && <Link role="menuitem" to="/company/catalog"><Icon name="grid" size={16} /> Catalog</Link>}
+          {user.platform_admin && <Link role="menuitem" to="/platform"><Icon name="globe" size={16} /> Platform</Link>}
           <button role="menuitem" onClick={signOut}>Sign out</button>
         </div>
       )}

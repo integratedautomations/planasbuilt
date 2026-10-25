@@ -137,15 +137,21 @@
 
 /* Phone keeps its layout */
 @media (max-width: 640px) {
-  .viewer .topbar { gap: 0; padding: 4px; }
+  .viewer .topbar { gap: 0; padding: 4px; flex-wrap: wrap; }
+  .viewer .topbar > .icon-btn, .viewer .topbar .more-wrap .icon-btn { min-width: 44px; width: 44px; height: 44px; }
+  .viewer .topbar .sync-compact { min-height: 44px; min-width: 44px; justify-content: center; }
+  .viewer .topbar .plan-btn { min-height: 44px; }
+  .viewer-subrow { flex: 0 0 100%; order: 9; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 6px 2px; }
+  .viewer-subrow .spacer { display: block; flex: 1; }
+  .viewer-subrow .page-pill { margin: 0; min-height: 36px; height: 36px; }
   .plan-switch { flex: 1 1 0; }
   .plan-btn { max-width: 100%; font-size: 14px; }
   .plan-btn .ellipsis { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .page-pill { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; white-space: nowrap; min-height: 28px; height: 28px; padding: 0 10px; margin: 0 4px; border-radius: 14px; font-size: 13px; font-variant-numeric: tabular-nums; background: rgb(255 255 255 / 0.12); border-color: transparent; color: var(--chrome-text); }
-  .viewer .topbar .sync-compact { padding: 0 4px; min-width: 0; flex-shrink: 0; }
+  .viewer .topbar .sync-compact { padding: 0 4px; flex-shrink: 0; }
   .viewer .topbar .sync-compact .dot { width: 9px; height: 9px; }
   .viewer .topbar .sync-compact.st-busy .dot { background: var(--warn); }
-  .viewer .topbar .spacer { display: none; }
+  .viewer .topbar > .spacer { display: none; }
   .vmenu-row { display: flex; align-items: center; gap: 2px; padding: 0 2px; }
   .vmenu-row .icon-btn { color: var(--text); min-width: 36px; }
   .vmenu-embed { padding: 4px 8px 8px; }
@@ -192,3 +198,22 @@
 .proj-crumb:hover { color: var(--chrome-text); text-decoration: underline; }
 .proj-crumb-sep { flex-shrink: 0; }
 @media (max-width: 760px) { .proj-crumb, .proj-crumb-sep { display: none; } }
+
+/* ---- Phone tool row: chest picker + one-tap tool chips, docked under the header ---- */
+.chest-row-bar { display: none; }
+@media (max-width: 640px) {
+  .chest-row-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: stretch; gap: 6px; padding: 4px 6px; background: var(--panel-bg); border-bottom: 1px solid var(--divider); box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+  .chest-row-select { flex: 0 0 auto; width: 104px; max-width: 30vw; min-height: 52px; padding: 0 4px; font-size: 14px; font-weight: 600; }
+  .chest-row-chips { flex: 1 1 0; min-width: 0; display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; scroll-snap-type: x proximity; }
+  .chest-row-chips::-webkit-scrollbar { display: none; }
+  .chest-chip { flex: 0 0 auto; scroll-snap-align: center; min-width: 48px; min-height: 52px; padding: 2px 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border-color: transparent; background: transparent; }
+  .chest-chip.active { background: color-mix(in srgb, var(--redline) 16%, transparent); color: var(--redline); border-color: var(--redline); }
+  .chest-chip-icon { display: grid; place-items: center; height: 30px; }
+  .chest-chip-icon svg { width: 22px; height: 22px; }
+  .chest-chip-text { font-size: 11px; font-weight: 700; line-height: 1; letter-spacing: 0.02em; }
+  .chest-row-more { flex: 0 0 auto; width: 44px; min-height: 52px; padding: 0; display: grid; place-items: center; }
+  .viewport.has-chest-row .chip-stack, .viewport.has-chest-row .status-chip-wrap, .viewport.has-chest-row .tool-hint { top: 66px; }
+  .chest-sheet-title { flex: 1; padding: 0 8px; }
+  .chest-sheet-body { display: flex; flex-direction: column; }
+  .chest-sheet .tool-chest { min-height: 0; }
+}
