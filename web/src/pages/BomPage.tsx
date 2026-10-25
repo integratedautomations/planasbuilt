@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { api } from '../api'
 import type { DocumentSummary, Project, User } from '../api'
 import { computeBom, hours, money } from '../catalog/bom'
@@ -8,13 +8,10 @@ import { bomFileName, downloadBomExcel, downloadBomPdf } from '../catalog/bomExp
 import { useCatalog } from '../catalog/useCatalog'
 import { cableSettings, cableTotals } from '../markups/cables'
 import type { Markup, SymbolSet } from '../markups/types'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { db } from '../offline/db'
 import { loadDocuments, loadProject, loadSymbolSets } from '../offline/cache'
+import { ProjectBody } from '../shell/ProjectShell'
 import { areaOptions, buildRows } from '../schedule/rows'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
-import { UserMenu } from '../settings/UserMenu'
 
 const SECTION_TITLE: Record<BomSection, string> = { devices: 'Devices', accessories: 'Accessories', unassigned: 'Unassigned devices (no product chosen)' }
 
@@ -77,19 +74,7 @@ export function BomPage({ user }: { user: User }) {
 
   const grouped = (['devices', 'accessories', 'unassigned'] as BomSection[]).map(s => ({ s, lines: bom.lines.filter(l => l.section === s) })).filter(g => g.lines.length)
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <Link to={`/projects/${projectId}`} className="crumb">{project?.name ?? '…'}</Link>
-        <span className="muted">/</span>
-        <span className="crumb">BOM</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content">
+    <ProjectBody width="full">
         <div className="row wrap">
           <h2>Bill of materials</h2>
           <span className="spacer" />
@@ -145,8 +130,7 @@ export function BomPage({ user }: { user: User }) {
             </table>
           </div>
         )}
-      </main>
-    </div>
+    </ProjectBody>
   )
 }
 

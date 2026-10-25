@@ -1,17 +1,12 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Brand } from '../Brand'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { COMPANY_ROLES, COMPANY_ROLE_INFO } from '../roles'
 import type { CompanyRole } from '../roles'
 import { createCompany, listCompanies, listMembers, patchCompany, patchMember, putMember, removeMember } from '../company/api'
 import type { CompanyMember, CompanyRow } from '../company/api'
-import { CompanySwitcher } from '../company/CompanySwitcher'
 import { useSession } from './session'
-import { UserMenu } from './UserMenu'
 
 /** Platform admins: every company, create / rename / archive, and who belongs to each. */
-export function CompaniesPage() {
+export function CompaniesPanel() {
   const session = useSession()
   const [rows, setRows] = useState<CompanyRow[] | null>(null)
   const [error, setError] = useState('')
@@ -37,17 +32,8 @@ export function CompaniesPage() {
 
   const shown = (rows ?? []).filter(c => showArchived || !c.archived)
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <span className="crumb">Companies</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content content-wide">
+    <div className="panel">
+      <div className="panel-main">
         <div className="row wrap">
           <h2>Companies</h2>
           <span className="spacer" />
@@ -73,7 +59,7 @@ export function CompaniesPage() {
             ))}
           </ul>
         )}
-      </main>
+      </div>
     </div>
   )
 }

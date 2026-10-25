@@ -15,6 +15,21 @@ export async function probeFolderZip(url: string): Promise<string | null> {
   } catch (e) { return (e as Error).name === 'AbortError' ? null : 'Could not reach the server' } finally { ctl.abort() }
 }
 
+/** Starts the folder-zip download; resolves to an error message, or null when the browser took over. */
+export async function startFolderDownload(projectId: string): Promise<string | null> {
+  try {
+    const base = `/api/projects/${encodeURIComponent(projectId)}/folder.zip`
+    const refused = await probeFolderZip(base)
+    if (refused) return refused
+    const { ft } = await api<{ ft: string }>('/file-token', { method: 'POST' })
+    const a = document.createElement('a')
+    a.href = `${base}?ft=${encodeURIComponent(ft)}`
+    a.rel = 'noopener'
+    document.body.appendChild(a); a.click(); a.remove()
+    return null
+  } catch (e) { return (e as Error).message }
+}
+
 /**
  * Downloads the project as a zip in the same folder layout as on the file share (plans, photos, report logo and a device list).
  * A short-lived file token lets the browser stream the zip straight to disk instead of holding it in memory.

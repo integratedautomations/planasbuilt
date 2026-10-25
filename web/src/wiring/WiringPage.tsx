@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import type { DocumentSummary, Project, User } from '../api'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import { cableSettings } from '../markups/cables'
 import type { Markup, SymbolSet } from '../markups/types'
 import { loadDocuments, loadProject, loadSymbolSets } from '../offline/cache'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { downloadBytes } from '../pdfio/download'
 import { loadIcons } from '../pdfio/icons'
-import { UserMenu } from '../settings/UserMenu'
 import { NOT_CONNECTED_TEXT, problemText } from './graph'
 import { loadProjectWiring } from './loadWiring'
+import { ProjectBody } from '../shell/ProjectShell'
 import { RiserSvg } from './RiserSvg'
 import { loadCompany } from '../settings/company'
 import { buildRiserPdf, riserFileName, riserPages, wiringOf } from './riserPdf'
@@ -87,24 +84,7 @@ export function WiringPage({ user }: { user: User }) {
 
   return (
     <CatalogContext.Provider value={catalog}>
-      <div className="page">
-        <header className="topbar">
-          <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-          <CompanySwitcher />
-          <span className="muted">/</span>
-          <Link to={`/projects/${pid}`} className="crumb">{project?.name ?? '…'}</Link>
-          <span className="muted">/</span>
-          <span className="crumb">Wiring</span>
-          <span className="spacer" />
-          <UserMenu />
-        </header>
-        <OfflineBanner />
-        <main className="content dv-content">
-          <div className="tabs" role="tablist">
-            <Link role="tab" aria-selected={false} className="tab" to={`/projects/${pid}`}>Plans</Link>
-            <Link role="tab" aria-selected={false} className="tab" to={`/projects/${pid}/devices`}>Devices</Link>
-            <span role="tab" aria-selected className="tab active">Wiring</span>
-          </div>
+      <ProjectBody width="wide">
           <div className="row wrap">
             <h2>Wiring riser</h2>
             <span className="spacer" />
@@ -159,8 +139,7 @@ export function WiringPage({ user }: { user: User }) {
               )}
             </section>
           )}
-        </main>
-      </div>
+      </ProjectBody>
     </CatalogContext.Provider>
   )
 }

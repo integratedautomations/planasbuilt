@@ -1,0 +1,68 @@
+/* Shared page chrome: breadcrumbs, content widths, the one tab style, sidebar layouts. */
+.crumbs { display: flex; align-items: center; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.crumb-item { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.crumb-item + .crumb-item { margin-left: 8px; }
+.crumb-item.current { min-width: 0; }
+a.crumb:hover { text-decoration: underline; }
+.crumb-back { display: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; }
+.crumb-back:hover { background: rgb(255 255 255 / 0.14); }
+@media (max-width: 640px) {
+  .crumb-back { display: inline-flex; }
+  .crumb-item:not(.current) { display: none; }
+  .crumb-item.current .crumb-sep { display: none; }
+}
+
+.content.content-wide { max-width: 1100px; }
+.content.content-full { max-width: none; }
+.content-wide, .content-default { width: 100%; }
+
+/* One tab style, for buttons and links. */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.tabs .tab, .tabs button.tab {
+  flex: 0 0 auto; background: transparent; border: none; border-bottom: 3px solid transparent; border-radius: 0; padding: 10px 16px; min-height: 0;
+  color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; text-decoration: none;
+}
+.tabs .tab:hover { color: var(--text); background: var(--surface-2); }
+.tabs .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+/* Side-panel tabs in the viewer keep their compact look (they use plain buttons, not .tab). */
+.project-tabs-bar { background: var(--surface); border-bottom: 1px solid var(--border); }
+.project-tabs-bar .tabs { max-width: 1100px; margin: 0 auto; border-bottom: none; padding: 0 8px; }
+.project-body { width: 100%; }
+
+/* Sectioned pages (Account, Company admin, Platform, project Settings): sidebar on desktop, list -> detail on phone. */
+.section-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+.section-nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 12px; }
+.section-nav a { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border-radius: var(--radius); color: var(--text); font-weight: 500; }
+.section-nav a:hover { background: var(--surface-2); }
+.section-nav a.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-weight: 600; }
+.section-nav .chev { display: none; color: var(--muted); }
+.section-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.section-body > h2 { margin-bottom: -4px; }
+.section-back { display: none; align-self: flex-start; }
+@media (max-width: 760px) {
+  .section-layout { grid-template-columns: 1fr; }
+  .section-layout.has-detail .section-nav { display: none; }
+  .section-layout.no-detail .section-body { display: none; }
+  .section-nav { position: static; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 4px; }
+  .section-nav .chev { display: inline; }
+  .section-back { display: inline-flex; }
+}
+/* Horizontal sub-tabs inside a project's Settings use the same .tabs style. */
+.save-bar { display: flex; flex-direction: column; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; border-top: 1px solid var(--border); z-index: 2; }
+.tidy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: stretch; }
+.tidy-grid > .settings-card { height: 100%; }
+/* Project pages: the shell gives a full-width column; each page picks its own readable width. */
+.content.project-content { padding-top: 16px; }
+.project-body { margin: 0 auto; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.pb-default { max-width: 860px; }
+.pb-wide { max-width: 1100px; }
+.pb-full { max-width: none; }
+
+/* Cards of unequal height flow into columns instead of leaving holes in a grid. */
+.masonry { columns: 340px; column-gap: 16px; }
+.masonry > .card { break-inside: avoid; margin-bottom: 16px; display: flex; flex-direction: column; gap: 12px; padding: 18px; }
+.group-title { margin-top: 8px; }
+.-mt { margin-top: -6px; }
+.panel-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.panel { min-width: 0; }
+.section-body .panel .row.wrap > h2:first-child { display: none; }

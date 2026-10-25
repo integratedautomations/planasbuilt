@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, documentFileUrl, fetchBlob } from '../api'
-import type { DocumentRevision, DocumentSummary, Project, RevisionUpload, User } from '../api'
-import { docCacheStates, invalidatePdf, loadDocuments, loadProject, makeProjectOffline, projectCacheSize } from '../offline/cache'
+import type { DocumentRevision, DocumentSummary, RevisionUpload, User } from '../api'
+import { docCacheStates, invalidatePdf, loadDocuments, makeProjectOffline, projectCacheSize } from '../offline/cache'
 import type { Progress } from '../offline/cache'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { loadPdf } from '../pdf'
 import { exportProjectReport } from '../pdfio/actions'
 import { ReportDialog } from '../pdfio/ReportDialog'
@@ -12,14 +11,9 @@ import type { ReportOptions } from '../pdfio/reportOptions'
 import { exportProjectSchedule } from '../schedule/exportProject'
 import { makeRevisionCurrent } from '../revisions/api'
 import { IssueRevisionDialog } from '../revisions/IssueRevisionDialog'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
 import { Icon } from '../ui/Icon'
-import { UserMenu } from '../settings/UserMenu'
-import { MembersPanel } from '../settings/MembersPanel'
-import { ProjectSettingsTab } from '../settings/ProjectSettingsTab'
-import { MoveProjectPanel } from '../settings/MoveProjectPanel'
-import { DownloadProjectFolder } from './DownloadProjectFolder'
+import { startFolderDownload } from './DownloadProjectFolder'
+import { useProject, ProjectBody } from '../shell/ProjectShell'
 import { lockedFor } from '../projectSettings'
 import { cableSettings } from '../markups/cables'
 import { can } from '../roles'
@@ -45,7 +39,7 @@ async function openPdf(docId: string, revisionId: string, onError: (m: string) =
 }
 
 /** A ⋯ bubble + pop-up menu. Closes on outside press, Escape, or choosing an item. */
-function PopMenu({ label, className = '', children }: { label: string; className?: string; children: React.ReactNode }) {
+function PopMenu({ label, className = '', children, text }: { label: string; className?: string; children: React.ReactNode; text?: string }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -58,20 +52,22 @@ function PopMenu({ label, className = '', children }: { label: string; className
   }, [open])
   return (
     <div className={`pp-menu ${className}`} ref={ref}>
-      <button type="button" className="pp-bubble" aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label}
+      <button type="button" className={text ? 'pp-actions-btn' : 'pp-bubble'} aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label}
         onClick={() => setOpen(o => !o)}>
-        <Icon name="dots" size={20} />
+        {text ? <>{text} <Icon name="chevron-down" size={14} /></> : <Icon name="dots" size={20} />}
       </button>
       {open && <div className="pp-popup right" role="menu" onClick={e => { if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false) }}>{children}</div>}
     </div>
   )
 }
 
+/** Plans tab: the project's plans, with Upload PDF and one Actions menu. Header, tabs and Mark complete come from ProjectShell. */
 export function ProjectPage({ user }: { user: User }) {
+  void user
   const { projectId } = useParams()
-  const [project, setProject] = useState<Project | null>(null)
+  const { project } = useProject()
   const [docs, setDocs] = useState<DocumentSummary[]>([])
-  const [tab, setTab] = useState<'plans' | 'members' | 'settings' | 'company'>('plans')
+  const [folderBusy, setFolderBusy] = useState(false)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -90,7 +86,6 @@ export function ProjectPage({ user }: { user: User }) {
   const [progress, setProgress] = useState<Progress | null>(null)
 
   useEffect(() => {
-    loadProject(projectId!).then(r => setProject(r.data)).catch(e => setError(e.message))
     loadDocuments(projectId!).then(r => setDocs(r.data)).catch(e => setError(e.message))
   }, [projectId])
 
@@ -114,17 +109,13 @@ export function ProjectPage({ user }: { user: User }) {
   const allOffline = docs.length > 0 && docs.every(d => offlineState.get(d.id)?.offline)
   const locked = lockedFor(project?.role, { locked: project?.settings?.locked === true })
   const canEdit = can(project?.role, 'plans.edit') && !locked
-  const isAdmin = can(project?.role, 'members.manage')
   const canDeletePlans = can(project?.role, 'plans.delete')
-  const canSeeCosts = project?.can_see_costs !== false
 
-  async function toggleComplete() {
-    if (!project) return
-    setError('')
-    try {
-      const p = await api<Project>(`/projects/${project.id}`, { method: 'PATCH', body: JSON.stringify({ status: project.status === 'completed' ? 'open' : 'completed' }) })
-      setProject({ ...project, status: p.status, completed_at: p.completed_at })
-    } catch (err) { setError((err as Error).message) }
+  async function downloadFolder() {
+    setFolderBusy(true); setError('')
+    const err = await startFolderDownload(projectId!)
+    if (err) setError(err)
+    setTimeout(() => setFolderBusy(false), 1500)
   }
 
   async function upload(files: FileList | null) {
@@ -212,56 +203,10 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   }
 
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <span className="crumb" title={project?.name}>{project?.name ?? '…'}</span>
-        {project?.status === 'completed' && <span className="muted small hide-narrow">Completed</span>}
-        <span className="spacer" />
-        {canEdit && project && (
-          <button className="pp-complete" onClick={toggleComplete}>
-            {project.status === 'completed'
-              ? <><span className="hide-narrow">Reopen project</span><span className="show-narrow">Reopen</span></>
-              : <><span className="hide-narrow">Mark complete</span><span className="show-narrow"><Icon name="check" size={16} /> Done</span></>}
-          </button>
-        )}
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content">
-        <div className="tabs" role="tablist">
-          <button role="tab" aria-selected={tab === 'plans'} className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>Plans</button>
-          <button role="tab" aria-selected={tab === 'members'} className={`tab${tab === 'members' ? ' active' : ''}`} onClick={() => setTab('members')}>Members</button>
-          {user.platform_admin && <button role="tab" aria-selected={tab === 'company'} className={`tab${tab === 'company' ? ' active' : ''}`} onClick={() => setTab('company')}>Company</button>}
-          {isAdmin && <button role="tab" aria-selected={tab === 'settings'} className={`tab${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>Settings</button>}
-          <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/devices`} title="Every device in the project, without opening a plan">Devices</Link>
-          <Link role="tab" aria-selected={false} className="tab" to={`/projects/${projectId}/wiring`} title="Riser diagram built from the cable runs locked to devices">Wiring</Link>
-        </div>
-        {locked && <div className="lock-banner" role="status">This project is locked. Only admins can make changes.</div>}
-        {tab === 'settings' && isAdmin && project && <ProjectSettingsTab project={project} onProject={setProject} />}
-        {tab === 'company' && user.platform_admin && project && <MoveProjectPanel project={project} />}
-        {tab === 'members' && <MembersPanel projectId={projectId!} canManage={!!isAdmin} me={user} />}
-        {tab === 'plans' && <>
+    <ProjectBody width="wide">
         <div className="row pp-toolbar">
           <h2>Plans</h2>
           <span className="spacer" />
-          <div className="pp-inline row">
-            <button disabled={!!progress || docs.length === 0} onClick={makeOffline}
-              title="Download every plan, its markups, layers, symbols and scales to this device">
-              {allOffline ? 'Refresh offline copy' : 'Make available offline'}
-            </button>
-            <Link className="btn-link" to={`/projects/${projectId}/bom`} title="Bill of materials: quantities, cost and labor">BOM</Link>
-            <button disabled={!project || exporting} onClick={exportSchedule} title="Download every device and measurement as an Excel workbook">
-              {exporting ? 'Exporting…' : 'Export schedule'}
-            </button>
-            <DownloadProjectFolder projectId={projectId!} disabled={!project} />
-            <button disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}
-              title="One PDF: every sheet with markups, then a page per device with its details and photos">
-              {reporting ? `Building report… ${reporting}` : 'As-built report'}
-            </button>
-          </div>
           {canEdit && (
             <>
               <input ref={revInput} type="file" accept="application/pdf,.pdf" hidden onChange={e => uploadRevision(e.target.files?.[0])} />
@@ -272,15 +217,21 @@ Its PDF, markups and scales are restored as a new revision. The present state is
               </button>
             </>
           )}
-          <PopMenu label="More actions" className="pp-more">
-            <button role="menuitem" className="vmenu-item" disabled={!!progress || docs.length === 0} onClick={makeOffline}>
+          <PopMenu label="Actions" text="Actions" className="pp-more">
+            <button role="menuitem" className="vmenu-item" disabled={!!progress || docs.length === 0} onClick={makeOffline}
+              title="Download every plan, its markups, layers, symbols and scales to this device">
               <span className="vmenu-label">{allOffline ? 'Refresh offline copy' : 'Make available offline'}</span>
             </button>
-            <Link role="menuitem" className="vmenu-item" to={`/projects/${projectId}/bom`}><span className="vmenu-label">{canSeeCosts ? 'BOM' : 'Parts list'}</span></Link>
-            <button role="menuitem" className="vmenu-item" disabled={!project || exporting} onClick={exportSchedule}>
+            <button role="menuitem" className="vmenu-item" disabled={!project || exporting} onClick={exportSchedule}
+              title="Download every device and measurement as an Excel workbook">
               <span className="vmenu-label">{exporting ? 'Exporting…' : 'Export schedule'}</span>
             </button>
-            <button role="menuitem" className="vmenu-item" disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}>
+            <button role="menuitem" className="vmenu-item" disabled={!project || folderBusy} onClick={() => void downloadFolder()}
+              title="A zip of the project's plans, photos and device list, in the same folders as on the file share">
+              <span className="vmenu-label">{folderBusy ? 'Preparing…' : 'Download project folder'}</span>
+            </button>
+            <button role="menuitem" className="vmenu-item" disabled={!project || !!reporting || docs.length === 0} onClick={() => setReportOpen(true)}
+              title="One PDF: every sheet with markups, then a page per device with its details and photos">
               <span className="vmenu-label">{reporting ? `Building report… ${reporting}` : 'As-built report'}</span>
             </button>
           </PopMenu>
@@ -361,8 +312,6 @@ Its PDF, markups and scales are restored as a new revision. The present state is
               setRevNotice(`${doc.name}: issued ${rev.label || `Rev ${rev.revision}`}.`)
             }} />
         )}
-        </>}
-      </main>
-    </div>
+    </ProjectBody>
   )
 }

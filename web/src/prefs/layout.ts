@@ -9,7 +9,7 @@ export const DOCKS: Dock[] = ['left', 'right', 'bottom']
 
 export interface PanelState { dock: Dock; open: boolean }
 /** Bump when the default open/closed state of panels changes: older saved layouts keep their docking but take the new open defaults once. */
-export const LAYOUT_VERSION = 2
+export const LAYOUT_VERSION = 3
 
 export interface LayoutPrefs {
   /** Layout schema version (see LAYOUT_VERSION); missing = 1. */
@@ -22,9 +22,9 @@ export interface LayoutPrefs {
 export const DEFAULT_LAYOUT: LayoutPrefs = {
   version: LAYOUT_VERSION,
   panels: {
-    // Tool chest with Pages as a tab beside it; Properties opens by itself when something is selected (see propsVisible)
+    // Tool chest alone on the left (Pages is one click away and stays as the user leaves it); Properties opens by itself when something is selected (see propsVisible)
     tools: { dock: 'left', open: true },
-    pages: { dock: 'left', open: true },
+    pages: { dock: 'left', open: false },
     props: { dock: 'right', open: false },
     markups: { dock: 'bottom', open: false },
     compare: { dock: 'right', open: false },

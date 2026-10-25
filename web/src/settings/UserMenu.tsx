@@ -7,7 +7,7 @@ import { pendingInvitations } from '../company/switcher'
 export const initials = (name: string) =>
   name.trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() ?? '').join('') || '?'
 
-/** Avatar button in the header of non-viewer pages: Settings, Users (admins) and Sign out. */
+/** Avatar button in the header of non-viewer pages: Account, Company admin, Platform, Catalog (read-only for non-admins) and Sign out. */
 export function UserMenu() {
   const session = useSession()
   const [open, setOpen] = useState(false)
@@ -51,11 +51,10 @@ export function UserMenu() {
               {inviteErr && <span className="error small" role="alert">{inviteErr}</span>}
             </div>
           )}
-          <Link role="menuitem" to="/preferences">Preferences</Link>
-          <Link role="menuitem" to="/settings">Settings</Link>
-          {user.is_admin && <Link role="menuitem" to="/users">Company members</Link>}
-          {user.platform_admin && <Link role="menuitem" to="/companies">Companies</Link>}
-          {user.is_admin && <Link role="menuitem" to="/backups">Backups</Link>}
+          <Link role="menuitem" to="/account">Account</Link>
+          {user.is_admin && <Link role="menuitem" to="/company">Company admin</Link>}
+          {!user.is_admin && <Link role="menuitem" to="/company/catalog">Catalog</Link>}
+          {user.platform_admin && <Link role="menuitem" to="/platform">Platform</Link>}
           <button role="menuitem" onClick={signOut}>Sign out</button>
         </div>
       )}

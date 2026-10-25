@@ -1,6 +1,6 @@
 // Client prefs store: cached in localStorage per user, saved to the server (debounced), works offline.
 import { useSyncExternalStore } from 'react'
-import { api } from '../api'
+import { api, authFetch } from '../api'
 import { effectivePrefs, EMPTY_STORED, mergePrefs, sanitizeStored } from './prefs'
 import type { PrefKey, Prefs, StoredPrefs } from './prefs'
 import { applyDensity } from './density'
@@ -98,5 +98,13 @@ if (typeof window !== 'undefined') {
   window.addEventListener('online', () => { void syncPrefs() })
   window.matchMedia?.('(pointer: coarse)').addEventListener?.('change', () => applyDensity(snapshot.density))
   applyDensity(snapshot.density)
-  window.addEventListener('beforeunload', () => { if (dirty && userId) { clearTimeout(timer); void push() } })
+  // Leaving the page: send what is pending with a keepalive request, which survives the tab closing.
+  const flush = () => {
+    if (!dirty || !userId) return
+    clearTimeout(timer)
+    void authFetch('/api/me/prefs', { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefs: stored }) }).catch(() => {})
+  }
+  window.addEventListener('pagehide', flush)
+  window.addEventListener('beforeunload', flush)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush() })
 }

@@ -326,7 +326,8 @@ describe('projects and people', () => {
     expect(u1).toEqual(['alice@x.com', 'bob@x.com', 'dave@x.com', 'root@x.com'])
     expect(u2).toEqual(['carol@x.com', 'dave@x.com', 'erin@x.com', 'root@x.com'])
     expect((await api('GET', '/api/users/directory', alice)).json().map((u: any) => u.email).sort()).toEqual(u1)
-    expect((await api('GET', '/api/users/directory', erin)).json().map((u: any) => u.email).sort()).toEqual(u2)
+    expect((await api('GET', '/api/users/directory', erin)).json().map((u: any) => u.name).length).toBe(u2.length) // plain members get names only
+    expect((await api('GET', '/api/users/directory', erin)).json().every((u: any) => u.email === undefined)).toBe(true)
     expect((await api('GET', '/api/users', erin)).statusCode).toBe(403)
     expect((await api('GET', '/api/projects/all', alice)).json().some((p: any) => p.id === p2)).toBe(false)
     // another company's person does not exist for you

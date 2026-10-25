@@ -51,7 +51,7 @@ export function HoldDelayField() {
     if (n === null) setText(pref === null ? '' : String(pref)); else setPref('holdRotateMs', n)
   }
   return (
-    <label className="snap-row snap-spacing" title="After placing a device, hold the button this long, then drag to turn it. Releasing sooner just places it.">
+    <label className="snap-row snap-spacing snap-field" title="After placing a device, hold the button this long, then drag to turn it. Releasing sooner just places it.">
       <span>Hold before rotating (ms)</span>
       <input type="number" min={HOLD_MIN_MS} max={HOLD_MAX_MS} step={50} inputMode="numeric" placeholder={`${DEFAULT_HOLD_MS}`} value={text}
         aria-label="Hold before rotating, milliseconds" onChange={e => setText(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />

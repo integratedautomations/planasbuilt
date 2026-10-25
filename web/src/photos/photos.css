@@ -13,7 +13,7 @@
 .photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .photo-error { color: var(--danger); font-size: 12px; }
 
-.photo-modal { position: fixed; inset: 0; z-index: 1000; background: #000; color: #fff; display: flex; flex-direction: column; touch-action: none; }
+.photo-modal { position: fixed; inset: 0; z-index: var(--z-toast); background: #000; color: #fff; display: flex; flex-direction: column; touch-action: none; }
 .photo-modal button { min-height: 40px; min-width: 40px; border-radius: var(--radius); border: 1px solid rgba(255,255,255,.3); background: rgba(255,255,255,.12); color: #fff; padding: 0 12px; }
 .photo-modal button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .photo-modal button.danger { border-color: var(--danger); color: #ff8787; }

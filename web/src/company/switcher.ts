@@ -38,7 +38,7 @@ export function pickInitialCompany(stored: string | null, serverActive: string |
 
 /** Pages that show one company's data: after a switch they go back to the project list. */
 export function pageBelongsToCompany(pathname: string): boolean {
-  return /^\/(projects|users|backups)(\/|$)/.test(pathname)
+  return /^\/(projects|users|backups|company\/(members|backups))(\/|$)/.test(pathname)
 }
 export function pathAfterSwitch(pathname: string): string {
   return pageBelongsToCompany(pathname) && pathname !== '/' ? '/' : pathname

@@ -103,7 +103,7 @@ import type { CloudInput } from '../revisions/clouds'
 import { deletePages, fetchRevisionPdf, insertPages, listRevisions, loadRevision, makeRevisionCurrent, moveOrder, replacePages, reorderPages, revisionName, rotatePages } from '../revisions/api'
 import type { PageOpResult, RevisionDetail } from '../revisions/api'
 import { MarkupsList } from '../schedule/MarkupsList'
-import { MoreMenu, PlanSwitcher } from '../viewer/TopBar'
+import { MoreMenu, PlanSwitcher, ProjectCrumb } from '../viewer/TopBar'
 import { DeviceSizeControl } from '../viewer/DeviceSize'
 import { MenuHeading, MenuItemBtn, MenuSep } from '../viewer/menuParts'
 import { StatusChip } from '../viewer/StatusChip'
@@ -1440,6 +1440,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       {!focus && (
       <header className="topbar toolbar">
         <Link to={'/projects/' + projectId} className="icon-btn" title="Back to plans" aria-label="Back to plans"><Icon name="arrow-left" size={20} /></Link>
+        <ProjectCrumb projectId={projectId} />
         <PlanSwitcher projectId={projectId} documentId={documentId} name={meta?.name ?? '…'}
           onPick={id => navigate(`/projects/${projectId}/documents/${id}`)} />
         <SyncIndicator compact={isPhone} />
@@ -1462,16 +1463,22 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             <button className={'icon-btn' + (dockOpen('right') ? ' active' : '')} title={'Properties (' + (hotkeys['panel.props'] || 'no key') + ')'} aria-label="Right panel" aria-pressed={dockOpen('right')} onClick={() => toggleDock('right')}><Icon name="sidebar-right" size={20} /></button>
           </>
         )}
-        <MoreMenu title="More: PDF, revisions, print, panels, settings">
-          <PdfMenu deviceScale={deviceScale} documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
-            scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
-            projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintDraft(null); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
-          <MenuSep />
-          <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
-            onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
-          {isPhone && (
-            <>
+        <MoreMenu title="More: PDF, revisions, print, panels, settings"
+          sheet={isPhone ? [
+            { id: 'file', label: 'File', node: <>
+      <PdfMenu deviceScale={deviceScale} documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
+        scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
+        projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintDraft(null); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
               <MenuSep />
+      <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
+        onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
+              <MenuSep />
+      <MenuItemBtn icon="keyboard" label="Hotkeys…" onClick={() => setShowHotkeys(true)} />
+      <Link to={`/projects/${projectId}/devices`} role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="list" size={16} /></span><span className="vmenu-label">Devices (whole project)</span></Link>
+      <Link to="/account/preferences" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Preferences</span></Link>
+      <Link to="/account" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Account</span></Link>
+            </> },
+            { id: 'view', label: 'View', node: <>
               <MenuHeading>Navigate</MenuHeading>
               <div className="vmenu-row" role="presentation">
                 <button type="button" className="icon-btn" onClick={() => goTo(pageNum - 1)} disabled={pageNum <= 1} aria-label="Previous page"><Icon name="chevron-left" size={18} /></button>
@@ -1483,16 +1490,33 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                 <button type="button" className="icon-btn" onClick={() => zoomBy(1.25)} aria-label="Zoom in"><Icon name="plus" size={18} /></button>
                 <button type="button" className="icon-btn" onClick={fit} aria-label="Fit page"><Icon name="maximize" size={18} /></button>
               </div>
-              <MenuHeading>Scale</MenuHeading>
+              <MenuHeading>Device size</MenuHeading>
+              <div className="vmenu-embed"><DeviceSizeControl value={deviceScale} readOnly={readOnly} onChange={changeDeviceScale} /></div>
+              <MenuSep />
+              <MenuHeading>Panels</MenuHeading>
+          {isPhone && <MenuItemBtn icon="pages" label="Pages" checked={panelOpen('pages')} onClick={() => togglePanel('pages')} />}
+          {isPhone && <MenuItemBtn icon="sidebar-right" label="Properties" checked={panelOpen('props')} onClick={() => togglePanel('props')} />}
+          <MenuItemBtn icon="list" label="Markups list" hint={hotkeys['panel.markups'] || undefined} checked={panelOpen('markups')} onClick={() => togglePanel('markups')} />
+          <MenuItemBtn icon="map" label="Areas" hint={hotkeys['panel.areas'] || undefined} checked={panelOpen('areas')} onClick={() => togglePanel('areas')} />
+          <MenuItemBtn icon="compare" label="Compare" hint={hotkeys['panel.compare'] || undefined} checked={panelOpen('compare')} onClick={() => togglePanel('compare')} />
+          <MenuItemBtn icon="layers" label="Layers" hint={hotkeys['panel.layers'] || undefined} checked={panelOpen('layers')} onClick={() => togglePanel('layers')} />
+          {!isPhone && <MenuItemBtn icon="maximize" label="Focus mode" hint={hotkeys['view.focus'] || undefined} onClick={() => setFocus(true)} />}
+            </> },
+            { id: 'scale', label: 'Scale', node: <>
               <div className="vmenu-embed"><ScaleControl scale={pageScale} readOnly={readOnly} busy={scaleBusy} error={scaleError}
                 onPreset={s => { saveScale(s, false).catch(() => {}) }} onApplyAll={() => { if (pageScale) saveScale(pageScale, true).catch(() => {}) }}
                 onClear={clearScale} onCalibrate={() => chooseTool('calibrate')} /></div>
-              <MenuHeading>Device size</MenuHeading>
-              <div className="vmenu-embed"><DeviceSizeControl value={deviceScale} readOnly={readOnly} onChange={changeDeviceScale} /></div>
-              <MenuHeading>Snapping</MenuHeading>
+            </> },
+            { id: 'snap', label: 'Snap', node: <>
               <div className="vmenu-embed"><SnapControls hasScale={!!pageScale} hint={hotkeys['snap.toggle'] || undefined} /></div>
-            </>
-          )}
+            </> },
+          ] : undefined}>
+          <PdfMenu deviceScale={deviceScale} documentId={documentId} documentName={meta?.name ?? 'plan'} markups={allMarkups} symbolSets={symbolSets}
+            scales={scales} readOnly={readOnly} commit={store.commit} showOriginal={showOrig} onShowOriginal={changeShowOrig}
+            projectId={projectId} layers={layers} onLayersAdded={ls => setLayers(cur => [...cur, ...ls])} onPrint={() => { setPrintSelected([]); setPrintError(''); setPrintDraft(null); setPrintOpen(true) }} printHint={hotkeys['file.print'] || undefined} />
+          <MenuSep />
+          <RevisionMenu revisions={revList} viewingId={viewingOld ? revParam : null} canEdit={canEditRole && !viewingOld}
+            onIssue={() => setIssueOpen(true)} onCompare={() => setPanel('compare', true)} onView={viewRevision} onMakeCurrent={makeCurrent} />
           <MenuSep />
           <MenuHeading>Panels</MenuHeading>
           {isPhone && <MenuItemBtn icon="pages" label="Pages" checked={panelOpen('pages')} onClick={() => togglePanel('pages')} />}
@@ -1505,8 +1529,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <MenuSep />
           <MenuItemBtn icon="keyboard" label="Hotkeys…" onClick={() => setShowHotkeys(true)} />
           <Link to={`/projects/${projectId}/devices`} role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="list" size={16} /></span><span className="vmenu-label">Devices (whole project)</span></Link>
-          <Link to="/preferences" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Preferences</span></Link>
-          <Link to="/settings" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Settings</span></Link>
+          <Link to="/account/preferences" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Preferences</span></Link>
+          <Link to="/account" role="menuitem" className="vmenu-item"><span className="vmenu-ico"><Icon name="settings" size={16} /></span><span className="vmenu-label">Account</span></Link>
         </MoreMenu>
       </header>
       )}

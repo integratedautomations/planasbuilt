@@ -737,7 +737,10 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const access = await requireCap(req, reply, id, 'view')
     if (!access) return
     const [project] = await db.query('SELECT * FROM projects WHERE id = $1', [id])
-    return { ...shapeProject(project), role: access.role, scope: access.scope, can_see_costs: accessCan(access, 'costs.view') }
+    // A company guest never sees costs (same rule as the catalog, see orgVisibility).
+    const [cm] = await db.query<{ role: string }>('SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2', [project.company_id, req.user.id])
+    const guest = cm?.role === 'guest'
+    return { ...shapeProject(project), role: access.role, scope: access.scope, can_see_costs: !guest && accessCan(access, 'costs.view') }
   })
 
   // Mark a project Complete or reopen it (anyone who can edit plans), and/or switch the "editors see costs" setting (project admins).
@@ -783,7 +786,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       `SELECT u.id, u.email, u.name, u.status, m.role, m.scope FROM project_members m JOIN users u ON u.id = m.user_id
        WHERE m.project_id = $1 ORDER BY u.name`, [id])
     // Scopes are only for the people who manage members.
-    return accessCan(access, 'members.manage') ? rows : rows.map(({ scope: _s, ...r }: any) => r)
+    return accessCan(access, 'members.manage') ? rows : rows.map(({ scope: _s, email: _e, ...r }: any) => r)
   })
 
   app.put('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {
@@ -1920,8 +1923,23 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       `SELECT e.id, e.at, e.action, e.changes, u.id AS uid, u.name AS uname, u.email AS uemail
        FROM markup_events e LEFT JOIN users u ON u.id = e.user_id
        WHERE e.markup_id = $1 ORDER BY e.at DESC, e.id DESC`, [markupId])
+    const hide = can(access.role, 'internal.view') ? null : await internalFieldKeys(access.companyId!)
+    // Change entries are keyed `fields.<key>` ({from,to}); values of internal fields must not reach clients.
+    const scrub = (c: any) => {
+      if (!hide || !hide.size || !c || typeof c !== 'object') return c
+      const out: Record<string, any> = {}
+      for (const [k, v] of Object.entries(c)) {
+        if (k.startsWith('fields.') && hide.has(k.slice(7))) continue
+        if (k === 'fields' && v && typeof v === 'object' && !Array.isArray(v)) {
+          out[k] = Object.fromEntries(Object.entries(v as any).filter(([fk]) => !hide.has(fk)))
+          continue
+        }
+        out[k] = v
+      }
+      return out
+    }
     return rows.map((r: any) => ({
-      id: String(r.id), at: r.at, action: r.action, changes: r.changes,
+      id: String(r.id), at: r.at, action: r.action, changes: scrub(r.changes),
       user: r.uid ? { id: r.uid, name: r.uname, email: r.uemail } : null,
     }))
   })

@@ -23,6 +23,14 @@ export function setActiveCompanyId(id: string | null) {
   for (const f of [...subs]) f(id)
 }
 
+/**
+ * Whether a loaded project may move the app to its company. Not when the active company changed while the request was in
+ * flight (the user switched company meanwhile: that choice wins over an answer from the page being left).
+ */
+export function shouldAdoptOwner(startedIn: string | null, nowActive: string | null, owner: string | null | undefined): boolean {
+  return !!owner && owner !== nowActive && startedIn === nowActive
+}
+
 export function subscribeActiveCompany(fn: (id: string | null) => void): () => void {
   subs.add(fn)
   return () => { subs.delete(fn) }

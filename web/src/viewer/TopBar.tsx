@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../ui/Icon'
-import { loadDocuments } from '../offline/cache'
+import { loadDocuments, loadProject } from '../offline/cache'
 import type { DocumentSummary } from '../api'
 
 /** Closes `onClose` on an outside press or Escape while `open`. */
@@ -15,6 +15,14 @@ function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | null>, onC
     window.addEventListener('keydown', key)
     return () => { window.removeEventListener('pointerdown', down, true); window.removeEventListener('keydown', key) }
   }, [open, ref, onClose])
+}
+
+/** The project's name as a link back to its plans, shown in front of the plan name. Hidden on phones (the back arrow does the job). */
+export function ProjectCrumb({ projectId }: { projectId: string }) {
+  const [name, setName] = useState('')
+  useEffect(() => { let live = true; loadProject(projectId).then(r => { if (live) setName(r.data.name) }).catch(() => {}); return () => { live = false } }, [projectId])
+  if (!name) return null
+  return <><Link to={'/projects/' + projectId} className="proj-crumb ellipsis" title={`Project: ${name}`}>{name}</Link><span className="muted proj-crumb-sep" aria-hidden>/</span></>
 }
 
 /** Plan name as a dropdown: switch to another plan (sheet set) in the same project. */
@@ -57,18 +65,55 @@ export function PlanSwitcher({ projectId, documentId, name, onPick }: { projectI
   )
 }
 
-/** The ⋯ menu. The body stays mounted while closed (so dialogs owned by its items keep their state). */
-export function MoreMenu({ title, children }: { title: string; children: ReactNode }) {
+export interface SheetTab { id: string; label: string; node: ReactNode }
+
+/**
+ * The ⋯ menu. The body stays mounted while closed (so dialogs owned by its items keep their state).
+ * With `sheet` (phones) it opens as a bottom sheet over a scrim: File | View | Scale | Snap tabs, Esc / the back button /
+ * the scrim close it, and the content scrolls inside a capped height.
+ */
+export function MoreMenu({ title, children, sheet }: { title: string; children: ReactNode; sheet?: SheetTab[] }) {
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState(sheet?.[0]?.id ?? '')
   const ref = useRef<HTMLDivElement>(null)
-  useDismiss(open, ref, () => setOpen(false))
+  const sheeted = !!sheet
+  useDismiss(open && !sheeted, ref, () => setOpen(false))
+  // Sheet: Escape closes it, and the browser/phone back button closes it instead of leaving the plan.
+  useEffect(() => {
+    if (!open || !sheeted) return
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    const pop = () => setOpen(false)
+    window.addEventListener('keydown', key)
+    window.addEventListener('popstate', pop)
+    try { history.pushState({ ...(history.state ?? {}), moreSheet: true }, '') } catch { /* ignore */ }
+    return () => {
+      window.removeEventListener('keydown', key); window.removeEventListener('popstate', pop)
+      try { if (history.state?.moreSheet) history.back() } catch { /* ignore */ }
+    }
+  }, [open, sheeted])
+  const closeOnItem = (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false) }
   return (
     <div className="more-wrap" ref={ref}>
-      <button className={'icon-btn' + (open ? ' active' : '')} aria-haspopup="menu" aria-expanded={open} title={title} aria-label="More" onClick={() => setOpen(o => !o)}>
+      <button className={'icon-btn' + (open ? ' active' : '')} aria-haspopup={sheeted ? 'dialog' : 'menu'} aria-expanded={open} title={title} aria-label="More" onClick={() => setOpen(o => !o)}>
         <Icon name="dots" size={20} />
       </button>
-      <div className="vmenu-popup right" role="menu" hidden={!open}
-        onClick={e => { if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false) }}>{children}</div>
+      {sheeted ? (
+        <>
+          {open && <div className="sheet-scrim" onClick={() => setOpen(false)} aria-hidden />}
+          <div className="more-sheet" role="dialog" aria-label="More" aria-modal={open} hidden={!open}>
+            <div className="more-sheet-grip" aria-hidden />
+            <div className="more-sheet-tabs" role="tablist">
+              {sheet.map(t => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>{t.label}</button>)}
+              <button className="icon-btn more-sheet-close" aria-label="Close menu" onClick={() => setOpen(false)}><Icon name="x" size={18} /></button>
+            </div>
+            <div className="more-sheet-body" onClick={closeOnItem}>
+              {sheet.map(t => <div key={t.id} role="tabpanel" hidden={tab !== t.id} className="more-sheet-panel">{t.node}</div>)}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="vmenu-popup right" role="menu" hidden={!open} onClick={closeOnItem}>{children}</div>
+      )}
     </div>
   )
 }

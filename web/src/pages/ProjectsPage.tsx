@@ -37,7 +37,7 @@ export function ProjectsPage({ user }: Props) {
         <span className="brand"><Brand onChrome /></span>
         <CompanySwitcher />
         <span className="spacer" />
-        <Link to="/symbols" className="btn-link">Catalog</Link>
+        <Link to="/company/catalog" className="btn-link">Catalog</Link>
         <UserMenu />
       </header>
       <OfflineBanner />

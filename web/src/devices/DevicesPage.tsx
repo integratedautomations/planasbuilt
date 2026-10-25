@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import type { DocumentSummary, Project, User } from '../api'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
 import { CatalogContext, useCatalog } from '../catalog/useCatalog'
 import { fieldDefsFor } from '../catalog/catalog'
 import { describeBlocked, gateStatus, lockedFor } from '../projectSettings'
@@ -10,19 +8,18 @@ import { DeviceFields } from '../markups/DeviceFields'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
 import type { FieldDef, Markup, Status, SymbolSet } from '../markups/types'
 import { loadDocuments, loadProject, loadSymbolSets } from '../offline/cache'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { queueMarkupPut } from '../offline/sync'
 import { RoleContext } from '../roleContext'
 import { can, isFieldOnly } from '../roles'
 import { areaOptions, buildRows, exportFileName, exportTables } from '../schedule/rows'
 import type { ScheduleRow } from '../schedule/rows'
-import { UserMenu } from '../settings/UserMenu'
 import { clearTextSelection, clickSelect, emptySel, keySelect, selectAll } from '../ui/listSelection'
 import type { ListSel } from '../ui/listSelection'
 import { isUniqueFieldKey } from '../markups/mixed'
 import { bulkField, bulkStatus, DEVICE_COLUMNS, deviceCell, displayOrder, filterDevices, GROUP_OPTIONS, groupDevices, NO_DEVICE_FILTER, planOptions, sortDevices } from './deviceList'
 import type { BulkResult, DeviceFilter, GroupBy } from './deviceList'
 import { loadProjectDevices } from './loadDevices'
+import { ProjectBody } from '../shell/ProjectShell'
 import './devices.css'
 
 const PAGE = 300
@@ -182,24 +179,7 @@ export function DevicesPage({ user }: { user: User }) {
   return (
     <RoleContext.Provider value={role ?? null}>
     <CatalogContext.Provider value={catalog}>
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <Link to={`/projects/${pid}`} className="crumb">{project?.name ?? '…'}</Link>
-        <span className="muted">/</span>
-        <span className="crumb">Devices</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content dv-content">
-        <div className="tabs" role="tablist">
-          <button role="tab" aria-selected={false} className="tab" onClick={() => navigate(`/projects/${pid}`)}>Plans</button>
-          <button role="tab" aria-selected className="tab active">Devices</button>
-          <button role="tab" aria-selected={false} className="tab" onClick={() => navigate(`/projects/${pid}/wiring`)}>Wiring</button>
-        </div>
+    <ProjectBody width="full">
         <div className="dv-bar">
           {isPhone ? (
             <>
@@ -312,7 +292,6 @@ export function DevicesPage({ user }: { user: User }) {
         {rows.length > limit && (
           <div className="list-more"><button onClick={() => setLimit(l => l + PAGE)}>Show {Math.min(PAGE, rows.length - limit)} more of {rows.length - limit}</button></div>
         )}
-      </main>
 
       {filtersOpen && (
         <div className="dv-sheet-wrap" role="presentation" onClick={() => setFiltersOpen(false)}>
@@ -346,7 +325,7 @@ export function DevicesPage({ user }: { user: User }) {
           </div>
         </aside>
       )}
-    </div>
+    </ProjectBody>
     </CatalogContext.Provider>
     </RoleContext.Provider>
   )

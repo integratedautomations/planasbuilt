@@ -11,7 +11,6 @@ import { getActiveCompanyId, setActiveCompanyId, subscribeActiveCompany } from '
 import { acceptInvitation, declineInvitation, listCompanies, listInvitations } from './company/api'
 import { adoptCompany, pathAfterSwitch } from './company/switcher'
 import type { CompanyRow } from './company/switcher'
-import { CompaniesPage } from './settings/CompaniesPage'
 import { setPrefsUser, usePrefs } from './prefs/store'
 import { applyTheme } from './prefs/theme'
 import { AuthPage } from './pages/AuthPage'
@@ -21,12 +20,13 @@ import { ViewerPage } from './pages/ViewerPage'
 import { BomPage } from './pages/BomPage'
 import { DevicesPage } from './devices/DevicesPage'
 import { WiringPage } from './wiring/WiringPage'
-import { SymbolSetsPage } from './pages/SymbolSetsPage'
-import { SettingsPage } from './settings/SettingsPage'
-import { PreferencesPage } from './settings/PreferencesPage'
-import { UsersPage } from './settings/UsersPage'
 import { InvitePage } from './settings/InvitePage'
-import { BackupAlert, BackupsPage } from './settings/BackupsPage'
+import { BackupAlert } from './settings/BackupsPage'
+import { ProjectShell } from './shell/ProjectShell'
+import { AccountPage, CompanyAdminPage, PlatformPage } from './shell/AreaPages'
+import { legacyRedirect } from './shell/projectTabs'
+import { ProjectMembersPage } from './pages/ProjectMembersPage'
+import { ProjectSettingsPage } from './pages/ProjectSettingsPage'
 import { SessionContext } from './settings/session'
 import './settings/settings.css'
 
@@ -36,6 +36,12 @@ export async function fetchMe(): Promise<User> {
     if (e instanceof ApiError && e.status === 403 && getActiveCompanyId()) { setActiveCompanyId(null); return api<User>('/me') }
     throw e
   }
+}
+
+/** Old routes (/settings, /users, /preferences, ...) forward to where the page lives now. */
+function LegacyRedirect() {
+  const { pathname, search } = useLocation()
+  return <Navigate to={legacyRedirect(pathname, search) ?? '/'} replace />
 }
 
 export default function App() {
@@ -165,18 +171,20 @@ export default function App() {
     {user.is_admin && <BackupAlert />}
     <Routes key={epoch}>
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
-      <Route path="/projects/:projectId" element={<ProjectPage user={user} />} />
       <Route path="/projects/:projectId/documents/:documentId" element={<ViewerPage />} />
-      <Route path="/projects/:projectId/devices" element={<DevicesPage user={user} />} />
-      <Route path="/projects/:projectId/wiring" element={<WiringPage user={user} />} />
-      <Route path="/projects/:projectId/bom" element={<BomPage user={user} />} />
-      <Route path="/symbols" element={<SymbolSetsPage user={user} />} />
-      <Route path="/catalog" element={<SymbolSetsPage user={user} />} />
-      <Route path="/settings" element={<SettingsPage user={user} onUser={u => { cacheUser(u); setUser(u) }} />} />
-      <Route path="/preferences" element={<PreferencesPage />} />
-      <Route path="/users" element={user.is_admin ? <UsersPage me={user} /> : <Navigate to="/" replace />} />
-      <Route path="/companies" element={user.platform_admin ? <CompaniesPage /> : <Navigate to="/" replace />} />
-      <Route path="/backups" element={user.is_admin ? <BackupsPage /> : <Navigate to="/" replace />} />
+      <Route path="/projects/:projectId" element={<ProjectShell user={user} />}>
+        <Route index element={<ProjectPage user={user} />} />
+        <Route path="devices" element={<DevicesPage user={user} />} />
+        <Route path="wiring" element={<WiringPage user={user} />} />
+        <Route path="bom" element={<BomPage user={user} />} />
+        <Route path="members" element={<ProjectMembersPage user={user} />} />
+        <Route path="settings" element={<ProjectSettingsPage user={user} />} />
+      </Route>
+      <Route path="/account/*" element={<AccountPage user={user} onUser={u => { cacheUser(u); setUser(u) }} />} />
+      <Route path="/company/*" element={user.is_admin || user.company ? <CompanyAdminPage user={user} /> : <Navigate to="/" replace />} />
+      <Route path="/platform/*" element={user.platform_admin ? <PlatformPage /> : <Navigate to="/" replace />} />
+      {['/preferences', '/settings', '/users', '/catalog', '/symbols', '/backups', '/companies'].map(p =>
+        <Route key={p} path={p} element={<LegacyRedirect />} />)}
       <Route path="/invite/:token" element={<Navigate to="/" replace />} />
       <Route path="/reset/:token" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />

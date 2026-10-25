@@ -13,7 +13,7 @@ import { hostOf, internalHostProblem } from './net.js'
 import type { SectionName } from './settings.js'
 
 import { companyFolderOf } from './fileCtx.js'
-import { isRole, normalizeScope, ROLES } from './roles.js'
+import { can, isRole, normalizeScope, ROLES } from './roles.js'
 import type { Cap, Role, Access } from './roles.js'
 import { isCompanyRole, roleRank } from './companies.js'
 import type { CompanyCtx, CompanyRole } from './companies.js'
@@ -424,9 +424,17 @@ export async function registerAdmin(ctx: AdminContext) {
   app.get('/api/users/directory', { preHandler: auth }, async (req, reply) => {
     const company = await requireCompany(req, reply, 'member')
     if (!company) return
-    return db.query(
+    // Emails go only to people who add others: company admins and anyone who manages members of a project here. Everyone else gets id + name.
+    let showEmail = company.isAdmin
+    if (!showEmail) {
+      const mine = await db.query<{ role: Role }>(
+        'SELECT m.role FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = $1 AND p.company_id = $2', [req.user.id, company.id])
+      showEmail = mine.some(r => can(r.role, 'members.manage'))
+    }
+    const rows = await db.query<{ id: string; email: string; name: string }>(
       `SELECT u.id, u.email, u.name FROM users u JOIN company_members m ON m.user_id = u.id AND m.company_id = $1
        WHERE u.status = 'active' ORDER BY lower(u.name)`, [company.id])
+    return showEmail ? rows : rows.map(({ id, name }) => ({ id, name }))
   })
 
   // Every project of the company (the Users page lists it when assigning people).

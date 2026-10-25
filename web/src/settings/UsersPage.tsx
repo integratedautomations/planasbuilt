@@ -1,15 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api } from '../api'
 import type { LinkResult, ManagedUser, Role, User, UserStatus } from '../api'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
-import { OfflineBanner } from '../offline/OfflineBanner'
 import { RoleOptions } from './RoleSelect'
 import { COMPANY_ROLES, COMPANY_ROLE_INFO } from '../roles'
 import type { CompanyRole } from '../roles'
 import { CopyLink } from './CopyLink'
-import { UserMenu } from './UserMenu'
 
 const roleLabel = (u: ManagedUser) => u.company_role ? COMPANY_ROLE_INFO[u.company_role].label : u.is_admin ? 'Admin' : 'Member'
 const STATUS_LABEL: Record<UserStatus, string> = { active: 'Active', invited: 'Invited', deactivated: 'Deactivated' }
@@ -25,7 +20,7 @@ function ago(iso: string | null) {
   return new Date(iso).toLocaleDateString()
 }
 
-export function UsersPage({ me }: { me: User }) {
+export function UsersPanel({ me }: { me: User }) {
   const [users, setUsers] = useState<ManagedUser[] | null>(null)
   const [projects, setProjects] = useState<ProjectRef[]>([])
   const [error, setError] = useState('')
@@ -46,17 +41,8 @@ export function UsersPage({ me }: { me: User }) {
   }, [users, q, status])
 
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <span className="crumb">Company members</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content content-wide">
+    <div className="panel">
+      <div className="panel-main">
         <div className="row wrap">
           <h2>Company members{me.company ? ` · ${me.company.name}` : ''}</h2>
           <span className="spacer" />
@@ -92,7 +78,7 @@ export function UsersPage({ me }: { me: User }) {
             </table>
           </div>
         )}
-      </main>
+      </div>
       {openId && <UserDrawer id={openId} me={me} projects={projects} onClose={() => setOpenId(null)} onChanged={reload} />}
       {inviting && <InviteDialog projects={projects} onClose={() => setInviting(false)} onDone={reload} />}
     </div>

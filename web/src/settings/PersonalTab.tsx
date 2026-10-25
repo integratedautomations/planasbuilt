@@ -1,5 +1,4 @@
 import { FormEvent, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api, setToken, User } from '../api'
 import { UserAvatar } from '../ui/UserAvatar'
 
@@ -74,11 +73,6 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
         </form>
       </section>
 
-      <section className="card settings-card">
-        <h3>Preferences</h3>
-        <p className="muted">Theme, units, placing, touch, snapping and keyboard shortcuts now live on one page.</p>
-        <div><Link to="/preferences">Open Preferences</Link></div>
-      </section>
     </div>
   )
 }

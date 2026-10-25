@@ -16,7 +16,7 @@ import { cacheAllowed } from './cacheOwner'
 import { isForeign } from './owner'
 import { ackSnapshot, getSyncUser, mergeServerMarkups } from './sync'
 import { applyProjectSettings } from '../projectSettings'
-import { getActiveCompanyId, setActiveCompanyId } from '../company/activeCompany'
+import { getActiveCompanyId, setActiveCompanyId, shouldAdoptOwner } from '../company/activeCompany'
 import { readScoped, replaceScoped, scopeId, stamp } from './companyScope'
 
 /** revisions are newest first. */
@@ -76,20 +76,23 @@ export const loadProjects = () => readThrough(
   true,
 )
 
-export const loadProject = (id: string) => readThrough(
+export const loadProject = (id: string) => {
+  const startedIn = getActiveCompanyId()
+  return readThrough(
   () => api<Project>(`/projects/${id}`),
   (p, company) => db.projects.put(stamp([p], company)[0]),
   () => db.projects.get(id),
   'This project',
-).then(r => {
+  ).then(r => {
   // A project belongs to one company: its catalog and settings are that company's, so follow it there.
   // The app listens for this change and remounts the pages, so the catalog and symbol sets reload for that company.
   const owner = r.data?.company_id
-  if (!r.fromCache && owner && owner !== getActiveCompanyId()) setActiveCompanyId(owner)
+  if (!r.fromCache && owner && shouldAdoptOwner(startedIn, getActiveCompanyId(), owner)) setActiveCompanyId(owner)
   // The project's status list and rules apply everywhere statuses are shown, online or from the offline copy.
   applyProjectSettings(r.data?.settings)
   return r
-})
+  })
+}
 
 export const loadDocuments = (projectId: string) => readThrough(
   () => api<DocumentSummary[]>(`/projects/${projectId}/documents`),

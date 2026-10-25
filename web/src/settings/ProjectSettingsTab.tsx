@@ -7,15 +7,31 @@ import { applyProjectSettings, normalizeSettings } from '../projectSettings'
 import type { ProjectRules } from '../projectSettings'
 import { useAuthedUrl } from '../useAuthedUrl'
 import { CableDefaults } from './CableDefaults'
+import { MoveProjectPanel } from './MoveProjectPanel'
 import { ProjectRulesForm } from './ProjectRulesForm'
+import type { RulesPart } from './ProjectRulesForm'
+
+export type ProjectSection = 'general' | 'rules' | 'tags' | 'cables' | 'report' | 'move'
+export const PROJECT_SECTIONS: { id: ProjectSection; label: string; platform?: boolean }[] = [
+  { id: 'general', label: 'General' },
+  { id: 'rules', label: 'Rules' },
+  { id: 'tags', label: 'Tags' },
+  { id: 'cables', label: 'Cable defaults' },
+  { id: 'report', label: 'Report' },
+  { id: 'move', label: 'Move to another company', platform: true },
+]
 
 const rulesOf = (p: Project): ProjectRules => {
   const s = normalizeSettings(p.settings)
   return { statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps, report: { sections: s.report.sections }, photo_quality: s.photo_quality }
 }
 
-/** The project's Settings tab (project admins): costs, cable defaults, status workflow, required fields, tags, report, photos, lock. */
-export function ProjectSettingsTab({ project, onProject }: { project: Project; onProject: (p: Project) => void }) {
+const PARTS: Partial<Record<ProjectSection, RulesPart[]>> = { rules: ['statuses', 'required'], tags: ['tags'], report: ['report', 'photos'] }
+
+/** One section of a project's Settings (project admins). Rules, Tags and Report share one draft; each shows its own Save bar. */
+export function ProjectSettingsTab({ project, onProject, section = 'general', platformAdmin = false }: {
+  project: Project; onProject: (p: Project) => void; section?: ProjectSection; platformAdmin?: boolean
+}) {
   const settings = normalizeSettings(project.settings)
   const [rules, setRules] = useState<ProjectRules>(() => rulesOf(project))
   const [sets, setSets] = useState<SymbolSet[]>([])
@@ -31,6 +47,7 @@ export function ProjectSettingsTab({ project, onProject }: { project: Project; o
     loadSymbolSets().then(r => setSets([...r.data].sort((a, b) => a.sort - b.sort))).catch(() => {})
     api<Markup[]>(`/projects/${project.id}/markups`).then(ms => setInUse(new Set(ms.filter(m => m.status).map(m => m.status as string)))).catch(() => {})
   }, [project.id])
+  useEffect(() => { setError(''); setMsg('') }, [section])
 
   const dirty = JSON.stringify(rules) !== JSON.stringify(rulesOf(project))
 
@@ -47,7 +64,7 @@ export function ProjectSettingsTab({ project, onProject }: { project: Project; o
   async function save() {
     const bad = rules.statuses.findIndex(s => !s.label.trim())
     if (bad >= 0) { setError('Every status needs a name'); return }
-    if (await send(rules)) { setMsg('Saved'); }
+    if (await send(rules)) setMsg('Saved')
   }
   async function setCosts(on: boolean) {
     setError('')
@@ -75,12 +92,13 @@ export function ProjectSettingsTab({ project, onProject }: { project: Project; o
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
 
+  const parts = PARTS[section]
   return (
     <div className="project-settings stack">
-      {settings.locked && <div className="lock-banner" role="status">This project is locked. Only admins can make changes.</div>}
-      <div className="settings-grid">
+      {section === 'general' && (
         <section className="card settings-card">
-          <h3>Access</h3>
+          <h3>General</h3>
+          <p className="muted small">Changes here apply as soon as you tick them.</p>
           <label className="check" title="Project managers and admins always see costs">
             <input type="checkbox" checked={project.editors_see_costs !== false} onChange={e => void setCosts(e.target.checked)} /> Editors see unit costs and labor hours
           </label>
@@ -88,14 +106,22 @@ export function ProjectSettingsTab({ project, onProject }: { project: Project; o
             <input type="checkbox" checked={settings.locked} disabled={busy}
               onChange={e => { if (!e.target.checked || confirm('Lock this project? Only admins will be able to edit it until you unlock it.')) void send({ locked: e.target.checked }) }} /> Lock project (only admins can edit)
           </label>
+          <p className="muted small">Status names and required fields are under Rules; tag numbering under Tags.</p>
+          {error && <div className="error" role="alert">{error}</div>}
         </section>
+      )}
+
+      {section === 'cables' && (
         <section className="card settings-card">
           <h3>Cable defaults</h3>
           <CableDefaults project={project} canEdit onSaved={onProject} />
         </section>
+      )}
+
+      {section === 'report' && (
         <section className="card settings-card">
           <h3>Report logo</h3>
-          <p className="muted small">Shown on the as-built report title page. Without one, the company logo is used. PNG or JPEG, 2 MB max.</p>
+          <p className="muted small">Shown on the as-built report title page. Without one, the company logo is used. PNG or JPEG, 2 MB max. Uploading applies at once.</p>
           <div className="row">
             {settings.report.has_logo ? <img className="logo-preview" alt="Project logo" src={logoUrl || undefined} /> : <span className="muted small">Using the company logo</span>}
             <input ref={file} type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden onChange={e => void uploadLogo(e.target.files?.[0])} />
@@ -103,18 +129,22 @@ export function ProjectSettingsTab({ project, onProject }: { project: Project; o
             {settings.report.has_logo && <button type="button" className="danger" disabled={busy} onClick={() => void removeLogo()}>Remove</button>}
           </div>
         </section>
-      </div>
+      )}
 
-      <ProjectRulesForm value={rules} onChange={r => { setRules(r); setMsg('') }} sets={sets} inUse={inUse} disabled={busy} />
+      {parts && <ProjectRulesForm value={rules} onChange={r => { setRules(r); setMsg('') }} sets={sets} inUse={inUse} disabled={busy} parts={parts} />}
 
-      <div className="settings-actions">
-        {error && <div className="error" role="alert">{error}</div>}
-        <div className="row">
-          <button className="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving...' : 'Save settings'}</button>
-          {dirty && <button type="button" disabled={busy} onClick={() => { setRules(rulesOf(project)); setError('') }}>Discard changes</button>}
-          {msg && <span className="muted small" role="status">{msg}</span>}
+      {section === 'move' && platformAdmin && <MoveProjectPanel project={project} />}
+
+      {parts && (
+        <div className="save-bar">
+          {error && <div className="error" role="alert">{error}</div>}
+          <div className="row">
+            <button className="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving...' : 'Save changes'}</button>
+            {dirty && <button type="button" disabled={busy} onClick={() => { setRules(rulesOf(project)); setError('') }}>Discard changes</button>}
+            {msg && <span className="muted small" role="status">{msg}</span>}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

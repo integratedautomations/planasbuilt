@@ -36,7 +36,7 @@
 .viewer .topbar .live-dot { margin-left: 0; }
 
 /* ---- ⋯ menu / dropdown popups ---- */
-.vmenu-popup { position: absolute; top: calc(100% + 4px); z-index: 40; min-width: 240px; max-width: min(340px, 92vw); max-height: calc(100vh - 72px); overflow-y: auto;
+.vmenu-popup { position: absolute; top: calc(100% + 4px); z-index: var(--z-popover); min-width: 240px; max-width: min(340px, 92vw); max-height: calc(100vh - 72px); overflow-y: auto;
   display: flex; flex-direction: column; padding: 4px; background: var(--panel-bg); color: var(--text); border: 1px solid var(--divider); border-radius: 10px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.28); }
 .vmenu-popup[hidden] { display: none; }
 .vmenu-popup.right { right: 0; }
@@ -169,3 +169,26 @@
 .snap-spacing input { width: 64px; }
 .snap-note { margin: 4px 0 0; }
 .nav-snap { padding: 8px 10px; }
+
+/* Label above the input, so the number box is never squeezed beside a long label */
+.snap-row.snap-field { flex-direction: column; align-items: stretch; gap: 4px; cursor: default; }
+.snap-row.snap-field input { width: 100%; min-width: 120px; max-width: 200px; }
+
+/* ---- Phone ⋯ menu: a bottom sheet over a scrim ---- */
+.sheet-scrim { position: fixed; inset: 0; z-index: calc(var(--z-popover) - 1); background: rgb(0 0 0 / 0.45); }
+.more-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--z-popover); display: flex; flex-direction: column; max-height: min(80vh, 640px);
+  background: var(--panel-bg, var(--surface)); color: var(--text); border-top: 1px solid var(--divider, var(--border)); border-radius: 16px 16px 0 0; box-shadow: 0 -8px 28px rgb(0 0 0 / 0.35);
+  padding-bottom: env(safe-area-inset-bottom); }
+.more-sheet[hidden] { display: none; }
+.more-sheet-grip { width: 40px; height: 4px; border-radius: 2px; background: var(--divider, var(--border)); margin: 8px auto 2px; flex-shrink: 0; }
+.more-sheet-tabs { display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--divider, var(--border)); flex-shrink: 0; }
+.more-sheet-tabs button[role="tab"] { flex: 1 1 0; min-height: 44px; border: none; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; font-weight: 600; color: var(--muted); }
+.more-sheet-tabs button[role="tab"].active { color: var(--text); border-bottom-color: var(--accent); }
+.more-sheet-close { color: var(--text); flex: 0 0 auto; }
+.more-sheet-body { overflow-y: auto; overscroll-behavior: contain; padding: 6px 6px 12px; flex: 1; min-height: 0; }
+.more-sheet-panel { display: flex; flex-direction: column; }
+.more-sheet-panel[hidden] { display: none; }
+.proj-crumb { max-width: 22vw; min-width: 0; flex-shrink: 1; color: var(--chrome-muted); font-size: 14px; padding: 0 2px 0 4px; }
+.proj-crumb:hover { color: var(--chrome-text); text-decoration: underline; }
+.proj-crumb-sep { flex-shrink: 0; }
+@media (max-width: 760px) { .proj-crumb, .proj-crumb-sep { display: none; } }

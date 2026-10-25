@@ -30,7 +30,6 @@ export function StorageTab() {
       await save({
         storage: { backend: s.storage.backend, s3: { ...s3, secret: s3.secret ?? '' } },
         retention: s.retention,
-        photos: { max_dimension: s.photos.max_dimension },
       })
       setMsg('Saved'); void loadUsage()
     } catch (e) { setErr((e as Error).message) }
@@ -126,11 +125,7 @@ export function StorageTab() {
       </section>
 
       <section className="card settings-card">
-        <h3>Photos and revisions</h3>
-        <label className="field">Photo longest side (pixels)
-          <input type="number" min={800} max={6000} step={100} value={s.photos.max_dimension}
-            onChange={e => setSettings({ ...s, photos: { max_dimension: Number(e.target.value) } })} />
-        </label>
+        <h3>Plan revisions</h3>
         <label className="field">Revision retention
           <select value={s.retention.mode} onChange={e => setSettings({ ...s, retention: { ...s.retention, mode: e.target.value as 'all' | 'keep' } })}>
             <option value="all">Keep every revision</option>
@@ -143,11 +138,6 @@ export function StorageTab() {
               onChange={e => setSettings({ ...s, retention: { ...s.retention, keep_latest: Number(e.target.value) } })} />
           </label>
         )}
-        <label className="field">Days to keep deleted files (0 = delete at once)
-          <input type="number" min={0} max={3650} value={s.retention.trash_days ?? 30}
-            onChange={e => setSettings({ ...s, retention: { ...s.retention, trash_days: Number(e.target.value) } })} />
-          <span className="muted small">Deleted photos and plans wait in the _trash folder for this long, so a mistake can be undone by moving the file back.</span>
-        </label>
         <div className="row">
           <button type="button" disabled={s.retention.mode !== 'keep'} onClick={showCleanup}
             title={s.retention.mode === 'keep' ? 'See what would be removed first' : 'Choose a retention rule first'}>Clean up now…</button>

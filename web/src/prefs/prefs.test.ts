@@ -81,11 +81,11 @@ describe('recent and favorites', () => {
 
 describe('layout', () => {
   it('lists open panels per zone and moves them', () => {
-    expect(panelsIn(DEFAULT_LAYOUT, 'left')).toEqual(['tools', 'pages'])
+    expect(panelsIn(DEFAULT_LAYOUT, 'left')).toEqual(['tools'])
     expect(panelsIn(DEFAULT_LAYOUT, 'bottom')).toEqual([])
     const moved = movePanel(DEFAULT_LAYOUT, 'markups', 'bottom')
     expect(panelsIn(moved, 'bottom')).toEqual(['markups'])
-    expect(panelsIn(setPanelOpen(moved, 'tools', false), 'left')).toEqual(['pages'])
+    expect(panelsIn(setPanelOpen(setPanelOpen(moved, 'pages', true), 'tools', false), 'left')).toEqual(['pages'])
   })
   it('clamps stored sizes', () => {
     expect(normalizeLayout({ sizes: { left: 5000, bottom: 1 } }).sizes).toMatchObject({ left: 600, bottom: 120 })

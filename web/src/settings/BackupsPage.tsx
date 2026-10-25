@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
-import { OfflineBanner } from '../offline/OfflineBanner'
-import { UserMenu } from './UserMenu'
 import './backups.css'
 
 type TargetType = 'sftp' | 's3' | 'onedrive' | 'drive' | 'zoho'
@@ -43,12 +39,12 @@ export function BackupAlert() {
   if (failed.length === 0) return null
   return (
     <div className="backup-alert" role="alert">
-      Off-site backup failed for {failed.map(f => f.name).join(', ')}. <Link to="/backups">Check Backups</Link>
+      Off-site backup failed for {failed.map(f => f.name).join(', ')}. <Link to="/company/backups">Check Backups</Link>
     </div>
   )
 }
 
-export function BackupsPage() {
+export function BackupsPanel({ scope = 'company' }: { scope?: 'company' | 'system' }) {
   const [data, setData] = useState<Overview | null>(null)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<BackupTarget | 'new' | null>(null)
@@ -67,19 +63,10 @@ export function BackupsPage() {
   }
 
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <span className="crumb">Backups</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content content-wide backups-page">
+    <div className="panel">
+      <div className="panel-main">
         <div className="row wrap">
-          <h2>Off-site backups</h2>
+          <h2>{scope === 'system' ? 'Server backups' : 'Off-site backups'}</h2>
           <span className="spacer" />
           <button onClick={runNow} disabled={!data || !data.targets.some(t => t.enabled)}>Run backup now</button>
           <button className="primary" onClick={() => setEditing('new')} disabled={!data}>Add target</button>
@@ -105,7 +92,7 @@ export function BackupsPage() {
             ))}
           </>
         )}
-      </main>
+      </div>
       {editing && data && (
         <TargetEditor target={editing === 'new' ? null : editing} types={data.types} encryptionReady={data.encryption_ready}
           onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void reload() }} />

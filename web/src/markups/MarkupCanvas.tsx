@@ -1113,7 +1113,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       </Layer>
     </Stage>
     {multiPointActive && createPortal(
-      <div data-no-pan style={{ position: 'fixed', left: 0, right: 0, bottom: 24, zIndex: 50, display: 'flex', gap: 12, justifyContent: 'center', pointerEvents: 'none', touchAction: 'manipulation' }}>
+      <div data-no-pan style={{ position: 'fixed', left: 0, right: 0, bottom: 24, zIndex: 'var(--z-popover)' as unknown as number, display: 'flex', gap: 12, justifyContent: 'center', pointerEvents: 'none', touchAction: 'manipulation' }}>
         <button type="button" style={{ ...btn, pointerEvents: 'auto' }} onClick={() => { cancelMarquee(); finish(null) }}>Cancel</button>
         <button type="button" style={{ ...btn, pointerEvents: 'auto', background: REDLINE, color: '#fff', borderColor: REDLINE }} onClick={finishClickPath}>Finish</button>
       </div>, document.body)}

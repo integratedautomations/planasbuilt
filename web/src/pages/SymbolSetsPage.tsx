@@ -1,6 +1,5 @@
 import { MountBadge } from '../catalog/MountBadge'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { api, post } from '../api'
 import type { User } from '../api'
 import { BtxImport } from '../catalog/BtxImport'
@@ -18,9 +17,6 @@ import type { DeviceType } from '../catalog/types'
 import { useCatalog } from '../catalog/useCatalog'
 import type { SymbolSet } from '../markups/types'
 import { HARDWARE_FIELDS } from '../markups/types'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
-import { UserMenu } from '../settings/UserMenu'
 
 type Draft = Omit<SymbolSet, 'id' | 'sort'> & { id?: string }
 const EMPTY: Draft = { name: '', color: '#1971c2', tag_prefix: '', icon: '', fields: [], has_fov: false }
@@ -29,7 +25,7 @@ const EMPTY: Draft = { name: '', color: '#1971c2', tag_prefix: '', icon: '', fie
 type Sel = { kind: 'set'; setId: string } | { kind: 'type'; setId: string; typeId: string } | { kind: 'accessories' } | { kind: 'cables' } | null
 
 /** Admin catalog: symbol sets > device types > products, plus Excel and Revu (.btx) loading. */
-export function SymbolSetsPage({ user }: { user: User }) {
+export function CatalogPanel({ user }: { user: User }) {
   const [sets, setSets] = useState<SymbolSet[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [typeDraft, setTypeDraft] = useState<TypeDraft | null>(null)
@@ -88,16 +84,8 @@ export function SymbolSetsPage({ user }: { user: User }) {
   const typePrefixHint = (t: DeviceType, s: SymbolSet) => `${t.tag_prefix || s.tag_prefix}-01`
 
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <span className="crumb">Catalog</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <main className="content content-wide">
+    <div className="panel">
+      <div className="panel-main">
         {!admin && <p className="muted">Only admins can edit the catalog.</p>}
         <div className="row wrap">
           <h2>Catalog</h2>
@@ -196,7 +184,7 @@ export function SymbolSetsPage({ user }: { user: User }) {
             )}
           </section>
         </div>
-      </main>
+      </div>
 
       {draft && (
         <div className="modal-backdrop" onClick={() => setDraft(null)}>

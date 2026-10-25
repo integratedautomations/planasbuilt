@@ -1,10 +1,5 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
-import { Brand } from '../Brand'
-import { CompanySwitcher } from '../company/CompanySwitcher'
-import { OfflineBanner } from '../offline/OfflineBanner'
-import { UserMenu } from './UserMenu'
 import { HotkeyDialog } from '../prefs/HotkeyDialog'
 import { DENSITY_PREFS } from '../prefs/density'
 import type { DensityPref } from '../prefs/density'
@@ -40,28 +35,16 @@ function Section({ id, title, children }: { id: string; title: string; children:
   return <section className="card settings-card" id={id} aria-labelledby={`${id}-h`}><h3 id={`${id}-h`}>{title}</h3>{children}</section>
 }
 
-/** Personal preferences, one page: placing, viewing, touch, notifications, snapping and hotkeys. Everything follows the user to every device. */
-export function PreferencesPage() {
+/** Personal preferences: placing, viewing, touch, notifications, snapping and hotkeys. Everything follows the user to every device. */
+export function PreferencesPanel() {
   const prefs = usePrefs()
   const g = prefs.general
   const [hotkeys, setHotkeys] = useState(false)
   const set = (patch: Partial<GeneralPrefs>) => setGeneral(g, patch)
   const sample = formatLength(12 + 6.37 / 12, prefs.units)
   return (
-    <div className="page">
-      <header className="topbar">
-        <Link to="/" className="brand" aria-label="PlanAsBuilt"><Brand onChrome /></Link>
-        <CompanySwitcher />
-        <span className="muted">/</span>
-        <span className="crumb">Preferences</span>
-        <span className="spacer" />
-        <UserMenu />
-      </header>
-      <OfflineBanner />
-      <main className="content content-wide settings-page">
-        <h2>Preferences</h2>
-        <p className="muted small">These follow you to every device you sign in on. Profile and password are under <Link to="/settings">Settings</Link>.</p>
-        <div className="settings-grid">
+    <div className="panel-main">
+        <div className="masonry">
           <Section id="pref-placing" title="Placing">
             <label className="field">After placing a device
               <select value={g.afterPlace} onChange={e => set({ afterPlace: e.target.value as AfterPlace })}>
@@ -156,13 +139,6 @@ export function PreferencesPage() {
             <Check label="Haptic feedback on snap and place" hint="Where the device supports vibration" checked={g.haptics} onChange={v => set({ haptics: v })} />
           </Section>
 
-          <Section id="pref-notifications" title="Notifications">
-            <p className="muted small">Coming soon: there is no notification system yet, so these cannot be switched on.</p>
-            <Check label="Someone edits my plan" checked={false} disabled onChange={() => {}} />
-            <Check label="A backup fails" checked={false} disabled onChange={() => {}} />
-            <Check label="I am added to a project" checked={false} disabled onChange={() => {}} />
-          </Section>
-
           <Section id="pref-snapping" title="Snapping">
             <SnapControls hasScale holdDelay={false} />
           </Section>
@@ -174,7 +150,23 @@ export function PreferencesPage() {
         </div>
         {hotkeys && <HotkeyDialog overrides={prefs.hotkeys} onChange={o => setPref('hotkeys', o)} onClose={() => setHotkeys(false)}
           replaceChoice={prefs.replaceOnOverlap} onReplaceChoice={c => setPref('replaceOnOverlap', c)} />}
-      </main>
+    </div>
+  )
+}
+
+/** Notification choices. There is no notification system yet, so they cannot be switched on. */
+export function NotificationsPanel() {
+  return (
+    <div className="panel-main">
+      <div className="masonry">
+          <Section id="pref-notifications" title="Notifications">
+            <p className="muted small">Coming soon: there is no notification system yet, so these cannot be switched on.</p>
+            <Check label="Someone edits my plan" checked={false} disabled onChange={() => {}} />
+            <Check label="A backup fails" checked={false} disabled onChange={() => {}} />
+            <Check label="I am added to a project" checked={false} disabled onChange={() => {}} />
+          </Section>
+
+      </div>
     </div>
   )
 }

@@ -160,7 +160,7 @@ export function SidePanel(p: Props) {
   return (
     <aside ref={ref} className={`side-panel sheet snap-${p.sheet.snap}`}>
       <SheetHandle sheet={p.sheet} asideRef={ref} />
-      <div className="tabs">
+      <div className="panel-tabs">
         <button className={tab === 'props' ? 'active' : ''} onClick={() => setTab('props')}>Properties</button>
         <button className={tab === 'measure' ? 'active' : ''} onClick={() => setTab('measure')}>Measure</button>
         <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>Layers</button>

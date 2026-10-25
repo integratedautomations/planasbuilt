@@ -23,7 +23,7 @@ export function MoveProjectPanel({ project, onMoved }: { project: Project; onMov
   }
   return (
     <section className="card settings-card">
-      <h4>Move project to another company</h4>
+      <h3>Move to another company</h3>
       <p className="muted small">The project, its plans and photos move together. Catalog entries it uses are matched by name in the other company, or copied there when missing.</p>
       <div className="row wrap">
         <select value={target} aria-label="Company to move to" onChange={e => setTarget(e.target.value)}>

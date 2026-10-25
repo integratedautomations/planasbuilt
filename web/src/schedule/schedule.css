@@ -1,6 +1,6 @@
 /* ---- Markups list ---- */
 .markups-list { flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-top: 1px solid var(--border); position: relative; }
-.markups-list.full { position: fixed; inset: 0; z-index: 30; border-top: none; }
+.markups-list.full { position: fixed; inset: 0; z-index: var(--z-popover); border-top: none; }
 .list-handle { height: 8px; margin-top: -4px; cursor: ns-resize; touch-action: none; position: absolute; left: 0; right: 0; top: 0; z-index: 2; }
 .list-handle::after { content: ''; display: block; width: 44px; height: 4px; border-radius: 2px; background: var(--border); margin: 2px auto 0; }
 .list-handle:hover::after { background: var(--accent); }

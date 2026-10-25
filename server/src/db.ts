@@ -242,6 +242,9 @@ CREATE TABLE IF NOT EXISTS relayout_jobs (
 CREATE INDEX IF NOT EXISTS relayout_jobs_open ON relayout_jobs(status, next_run_at);
 -- Keys whose original file may still need deleting after a move was committed (the worker sweeps them if it crashed in between).
 ALTER TABLE relayout_jobs ADD COLUMN IF NOT EXISTS pending_unlinks jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE relayout_jobs ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'relayout';
+ALTER TABLE relayout_jobs ADD COLUMN IF NOT EXISTS company_id uuid;
+ALTER TABLE relayout_jobs ADD COLUMN IF NOT EXISTS failed_keys jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version int NOT NULL DEFAULT 0;
@@ -562,6 +565,15 @@ async function upgradeToCompanies(db: Db) {
       UNIQUE (company_id, user_id)
     )`)
     await q('CREATE INDEX IF NOT EXISTS company_invitations_user ON company_invitations(user_id)')
+    // CREATE TABLE IF NOT EXISTS never adds columns to a table an older build created: add every column idempotently.
+    await q(`ALTER TABLE company_invitations ADD COLUMN IF NOT EXISTS can_create_projects boolean NOT NULL DEFAULT false`)
+    await q(`ALTER TABLE company_invitations ADD COLUMN IF NOT EXISTS projects jsonb NOT NULL DEFAULT '[]'`)
+    await q(`ALTER TABLE company_invitations ADD COLUMN IF NOT EXISTS invited_by uuid REFERENCES users(id) ON DELETE SET NULL`)
+    await q(`ALTER TABLE company_invitations ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`)
+    await q(`ALTER TABLE company_members ADD COLUMN IF NOT EXISTS can_create_projects boolean NOT NULL DEFAULT false`)
+    await q(`ALTER TABLE company_members ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`)
+    await q(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false`)
+    await q(`ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS value jsonb NOT NULL DEFAULT '{}'`)
   })
 }
 

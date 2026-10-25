@@ -20,11 +20,15 @@ interface Props {
   /** Status keys that devices use right now: they cannot be removed. */
   inUse?: Set<string>
   disabled?: boolean
+  /** Which cards to show (default: all). Project Settings shows them one section at a time. */
+  parts?: RulesPart[]
 }
+export type RulesPart = 'statuses' | 'required' | 'tags' | 'report' | 'photos'
 
 /** Status workflow, required fields, tags, report sections and photo quality. Shared by the project and the organization defaults. */
-export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Props) {
+export function ProjectRulesForm({ value, onChange, sets, inUse, disabled, parts }: Props) {
   const v = value
+  const show = (p: RulesPart) => !parts || parts.includes(p)
   const set = (p: Partial<ProjectRules>) => onChange({ ...v, ...p })
   const setStatus = (i: number, p: Partial<StatusDef>) => set({ statuses: v.statuses.map((s, j) => (j === i ? { ...s, ...p } : s)) })
   const move = (i: number, d: -1 | 1) => {
@@ -56,6 +60,7 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
 
   return (
     <fieldset className="rules-form" disabled={disabled}>
+      {show('statuses') && (
       <section className="card settings-card">
         <h3>Status workflow</h3>
         <p className="muted small">The statuses a device can have, in the order they are listed. Statuses devices use now cannot be removed.</p>
@@ -65,7 +70,7 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
             return (
               <li key={i} className="row">
                 <input type="color" aria-label={`Color of ${s.label || s.key}`} value={s.color} onChange={e => setStatus(i, { color: e.target.value })} />
-                <input aria-label="Status name" value={s.label} maxLength={30} placeholder="Name" onChange={e => {
+                <input className="status-name" aria-label="Status name" value={s.label} maxLength={30} placeholder="Name" onChange={e => {
                   // A new (unsaved) status takes its key from its name until it is saved.
                   const isNew = /^status-\d+$/.test(s.key)
                   const key = isNew ? slug(e.target.value) || s.key : s.key
@@ -75,7 +80,7 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
                   if (nk !== s.key && required[s.key]) { required[nk] = required[s.key]; delete required[s.key] }
                   set({ statuses: v.statuses.map((o, j) => (j === i ? { ...o, label: e.target.value, key: nk } : o)), required })
                 }} />
-                <code className="muted small" title="Stored on each device">{s.key}</code>
+                <code className="muted small status-key" title="Stored on each device">{s.key}</code>
                 <button type="button" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>^</button>
                 <button type="button" aria-label="Move down" disabled={i === v.statuses.length - 1} onClick={() => move(i, 1)}>v</button>
                 <button type="button" className="danger" disabled={v.statuses.length <= 1 || !!used} title={used ? 'Devices use this status' : 'Remove'} onClick={() => remove(i)}>Remove</button>
@@ -85,7 +90,9 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
         </ul>
         <div className="row"><button type="button" disabled={v.statuses.length >= 12} onClick={add}>Add status</button></div>
       </section>
+      )}
 
+      {show('required') && (
       <section className="card settings-card">
         <h3>Required before a status</h3>
         <p className="muted small">A device cannot be given a status until it has what is ticked. Items a device does not have (for example IP on a smoke detector) are not asked for. Devices already in that status can still be edited.</p>
@@ -108,7 +115,9 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
           </table>
         </div>
       </section>
+      )}
 
+      {show('tags') && (
       <section className="card settings-card">
         <h3>Tags</h3>
         <label className="field">Tag format
@@ -133,7 +142,9 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
         </div>
         <p className="muted small">Applies to tags created from now on; existing tags are not renamed. A device type with its own prefix keeps it.</p>
       </section>
+      )}
 
+      {show('report') && (
       <section className="card settings-card">
         <h3>Report sections</h3>
         <p className="muted small">Sections switched off here are left out of every as-built report for this project.</p>
@@ -143,7 +154,9 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
           </label>
         ))}
       </section>
+      )}
 
+      {show('photos') && (
       <section className="card settings-card">
         <h3>Photos</h3>
         <label className="field">Compression quality: {Math.round(v.photo_quality * 100)}%
@@ -151,6 +164,7 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled }: Pro
         </label>
         <p className="muted small">Photos are shrunk on the phone before upload. Lower is smaller and faster; 80% is a good balance. To make a photo mandatory, tick Photo under a status above.</p>
       </section>
+      )}
     </fieldset>
   )
 }

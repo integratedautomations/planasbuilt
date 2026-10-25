@@ -24,15 +24,14 @@ export function CableDefaults({ project, canEdit, onSaved }: { project: Project;
   }
 
   return (
-    <details className="pp-cable">
-      <summary>Cable defaults: {cur.slackPct}% slack, {cur.dropFt} ft drop</summary>
+    <div className="pp-cable stack">
       <p className="muted small">A cable run's length = drawn length x (1 + slack %) + drop x ends locked to a device, times its run count. Each cable can override both in Properties.</p>
       <fieldset disabled={!canEdit || busy} className="row wrap">
         <label className="field inline">Slack %<input type="number" min={0} max={1000} step="any" value={slack} onChange={e => setSlack(e.target.value)} /></label>
         <label className="field inline">Drop per linked end, ft<input type="number" min={0} max={10000} step="any" value={drop} onChange={e => setDrop(e.target.value)} /></label>
-        {canEdit && <button disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save'}</button>}
+        {canEdit && <button className="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save cable defaults'}</button>}
       </fieldset>
       {error && <div className="error">{error}</div>}
-    </details>
+    </div>
   )
 }
