@@ -1081,6 +1081,12 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const chest = resolveChest(chests, chestSaved)
   const pickChest = useCallback((id: string) => { setChestSaved(id); saveChest(projectId, id) }, [projectId])
   useEffect(() => { setChestSaved(loadChest(projectId)) }, [projectId])
+  // Choosing a chest in the row also picks its first tool; otherwise the row would follow the still-active tool straight back to its old chest
+  const chooseChest = useCallback((id: string) => {
+    pickChest(id)
+    const first = chests.find(o => o.id === id)?.entries[0]
+    if (first) pickEntry(first)
+  }, [pickChest, chests, pickEntry])
   const currentEntryId = activeEntryId(tool, shapeLock, activeTypeId)
   const chestRowOn = isPhone && !readOnly && !focus && !!chest && tool !== 'select' && tool !== 'pan'
   useEffect(() => {
@@ -1255,7 +1261,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
       )}
       {chestRowOn && chest && (
-        <ChestRow options={chests} chest={chest} activeId={currentEntryId} onChest={pickChest} onPick={pickEntry} onMore={() => setShowChestList(true)} />
+        <ChestRow options={chests} chest={chest} activeId={currentEntryId} onChest={chooseChest} onPick={pickEntry} onMore={() => setShowChestList(true)} />
       )}
       {focus ? <button className="focus-exit" title={`Exit focus mode (${hotkeys['view.focus'] || 'Esc'})`} aria-label="Exit focus mode" onClick={() => setFocus(false)}><Icon name="maximize" size={18} /></button> : <StatusChip banners={banners} />}
       {(activeTool === 'device' || (!hasSelection && drawStyleTool)) && (
@@ -1573,8 +1579,10 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         </MoreMenu>
         {isPhone && (
           <div className="viewer-subrow">
+            <button type="button" className="page-step" aria-label="Previous page" disabled={pageNum <= 1} onClick={() => goTo(pageNum - 1)}><Icon name="chevron-left" size={18} /></button>
             <button type="button" className="page-pill" aria-haspopup="dialog" aria-expanded={showThumbs} aria-label={`Page ${pageNum} of ${pageCount || '?'}, open page list`}
               onClick={() => setShowThumbs(v => !v)}>Page {pageNum}/{pageCount || '…'} <Icon name="chevron-down" size={12} /></button>
+            <button type="button" className="page-step" aria-label="Next page" disabled={!pageCount || pageNum >= pageCount} onClick={() => goTo(pageNum + 1)}><Icon name="chevron-right" size={18} /></button>
             <span className="spacer" />
             <Avatars peers={peers} max={2} onJump={jumpToPeer} />
           </div>

@@ -144,6 +144,9 @@
   .viewer-subrow { flex: 0 0 100%; order: 9; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 6px 2px; }
   .viewer-subrow .spacer { display: block; flex: 1; }
   .viewer-subrow .page-pill { margin: 0; min-height: 36px; height: 36px; }
+  .viewer-subrow .page-step { display: grid; place-items: center; width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 20px; background: rgb(255 255 255 / 0.12); border-color: transparent; color: var(--chrome-text); flex-shrink: 0; }
+  .viewer-subrow .page-step:disabled { opacity: 0.35; }
+  .viewer-subrow { gap: 6px; }
   .plan-switch { flex: 1 1 0; }
   .plan-btn { max-width: 100%; font-size: 14px; }
   .plan-btn .ellipsis { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
