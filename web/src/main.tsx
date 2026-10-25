@@ -7,6 +7,9 @@ import App from './App.tsx'
 import { UpdateToast } from './offline/UpdateToast.tsx'
 import { startSync } from './offline/sync.ts'
 
+import { captureInstallPrompt } from './offline/installPrompt.ts'
+
+captureInstallPrompt()
 startSync()
 
 createRoot(document.getElementById('root')!).render(

@@ -40,6 +40,9 @@ import type { Attachment } from '../api'
 import type { Markup } from '../markups/types'
 import { classifyError } from './classify'
 import { db } from './db'
+import { setLeaveGuard } from './leaveGuard'
+import { requestPersistence } from './storagePersist'
+import { loadLastSync, saveLastSync } from './unsent'
 import { foreignInfo, isForeign } from './owner'
 import type { CurrentUser, ForeignInfo } from './owner'
 import type { AttachmentRow, OutboxItem, OutboxKind, ScaleRow } from './db'
@@ -67,6 +70,10 @@ export interface SyncSnapshot {
   failedItems: OutboxItem[]
   /** Queued items from a different user than the one signed in: the queue is paused until they sign in again or discard. */
   foreign: ForeignInfo | null
+  /** createdAt of the oldest unsent (pending or failed) item. */
+  oldestAt: number | null
+  /** When an item was last acknowledged by the server. */
+  lastSyncAt: number | null
 }
 
 type Listener = (e: SyncEvent) => void
@@ -83,7 +90,8 @@ let reachable = true
 let syncing = false
 let authRequired = false
 let currentUser: CurrentUser | null = null
-let snapshot: SyncSnapshot = { online: true, pending: 0, failed: 0, syncing: false, authRequired: false, failedItems: [], foreign: null }
+let lastSyncAt: number | null = loadLastSync()
+let snapshot: SyncSnapshot = { online: true, pending: 0, failed: 0, syncing: false, authRequired: false, failedItems: [], foreign: null, oldestAt: null, lastSyncAt: loadLastSync() }
 
 /** Tell the outbox who is signed in: new items are stamped with them; other users' items are never sent. */
 export function setSyncUser(u: CurrentUser | null) {
@@ -104,13 +112,15 @@ export async function refreshSnapshot() {
     db.outbox.where('status').equals('failed').toArray(),
   ])
   const pending = pendingItems.length
+  if (pending + failedItems.length > 0) void requestPersistence()
+  const oldestAt = [...pendingItems, ...failedItems].reduce<number | null>((m, i) => m === null || i.createdAt < m ? i.createdAt : m, null)
   const next: SyncSnapshot = {
     online: reachable && browserOnline(), pending, failed: failedItems.length,
-    syncing, authRequired, failedItems, foreign: foreignInfo(pendingItems, currentUser),
+    syncing, authRequired, failedItems, foreign: foreignInfo(pendingItems, currentUser), oldestAt, lastSyncAt,
   }
   const p = snapshot
   const same = p.online === next.online && p.pending === next.pending && p.failed === next.failed &&
-    p.syncing === next.syncing && p.authRequired === next.authRequired &&
+    p.oldestAt === next.oldestAt && p.lastSyncAt === next.lastSyncAt && p.syncing === next.syncing && p.authRequired === next.authRequired &&
     p.foreign?.count === next.foreign?.count && p.foreign?.userId === next.foreign?.userId &&
     p.failedItems.length === next.failedItems.length &&
     p.failedItems.every((f, i) => f.seq === next.failedItems[i].seq && f.lastError === next.failedItems[i].lastError)
@@ -139,7 +149,7 @@ export function resetSyncState() {
   reachable = true; syncing = false; authRequired = false; inflightSeq = null; currentUser = null
   if (retryTimer) clearTimeout(retryTimer)
   retryTimer = null; draining = null; rerun = false; skippedRemote.clear(); ackedAt.clear(); ackClock = 0
-  snapshot = { online: true, pending: 0, failed: 0, syncing: false, authRequired: false, failedItems: [], foreign: null }
+  snapshot = { online: true, pending: 0, failed: 0, syncing: false, authRequired: false, failedItems: [], foreign: null, oldestAt: null, lastSyncAt: null }
 }
 
 // ---------------------------------------------------------------- outbox writes
@@ -636,6 +646,7 @@ async function finish(item: OutboxItem, result: unknown) {
   const cur = await db.outbox.get(item.seq!)
   if (cur && JSON.stringify(cur.payload) !== JSON.stringify(item.payload)) await db.outbox.update(item.seq!, { attempts: 0, lastError: '' })
   else await db.outbox.delete(item.seq!)
+  lastSyncAt = Date.now(); saveLastSync(lastSyncAt)
   emit({ type: 'item-done', item })
   if (item.kind === 'markup_put' || item.kind === 'markup_delete') {
     try { await reconcileSkipped(item.targetId) } catch (e) { console.error('reconcile failed', e) }
@@ -760,6 +771,7 @@ export function startSync() {
   window.addEventListener('offline', () => { void refreshSnapshot() })
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { reachable = true; void drain() } })
   window.addEventListener('planmark:signed-out', () => { authRequired = true; void refreshSnapshot() })
+  subscribeSnapshot(() => setLeaveGuard(snapshot.pending > 0 || snapshot.syncing))
   void refreshSnapshot()
   void drain()
 }

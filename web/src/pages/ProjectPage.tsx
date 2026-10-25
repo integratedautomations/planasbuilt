@@ -4,6 +4,8 @@ import { api, documentFileUrl, fetchBlob } from '../api'
 import type { DocumentRevision, DocumentSummary, RevisionUpload, User } from '../api'
 import { docCacheStates, invalidatePdf, loadDocuments, makeProjectOffline, projectCacheSize } from '../offline/cache'
 import type { Progress } from '../offline/cache'
+import { requestPersistence } from '../offline/storagePersist'
+import { noteMadeOffline } from '../offline/installPrompt'
 import { loadPdf } from '../pdf'
 import { exportProjectReport } from '../pdfio/actions'
 import { ReportDialog } from '../pdfio/ReportDialog'
@@ -102,6 +104,7 @@ export function ProjectPage({ user }: { user: User }) {
       const list = await makeProjectOffline(projectId!, setProgress)
       setDocs(list)
       await refreshOffline(list)
+      void requestPersistence(); noteMadeOffline()
     } catch (err) { setError(`Could not save for offline: ${(err as Error).message}`) }
     finally { setProgress(null) }
   }

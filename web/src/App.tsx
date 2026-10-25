@@ -6,6 +6,8 @@ import { cacheUser, cachedUser } from './offline/user'
 import { resumeSync, setSyncUser } from './offline/sync'
 import { claimCache, purgeCache, releaseCache } from './offline/cacheOwner'
 import { ForeignNotice } from './offline/ForeignNotice'
+import { DataSafetyBanner, SignInRecoveryNotice } from './offline/DataSafety'
+import { requestPersistence } from './offline/storagePersist'
 import { connect as connectRealtime, disconnect as disconnectRealtime, setSocketCompany } from './realtime/socket'
 import { getActiveCompanyId, setActiveCompanyId, subscribeActiveCompany } from './company/activeCompany'
 import { acceptInvitation, declineInvitation, listCompanies, listInvitations } from './company/api'
@@ -83,6 +85,7 @@ export default function App() {
     let live = true
     claimCache(user.id).then(() => { if (live) setCacheFor(user.id) }).catch(e => { console.error(e); if (live) setCacheFor(user.id) })
     connectRealtime()
+    void requestPersistence()
     return () => { live = false }
   }, [user])
 
@@ -148,11 +151,14 @@ export default function App() {
     setToken(token); cacheUser(u); setUser(u); resumeSync()
   }
   if (!user) return (
+    <>
+    <SignInRecoveryNotice />
     <Routes>
       <Route path="/invite/:token" element={<InvitePage purpose="invite" onSignedIn={signedIn} />} />
       <Route path="/reset/:token" element={<InvitePage purpose="reset" onSignedIn={signedIn} />} />
       <Route path="*" element={<AuthPage onSignedIn={signedIn} />} />
     </Routes>
+    </>
   )
 
   const signOut = async () => {
@@ -168,6 +174,7 @@ export default function App() {
   return (
     <SessionContext.Provider value={{ user, signOut, companies, switchCompany, refreshCompanies, answerInvitation }}>
     <ForeignNotice />
+    <DataSafetyBanner />
     {user.is_admin && <BackupAlert />}
     <Routes key={epoch}>
       <Route path="/" element={<ProjectsPage user={user} onSignOut={signOut} />} />
