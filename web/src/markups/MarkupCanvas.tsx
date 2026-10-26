@@ -33,7 +33,7 @@ import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } fr
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
 import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
 import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
-import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, chainDevices, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, viaOf } from './cables'
+import { LINK_TOLERANCE, disconnectPoint, linkAt, DEFAULT_CABLE_SETTINGS, cableColor, cableLength, chainDevices, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, viaOf } from './cables'
 import type { CableEnd, CableSettings, EndRing } from './cables'
 import { canEditVertices, insertVertex, nearestVertex, removeVertex } from './vertices'
 import { previewTag } from './tagPreview'
@@ -58,6 +58,8 @@ export interface MarkupCanvasHandle {
   isPlacing: () => boolean
   /** Removes one control point of a path markup (one undo step). False when the shape would drop below its minimum. */
   deleteVertex: (id: string, index: number) => boolean
+  /** Detaches cable vertex `index` from its device (link removed, vertex nudged off it); one undo step. False when not linked. */
+  disconnectVertex: (id: string, index: number) => boolean
   /** Starts drawing from a free end of a cable (the one nearest `near`), appending points to it. False when it cannot continue. */
   continueCable: (id: string, near?: Pt | null) => boolean
 }
@@ -380,6 +382,16 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       const g = m && !readOnly && !lockedIds.has(id) ? removeVertex(m, index) : null
       if (!m || !g) return false
       commit([{ before: m, after: { ...m, geometry: m.type === 'cable' ? relinkEnds(g, byId, m.page) : g } }])
+      return true
+    },
+    disconnectVertex: (id, index) => {
+      const m = byId.get(id)
+      if (!m || m.type !== 'cable' || readOnly || lockedIds.has(id) || !('points' in m.geometry)) return false
+      const link = linkAt(m.geometry, index)
+      const dev = link ? deviceCentreOf(byId.get(link.id)) : null
+      const g = dev ? disconnectPoint(m.geometry, index, dev, Math.max(12 / liveZoom(), LINK_TOLERANCE * 2)) : null
+      if (!g || g === m.geometry) return false
+      commit([{ before: m, after: { ...m, geometry: g } }])
       return true
     },
     continueCable: (id, near) => {

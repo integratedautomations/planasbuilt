@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cableCount, cableColor, cableLength, cableTotals, danglingEnds, DEFAULT_CABLE_SETTINGS, endPoint, linkedEnds, nearestDevice, relinkEnds, setEnd, syncCables, viaAfterInsert, viaAfterRemove, viaOf, withVia, chainDevices, withLink } from './cables'
+import { cableCount, cableColor, cableLength, cableTotals, danglingEnds, DEFAULT_CABLE_SETTINGS, endPoint, linkedEnds, nearestDevice, relinkEnds, setEnd, syncCables, viaAfterInsert, viaAfterRemove, viaOf, withVia, chainDevices, withLink, disconnectPoint } from './cables'
 import { pathFromPoints } from './geometry'
 import { pathPoints } from './snap'
 import type { Markup, PathGeometry } from './types'
@@ -243,5 +243,25 @@ describe('via drop in the length formula', () => {
     expect(on.via).toBe(1)
     expect(on.runFt).toBeCloseTo(30 + 2 * 3, 6)
     expect(cableLength(c, 10, { slackPct: 0, dropFt: 2, viaDrop: false }, all)!.runFt).toBeCloseTo(30 + 2 * 2, 6)
+  })
+})
+
+describe('disconnectPoint', () => {
+  const g = (extra: object = {}): PathGeometry => ({ ...pathFromPoints([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }]), ...extra })
+  it('clears an end link without a dangling marker and moves it off the device', () => {
+    const out = disconnectPoint(g({ from: 'd1', to: 'd2' }), 0, { x: 0, y: 0 }, 12)
+    expect(out.from).toBeUndefined(); expect(out.to).toBe('d2'); expect(out.open).toBeUndefined()
+    expect(pathPoints(out)[0].x).toBeCloseTo(12); expect(pathPoints(out)[0].y).toBeCloseTo(0)
+  })
+  it('handles the to end', () => {
+    const out = disconnectPoint(g({ to: 'd2' }), 2, { x: 100, y: 100 }, 12)
+    expect(out.to).toBeUndefined(); expect(pathPoints(out)[2].y).toBeCloseTo(88)
+  })
+  it('removes a via link and nudges the vertex', () => {
+    const out = disconnectPoint(g({ via: [{ id: 'v', i: 1 }] }), 1, { x: 100, y: 0 }, 12)
+    expect(out.via).toBeUndefined(); expect(pathPoints(out)[1].y).toBeCloseTo(12)
+  })
+  it('is a no-op for an unlinked vertex', () => {
+    const x = g(); expect(disconnectPoint(x, 1, { x: 100, y: 0 }, 12)).toBe(x)
   })
 })

@@ -14,7 +14,7 @@ import { usePanZoom } from '../viewer/usePanZoom'
 import { loadLastView, saveLastView } from '../viewer/lastView'
 import type { View } from '../viewer/usePanZoom'
 import { clampDeviceScale, scaleDevice, scaleDevices, unscaleChange } from '../markups/deviceScale'
-import { cableSettings } from '../markups/cables'
+import { cableSettings, cableTypeId, linkAt, viaOf } from '../markups/cables'
 import { canDeleteVertex, canEditVertices } from '../markups/vertices'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
@@ -1501,6 +1501,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       const hitM = pageMarkups.find(m => m.id === c.hitId)
       if (hitM && !readOnly && canEditVertices(hitM) && c.vertex !== undefined) {
         pointItems.push({ label: 'Delete point', disabled: !canDeleteVertex(hitM, c.vertex), onClick: () => { markupRef.current?.deleteVertex(hitM.id, c.vertex!) } })
+      }
+      if (hitM && !readOnly && hitM.type === 'cable' && c.vertex !== undefined && 'points' in hitM.geometry && linkAt(hitM.geometry, c.vertex)) {
+        pointItems.push({ label: 'Disconnect from device', onClick: () => { markupRef.current?.disconnectVertex(hitM.id, c.vertex!) } })
+      }
+      if (hitM && !readOnly && hitM.type === 'device') {
+        for (const cb of pageMarkups) {
+          if (cb.type !== 'cable' || !('points' in cb.geometry)) continue
+          const g = cb.geometry, n = g.points.length / 2
+          const idxs = [...(g.from === hitM.id ? [0] : []), ...viaOf(g).filter(v => v.id === hitM.id).map(v => v.i), ...(g.to === hitM.id && n > 1 ? [n - 1] : [])]
+          for (const i of idxs) {
+            const name = catalog.cableTypes.get(cableTypeId(cb))?.name ?? 'cable'
+            pointItems.push({ label: `Disconnect ${name} from this device`, onClick: () => { markupRef.current?.disconnectVertex(cb.id, i) } })
+          }
+        }
       }
       if (one && one.id === c.hitId && !readOnly && one.type === 'cable') {
         pointItems.push({ label: 'Continue run', hint: hint('cable.continue'), onClick: () => continueRun(c.point) })

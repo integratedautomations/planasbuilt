@@ -455,3 +455,32 @@ export function trimCableEnds(abs: Pt[], rings: readonly EndRing[]): Pt[] {
   return out
 }
 
+
+/** What vertex `index` of a cable is linked to: 'from' / 'to' (first / last point) or a via link; null when unlinked. */
+export function linkAt(g: PathGeometry, index: number): { kind: 'from' | 'to' | 'via'; id: string } | null {
+  const n = pathPoints(g).length
+  if (index === 0 && g.from) return { kind: 'from', id: g.from }
+  if (index === n - 1 && n > 1 && g.to) return { kind: 'to', id: g.to }
+  const v = index > 0 && index < n - 1 ? viaOf(g).find(x => x.i === index) : undefined
+  return v ? { kind: 'via', id: v.id } : null
+}
+
+/**
+ * Deliberately detaches vertex `index` from its device: the from / to link (no dangling marker) or the via link goes, and the
+ * vertex moves `offset` page units off `devicePos` along its segment (towards the neighbouring vertex; never past half the
+ * segment) so relinkEnds / withVia do not link it again. Returns the same object when the vertex is not linked.
+ */
+export function disconnectPoint(g: PathGeometry, index: number, devicePos: Pt, offset: number): PathGeometry {
+  const link = linkAt(g, index)
+  if (!link) return g
+  const pts = pathPoints(g)
+  const nb = pts[link.kind === 'to' ? index - 1 : index + 1]
+  let dx = nb.x - devicePos.x, dy = nb.y - devicePos.y
+  const len = Math.hypot(dx, dy)
+  if (len < 1e-6) { dx = 1; dy = 0 } else { dx /= len; dy /= len }
+  const segLen = Math.hypot(nb.x - pts[index].x, nb.y - pts[index].y)
+  const step = segLen > 1e-6 ? Math.min(offset, segLen / 2) : offset
+  const moved = setVertex(g, index, { x: devicePos.x + dx * step, y: devicePos.y + dy * step })
+  if (link.kind === 'via') return setVia(moved, viaOf(moved).filter(v => v.i !== index))
+  return withLink(moved, link.kind, null, false)
+}
