@@ -1,10 +1,10 @@
 // Docking layout: which panel sits in which dock zone, which are open, and how big each zone is.
 
-export type PanelId = 'tools' | 'pages' | 'props' | 'markups' | 'compare' | 'areas' | 'layers'
+export type PanelId = 'tools' | 'pages' | 'props' | 'markups' | 'compare' | 'areas' | 'layers' | 'cables'
 export type Dock = 'left' | 'right' | 'bottom'
 
-export const PANEL_IDS: PanelId[] = ['tools', 'pages', 'props', 'markups', 'compare', 'areas', 'layers']
-export const PANEL_TITLES: Record<PanelId, string> = { tools: 'Tool chest', pages: 'Pages', props: 'Properties', markups: 'Markups list', compare: 'Compare', areas: 'Areas', layers: 'Layers' }
+export const PANEL_IDS: PanelId[] = ['tools', 'pages', 'props', 'markups', 'compare', 'areas', 'layers', 'cables']
+export const PANEL_TITLES: Record<PanelId, string> = { tools: 'Tool chest', pages: 'Pages', props: 'Properties', markups: 'Markups list', compare: 'Compare', areas: 'Areas', layers: 'Layers', cables: 'Cables' }
 export const DOCKS: Dock[] = ['left', 'right', 'bottom']
 
 export interface PanelState { dock: Dock; open: boolean }
@@ -30,6 +30,7 @@ export const DEFAULT_LAYOUT: LayoutPrefs = {
     compare: { dock: 'right', open: false },
     areas: { dock: 'right', open: false },
     layers: { dock: 'right', open: false },
+    cables: { dock: 'bottom', open: false },
   },
   sizes: { left: 220, right: 290, bottom: 300 },
 }

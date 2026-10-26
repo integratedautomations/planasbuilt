@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import '../viewer/viewer.css'
 import { Icon } from '../ui/Icon'
+import type { IconName } from '../ui/Icon'
 import { api, post } from '../api'
 import { fetchAll } from '../devices/loadDevices'
 import type { DocumentRevision, Project } from '../api'
@@ -38,7 +39,10 @@ import { isSameDevice, replaceDevice } from '../markups/replaceDevice'
 import type { ReplaceTarget } from '../markups/replaceDevice'
 import { ReplaceDialog } from '../markups/ReplaceDialog'
 import { markupBounds } from '../markups/selection'
-import { DockZone } from '../viewer/DockZone'
+import { DockStrip, DockZone } from '../viewer/DockZone'
+import type { StripPanel } from '../viewer/DockZone'
+import { CablesPanel } from '../markups/CablesPanel'
+
 import { usePrefs, setPref, getPrefs } from '../prefs/store'
 import { pushRecent, toggleFavorite } from '../prefs/prefs'
 import { assignCombo, commandForEvent, commandLabel as commandLabelOf, entryIdOfCommand, isDynamicCommand, isTypingTarget, keyName, parseCombo, resolveHotkeys } from '../prefs/hotkeys'
@@ -147,6 +151,14 @@ function useShowAreas(projectId: string) {
 function useShowCones(projectId: string) {
   const key = `planmark.cones.show.${projectId}`
   const [show, setShow] = useState(() => { try { const v = localStorage.getItem(key); return v === null ? getPrefs().general.coverageDefault : v !== '0' } catch { return true } })
+  const set = (v: boolean) => { setShow(v); try { localStorage.setItem(key, v ? '1' : '0') } catch { /* ignore */ } }
+  return [show, set] as const
+}
+
+/** Per-viewer toggle for cable runs (default on), remembered per project in this browser like the coverage toggle. */
+function useShowCables(projectId: string) {
+  const key = `planmark.cables.show.${projectId}`
+  const [show, setShow] = useState(() => { try { return localStorage.getItem(key) !== '0' } catch { return true } })
   const set = (v: boolean) => { setShow(v); try { localStorage.setItem(key, v ? '1' : '0') } catch { /* ignore */ } }
   return [show, set] as const
 }
@@ -288,6 +300,7 @@ export function ViewerPage() {
   const [locked, toggleLocked] = useLayerFlags(projectId, 'locked')
   const [showAreas, setShowAreas] = useShowAreas(projectId)
   const [showCones, setShowCones] = useShowCones(projectId)
+  const [showCables, setShowCables] = useShowCables(projectId)
   const [boxMode, setBoxMode] = useState(false)
   const [multiSelect, setMultiSelect] = useState(false)
   const [clipCount, setClipCount] = useState(0)
@@ -590,7 +603,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const areaPaths = useMemo(() => new Map(pageAreas.map(a => [a.id, areaPathIn(areaIndex, a)])), [areaIndex, pageAreas])
   const counts = useMemo(() => deviceCounts(areaIndex, allMarkups.values()), [areaIndex, allMarkups])
   const canvasMarkups = useMemo(() => {
-    const list = showAreas ? pageMarkups : pageMarkups.filter(m => m.type !== 'area')
+    const list = pageMarkups.filter(m => (showAreas || m.type !== 'area') && (showCables || m.type !== 'cable'))
     return scaleDevices(list, deviceScale)
   }, [pageMarkups, showAreas, deviceScale])
   /** Edits made on the scaled devices go back to the store as real (unscaled) geometry. */
@@ -972,7 +985,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     setPageBusy('Extracting pages…')
     try {
       const bytes = await buildSubset({
-        pdfBytes: await currentPdfBytes(), pages, markups: scaleDevices(allMarkups.values(), deviceScale), symbolSets, scales: scaleMap(),
+        pdfBytes: await currentPdfBytes(), pages, markups: scaleDevices(allMarkups.values(), deviceScale).filter(m => showCables || m.type !== 'cable'), symbolSets, scales: scaleMap(),
         icons: await loadIcons(symbolSets.values(), catalog.types.values()), mode: 'annotate', showCones, catalog,
       })
       downloadBytes(bytes, exportFileName(meta?.name ?? 'plan', `page${pages.length === 1 ? '' : 's'}-${pages.slice(0, 6).join('_')}${pages.length > 6 ? '_etc' : ''}`))
@@ -996,7 +1009,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const pageToolsOn = canEditRole && !viewingOld
 
   const printArgs = async () => ({
-    documentId, markups: scaleDevices(allMarkups.values(), deviceScale), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
+    documentId, markups: scaleDevices(allMarkups.values(), deviceScale).filter(m => showCables || m.type !== 'cable'), symbolSets, deviceTypes: catalog.types.values(), scales: scaleMap(), showCones, catalog,
     pdfBytes: revParam ? await fetchRevisionPdf(documentId, revParam) : undefined, showOriginalAnnots: showOrig,
   })
 
@@ -1341,6 +1354,13 @@ Its PDF, markups and scales are restored as a new revision. The present state is
                 </span>
                 <span>Coverage</span>
               </button>
+              <button className={'palette-item cone-toggle' + (showCables ? ' on' : '')} aria-pressed={showCables}
+                title={showCables ? 'Hide cable runs' : 'Show cable runs'} onClick={() => setShowCables(!showCables)}>
+                <span className="cone-icon" aria-hidden>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity={showCables ? 1 : 0.5}><path d="M4 18c4 0 3-12 8-12s4 12 8 12" strokeDasharray={showCables ? undefined : '3 3'} /></svg>
+                </span>
+                <span>Cables</span>
+              </button>
             </FloatingChip>
           )}
           {!hasSelection && drawStyleTool && (
@@ -1429,7 +1449,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       stampText={stampText} onStampText={setStampText} onUpdate={updateSelected} onDelete={deleteSelected}
       layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId}
       hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
-      display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }}
+      display={{ showCones, onShowCones: setShowCones, showCables, onShowCables: setShowCables, ...deviceDisplay }}
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
       stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack} cableDefaults={cableDefaults} onContinueRun={readOnly ? undefined : continueRun}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets} legendRows={legendRowsById}
@@ -1470,14 +1490,23 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     markups: markupsListEl(true),
     compare: compareEl,
     areas: <Areas areas={areasProps} readOnly={readOnly} selected={selected} onDelete={deleteSelected} />,
+    cables: <CablesPanel markups={allMarkups} documentId={documentId} pageNum={pageNum} scales={scales} cableTypes={catalog.cableTypes}
+      cableDefaults={cableDefaults} selectedIds={selectedIds} onJump={jumpTo} />,
     layers: <Layers layers={layers} activeLayerId={activeLayerId} onActiveLayer={setActiveLayerId} hidden={hidden} locked={locked}
       onToggleHidden={toggleHidden} onToggleLocked={toggleLocked} onAddLayer={addLayer} readOnly={readOnly} symbolSets={symbolSets}
-      display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }} />,
+      display={{ showCones, onShowCones: setShowCones, showCables, onShowCables: setShowCables, ...deviceDisplay }} />,
   }
 
+  const PANEL_ICONS: Record<PanelId, IconName> = { tools: 'tools', pages: 'pages', props: 'sliders', markups: 'list', compare: 'compare', areas: 'map', layers: 'layers', cables: 'cable' }
   const zone = (d: Dock) => {
     const ids = panelsIn(shownLayout, d)
-    if (!ids.length || focus) return null
+    if (focus) return null
+    if (!ids.length) {
+      // Closed dock: collapse to a thin strip with one icon per panel docked here
+      const strip: StripPanel[] = (Object.keys(PANEL_TITLES) as PanelId[]).filter(id => layout.panels[id].dock === d)
+        .map(id => ({ id, title: PANEL_TITLES[id], icon: PANEL_ICONS[id] }))
+      return <DockStrip side={d} panels={strip} active={zoneTab[d]} onOpen={id => setPanel(id, true)} />
+    }
     const wanted = zoneTab[d]
     return (
       <DockZone side={d} panels={ids.map(id => ({ id, title: PANEL_TITLES[id], node: panelNodes[id] }))}
@@ -1604,6 +1633,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <MenuItemBtn icon="map" label="Areas" hint={hotkeys['panel.areas'] || undefined} checked={panelOpen('areas')} onClick={() => togglePanel('areas')} />
           <MenuItemBtn icon="compare" label="Compare" hint={hotkeys['panel.compare'] || undefined} checked={panelOpen('compare')} onClick={() => togglePanel('compare')} />
           <MenuItemBtn icon="layers" label="Layers" hint={hotkeys['panel.layers'] || undefined} checked={panelOpen('layers')} onClick={() => togglePanel('layers')} />
+          {!isPhone && <MenuItemBtn icon="cable" label="Cables" checked={panelOpen('cables')} onClick={() => togglePanel('cables')} />}
           {!isPhone && <MenuItemBtn icon="maximize" label="Focus mode" hint={hotkeys['view.focus'] || undefined} onClick={() => setFocus(true)} />}
             </> },
             { id: 'scale', label: 'Scale', node: <>
@@ -1629,6 +1659,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           <MenuItemBtn icon="map" label="Areas" hint={hotkeys['panel.areas'] || undefined} checked={panelOpen('areas')} onClick={() => togglePanel('areas')} />
           <MenuItemBtn icon="compare" label="Compare" hint={hotkeys['panel.compare'] || undefined} checked={panelOpen('compare')} onClick={() => togglePanel('compare')} />
           <MenuItemBtn icon="layers" label="Layers" hint={hotkeys['panel.layers'] || undefined} checked={panelOpen('layers')} onClick={() => togglePanel('layers')} />
+          {!isPhone && <MenuItemBtn icon="cable" label="Cables" checked={panelOpen('cables')} onClick={() => togglePanel('cables')} />}
           {!isPhone && <MenuItemBtn icon="maximize" label="Focus mode" hint={hotkeys['view.focus'] || undefined} onClick={() => setFocus(true)} />}
           <MenuSep />
           <MenuItemBtn icon="keyboard" label="Hotkeys…" onClick={() => setShowHotkeys(true)} />

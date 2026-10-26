@@ -457,6 +457,17 @@ input.invalid { border-color: var(--danger); }
 .dock-left { border-right: 1px solid var(--border); }
 .dock-right { border-left: 1px solid var(--border); }
 .dock-bottom { border-top: 1px solid var(--border); }
+.dock-strip { flex-shrink: 0; display: flex; gap: 2px; padding: 4px; background: var(--surface); }
+.dock-strip-left, .dock-strip-right { flex-direction: column; align-items: center; width: 32px; box-sizing: border-box; }
+.dock-strip-left { border-right: 1px solid var(--border); }
+.dock-strip-right { border-left: 1px solid var(--border); }
+.dock-strip-bottom { flex-direction: row; align-items: center; height: 32px; box-sizing: border-box; border-top: 1px solid var(--border); }
+.dock-strip .icon-btn { min-width: 24px; min-height: 24px; width: 24px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.dock-strip .icon-btn.active { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.viewer .dock-strip { background: var(--panel-bg); }
+.viewer .dock-strip-left { border-right-color: var(--divider); }
+.viewer .dock-strip-right { border-left-color: var(--divider); }
+.viewer .dock-strip-bottom { border-top-color: var(--divider); }
 .dock-inner { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .dock-head { display: flex; align-items: center; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .dock-tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }

@@ -44,7 +44,7 @@ html:has(.content) { scrollbar-gutter: stable; }
 .tabs .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 /* Side-panel tabs in the viewer keep their compact look (they use plain buttons, not .tab). */
 .project-tabs-bar { background: var(--surface); border-bottom: 1px solid var(--border); }
-.project-tabs-bar .tabs { max-width: calc(var(--page-w) + 32px); margin: 0 auto; border-bottom: none; padding: 0; }
+.project-tabs-bar .tabs { max-width: calc(var(--page-w) + 32px); margin: 0 auto; border-bottom: none; padding: 0 16px; box-sizing: border-box; }
 .project-body { width: 100%; }
 
 /* Sectioned pages (Account, Company admin, Platform, project Settings): sidebar on desktop, list -> detail on phone. */
@@ -82,11 +82,9 @@ html:has(.content) { scrollbar-gutter: stable; }
 .content.project-content { padding-top: 16px; }
 .project-body { margin: 0 auto; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .pb-default, .pb-wide { max-width: var(--page-w); }
-/* Table-heavy pages (Devices, BOM, Wiring) expand to the available width; the tab bar follows. */
+/* Table-heavy pages (Devices, BOM, Wiring) expand to the available width. The tab bar and header stay in the centered --page-w column on every tab so nothing jumps. */
 .pb-full { max-width: none; }
-.project-tabs-bar:has(~ .content .pb-full) .tabs { max-width: none; }
-.page:has(.pb-full) .project-tabs-bar .tabs { max-width: none; }
-.content.project-content:has(.pb-full) { max-width: none; }
+.content.project-content { max-width: none; }
 
 /* Cards of unequal height flow into columns instead of leaving holes in a grid. */
 .masonry { columns: 340px; column-gap: 16px; }
@@ -118,14 +116,18 @@ html:has(.content) { scrollbar-gutter: stable; }
 .more-menu-pop button { text-align: left; border: none; background: transparent; min-height: 40px; }
 .more-menu-pop button:hover:not(:disabled) { background: var(--surface-2); }
 
-/* ---- Project Members: add rows stack on phones ---- */
-.add-member-row > * { min-width: 0; }
-.add-member-row select, .add-member-row .role-select { flex: 1 1 160px; max-width: 100%; }
-.add-member-row .role-select select { width: 100%; }
+/* ---- Project Members: two equal-height vertical forms, stacked on phones ---- */
+.members-panel .member-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: stretch; }
+.member-form { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.member-form .mf-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.member-form select, .member-form input[type="email"] { width: 100%; max-width: none; min-width: 0; height: 36px; min-height: 36px; box-sizing: border-box; }
+.member-form .role-select { display: flex; max-width: none; width: 100%; gap: 4px; }
+.member-form .role-select select { align-self: stretch; }
+.member-form .mf-actions { display: flex; justify-content: flex-end; margin-top: auto; }
+.member-form .mf-actions button { height: 36px; min-height: 36px; box-sizing: border-box; }
 @media (max-width: 640px) {
-  .add-member-row { flex-direction: column; align-items: stretch; }
-  .add-member-row select, .add-member-row input, .add-member-row .role-select, .add-member-row button { width: 100%; max-width: none; flex: none; }
   .members-panel .table-wrap { overflow-x: auto; }
+  .member-form .mf-actions button { width: 100%; }
 }
 
 /* ---- Preferences: one size for field labels, checkbox labels and number inputs ---- */

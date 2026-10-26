@@ -63,6 +63,17 @@ describe('buildWiring', () => {
     expect(sw.runs[0].items[0].link).toMatchObject({ typeName: 'Cat6', lengthFt: expect.any(Number) })
   })
 
+  it('home-run mode draws a star from the From device instead of a chain', () => {
+    const run = cable(P, S3, { via: [{ id: 'S1', i: 1 }, { id: 'S2', i: 2 }] })
+    run.geometry = { ...pathFromPoints([{ x: 100, y: 0 }, { x: 150, y: 0 }, { x: 200, y: 0 }, { x: 250, y: 0 }]), from: 'P', to: 'S3', via: [{ id: 'S1', i: 1 }, { id: 'S2', i: 2 }] }
+    run.fields = { cable_type: 'c6', cable_mode: 'home' }
+    const w = buildWiring([...devices, run], ctx)
+    const panel = w.hubs.find(h => h.node.id === 'P')!
+    expect(panel.runs).toHaveLength(3)
+    expect(panel.runs.every(r => r.homeRun)).toBe(true)
+    expect(panel.runs.map(r => r.items[0].link.lengthFt).sort((x, y) => x! - y!)).toEqual([5, 10, 15])
+  })
+
   it('a chain ending back at the hub is a loop; a branch starts a new run', () => {
     const loop = buildWiring([P, S1, S2, S3, cable(P, S1), cable(S1, S2), cable(S2, S3), cable(S3, P)], ctx)
     expect(loop.hubs[0].runs).toHaveLength(1)

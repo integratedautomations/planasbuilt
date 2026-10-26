@@ -10,12 +10,13 @@ export const MAGNET_ICON = (
   </svg>
 )
 
-const SOURCES: { key: 'grid' | 'pdf' | 'markups' | 'devices' | 'align'; label: string; hint: string }[] = [
+const SOURCES: { key: 'grid' | 'pdf' | 'markups' | 'devices' | 'align' | 'alignDevices'; label: string; hint: string }[] = [
   { key: 'grid', label: 'Grid', hint: 'Snap to grid points' },
   { key: 'pdf', label: 'PDF lines', hint: 'Snap to lines and corners drawn in the plan' },
   { key: 'markups', label: 'Markups', hint: 'Snap to the corners, midpoints and edges of markups' },
   { key: 'devices', label: 'Devices', hint: 'Snap to device centres' },
   { key: 'align', label: 'Align to walls', hint: 'Turn devices and boxes to the line they snap to' },
+  { key: 'alignDevices', label: 'Align with nearby devices', hint: 'Line devices up with nearby devices of the same type (shows a dashed guide)' },
 ]
 
 const setSnap = (cur: SnapSettings, patch: Partial<SnapSettings>) => setPref('snap', { ...cur, ...patch })

@@ -177,9 +177,14 @@ function DeviceBody({ m, g, set, iconSrc, typeMount, zoom, stack }: { m: Markup;
         </>
       )}
       {/* Monospace, so the box is only as wide as the tag; a fixed wide box would bloat the selection bounds */}
-      {labelVisible(labelMode, zoom) && <Text text={label} x={cx - labelW / 2} y={cy + r + r * 0.12} width={labelW} align="center" wrap="none"
-        fontSize={fontSize} fontStyle="bold" fill={color} stroke="#fff" strokeWidth={fontSize * 0.18}
-        fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />}
+      {/* The tag stays level with the plan: the group cancels the device's rotation and keeps the label below the symbol */}
+      {labelVisible(labelMode, zoom) && (
+        <Group x={cx} y={cy} rotation={-g.rotation} listening={false} name="device-label">
+          <Text text={label} x={-labelW / 2} y={r + r * 0.12} width={labelW} align="center" wrap="none"
+            fontSize={fontSize} fontStyle="bold" fill={color} stroke="#fff" strokeWidth={fontSize * 0.18}
+            fillAfterStrokeEnabled fontFamily={FONT_MONO} listening={false} />
+        </Group>
+      )}
       {stack && (
         <>
           <Rect x={qx - qw / 2} y={qy - qh / 2} width={qw} height={qh} cornerRadius={qh / 2} fill={color}
@@ -461,7 +466,9 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath, cableLabel, dangli
       const n = g.points.length
       return (
         <>
-          <Line {...common} points={drawn} />
+          {/* A dashed line only hits on its dashes; a solid transparent stroke underneath makes the whole run clickable */}
+          <Line points={drawn} stroke="rgba(0,0,0,0.001)" strokeWidth={common.hitStrokeWidth} hitStrokeWidth={common.hitStrokeWidth} lineCap="round" lineJoin="round" name="cable-hit" />
+          <Line {...common} points={drawn} listening={false} />
           {rings.map((r, ri) => {
             const c = toLocal(g, r.c)
             return (

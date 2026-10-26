@@ -100,27 +100,27 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
       </div>
       {error && <div className="error">{error}</div>}
       {canManage && (
-        <div className="settings-grid">
-          <form className="card settings-card" onSubmit={addExisting}>
+        <div className="member-cards">
+          <form className="card settings-card member-form" onSubmit={addExisting}>
             <h4>Add an existing user</h4>
-            <div className="row wrap add-member-row">
+            <div className="mf-field">
               <select value={pick} aria-label="User to add" onChange={e => setPick(e.target.value)}>
                 <option value="">Choose a person…</option>
                 {available.map(p => <option key={p.id} value={p.id}>{p.name} ({p.email})</option>)}
               </select>
-              <RoleSelect value={pickRole} onChange={setPickRole} />
-              <button disabled={!pick}>Add</button>
             </div>
+            <div className="mf-field"><RoleSelect value={pickRole} onChange={setPickRole} /></div>
             {pickRole === 'sub' && <ScopePicker projectId={projectId} value={pickScope} onChange={setPickScope} />}
+            <div className="mf-actions"><button disabled={!pick}>Add</button></div>
           </form>
-          <form className="card settings-card" onSubmit={sendInvite}>
+          <form className="card settings-card member-form" onSubmit={sendInvite}>
             <h4>Invite someone new</h4>
-            <div className="row wrap add-member-row">
-              <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)} required />
-              <RoleSelect value={inviteRole} onChange={setInviteRole} />
-              <button className="primary">Create invite</button>
+            <div className="mf-field">
+              <input type="email" placeholder="Email address" aria-label="Email address" value={email} onChange={e => setEmail(e.target.value)} required />
             </div>
+            <div className="mf-field"><RoleSelect value={inviteRole} onChange={setInviteRole} /></div>
             {inviteRole === 'sub' && <p className="muted small">Choose what this subcontractor can see with the Scope button once they appear in the list.</p>}
+            <div className="mf-actions"><button className="primary">Create invite</button></div>
             {invite && (
               <>
                 {invite.emailed && <p className="muted small">Emailed to {invite.email}.</p>}

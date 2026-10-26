@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cableCount, cableColor, cableLength, cableTotals, danglingEnds, DEFAULT_CABLE_SETTINGS, endPoint, linkedEnds, nearestDevice, relinkEnds, setEnd, syncCables, viaAfterInsert, viaAfterRemove, viaOf, withVia, chainDevices, withLink, disconnectPoint } from './cables'
+import { cableCount, cableMode, cableRuns, homeRunStops, vertexDistances,  cableColor, cableLength, cableTotals, danglingEnds, DEFAULT_CABLE_SETTINGS, endPoint, linkedEnds, nearestDevice, relinkEnds, setEnd, syncCables, viaAfterInsert, viaAfterRemove, viaOf, withVia, chainDevices, withLink, disconnectPoint } from './cables'
 import { pathFromPoints } from './geometry'
 import { pathPoints } from './snap'
 import type { Markup, PathGeometry } from './types'
@@ -263,5 +263,42 @@ describe('disconnectPoint', () => {
   })
   it('is a no-op for an unlinked vertex', () => {
     const x = g(); expect(disconnectPoint(x, 1, { x: 100, y: 0 }, 12)).toBe(x)
+  })
+})
+
+describe('home runs measurement', () => {
+  const A = dev('A', 0, 0), B = dev('B', 100, 0), D = dev('D', 300, 0)
+  const g = relinkEnds(pathFromPoints([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 300, y: 0 }]), map(A, B, D), 1)
+  const mk = (fields: Record<string, string | number | boolean> = {}) => cableOf('c', [{ x: 0, y: 0 }], {}, { geometry: g, fields })
+  const all = (c: Markup) => map(A, B, D, c)
+  it('vertexDistances accumulates path length', () => {
+    expect(vertexDistances([0, 0, 3, 4, 3, 10])).toEqual([0, 5, 11])
+  })
+  it('sums start-to-device path lengths plus drops per run', () => {
+    const c = mk({ cable_mode: 'home' })
+    const len = cableLength(c, 10, { slackPct: 0, dropFt: 2 }, all(c))!
+    expect(len.mode).toBe('home'); expect(len.homeRuns).toBe(2)
+    expect(len.runFt).toBeCloseTo(10 + 30 + 2 * 2 + 2 * 2, 6) // B: 10 ft, D: 30 ft; a From drop and a device drop each
+    expect(cableLength(c, 10, { slackPct: 10, dropFt: 2 }, all(c))!.runFt).toBeCloseTo(40 * 1.1 + 8, 6)
+    expect(cableLength(c, 10, { slackPct: 0, dropFt: 2, viaDrop: false }, all(c))!.runFt).toBeCloseTo(46, 6)
+  })
+  it('multiplies by conductor count and counts runs', () => {
+    const c = mk({ cable_mode: 'home', cable_count: 2 })
+    expect(cableLength(c, 10, { slackPct: 0, dropFt: 0 }, all(c))!.totalFt).toBeCloseTo(80, 6)
+    expect(cableRuns(c, DEFAULT_CABLE_SETTINGS, all(c))).toBe(4)
+  })
+  it('falls back to the project default and to daisy chain without devices', () => {
+    const c = mk()
+    expect(cableMode(c, DEFAULT_CABLE_SETTINGS)).toBe('daisy')
+    expect(cableMode(c, { ...DEFAULT_CABLE_SETTINGS, mode: 'home' })).toBe('home')
+    expect(cableMode(mk({ cable_mode: 'daisy' }), { ...DEFAULT_CABLE_SETTINGS, mode: 'home' })).toBe('daisy')
+    const open = cableOf('o', [{ x: 0, y: 0 }, { x: 100, y: 0 }], {}, { fields: { cable_mode: 'home' } })
+    expect(cableLength(open, 10, DEFAULT_CABLE_SETTINGS, map(open))!.mode).toBe('daisy')
+    expect(homeRunStops(open, map(open))).toEqual([])
+  })
+  it('feeds BOM totals', () => {
+    const c = mk({ cable_mode: 'home' })
+    const t = cableTotals([A, B, D, c], () => 10, new Map(), { slackPct: 0, dropFt: 0 })
+    expect(t[0].lengthFt).toBeCloseTo(40, 6); expect(t[0].runs).toBe(2)
   })
 })

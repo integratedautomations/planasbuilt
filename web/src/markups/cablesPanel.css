@@ -1,0 +1,9 @@
+/* ---- Cables panel (docked) ---- */
+.cables-panel { display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+.cables-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px 6px; border-bottom: 1px solid var(--border); }
+.cables-bar select, .cables-bar input[type="search"] { min-height: 32px; padding-top: 3px; padding-bottom: 3px; font-size: 13px; }
+.cables-search { flex: 1 1 140px; min-width: 120px; max-width: 260px; }
+.cables-scroll { flex: 1; overflow: auto; min-height: 0; }
+.cables-table td:nth-child(3) { max-width: 360px; }
+.cables-totals { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 10px; border-top: 1px solid var(--border); font-size: 12px; background: var(--surface-2); }
+.cables-total { white-space: nowrap; }

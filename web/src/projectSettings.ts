@@ -31,6 +31,8 @@ export interface ProjectRules {
   photo_quality: number
   /** Cables: add the drop length at devices a run passes through (default on). */
   cable_via_drop: boolean
+  /** Cables: default measurement mode: daisy chain (default) or home runs. */
+  cable_mode: 'daisy' | 'home'
 }
 export interface ProjectSettings extends ProjectRules {
   report: { sections: Record<ReportSectionKey, boolean>; has_logo: boolean }
@@ -49,7 +51,7 @@ const allOn = (): Record<ReportSectionKey, boolean> =>
 
 export const DEFAULT_SETTINGS: ProjectSettings = {
   statuses: DEFAULT_STATUS_LIST, required: {}, tag_prefixes: {}, tag_format: 'org', tag_fill_gaps: false,
-  report: { sections: allOn(), has_logo: false }, photo_quality: 0.8, cable_via_drop: true, locked: false,
+  report: { sections: allOn(), has_logo: false }, photo_quality: 0.8, cable_via_drop: true, cable_mode: 'daisy', locked: false,
 }
 
 const obj = (v: unknown): Record<string, any> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {})
@@ -76,6 +78,7 @@ export function normalizeSettings(raw: unknown): ProjectSettings {
     report: { sections, has_logo: obj(r.report).has_logo === true },
     photo_quality: Number.isFinite(q) && q >= 0.3 && q <= 0.95 ? q : 0.8,
     cable_via_drop: r.cable_via_drop !== false,
+    cable_mode: r.cable_mode === 'home' ? 'home' : 'daisy',
     locked: r.locked === true,
   }
 }

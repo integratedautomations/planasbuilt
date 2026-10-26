@@ -6,6 +6,8 @@ import type { IconName } from '../ui/Icon'
 import type { Dock, PanelId } from '../prefs/layout'
 
 export interface DockPanel { id: PanelId; title: string; node: ReactNode }
+/** A panel shown as an icon on the collapsed strip. */
+export interface StripPanel { id: PanelId; title: string; icon: IconName }
 
 interface Props {
   side: Dock
@@ -16,6 +18,21 @@ interface Props {
   onSize: (n: number) => void
   onMove: (id: PanelId, dock: Dock) => void
   onHide: (id: PanelId) => void
+}
+
+/** A closed dock: a thin strip with one icon per panel docked here; a click reopens the dock on that panel. Nothing when the dock holds no panels. */
+export function DockStrip({ side, panels, active, onOpen }: { side: Dock; panels: StripPanel[]; active?: PanelId; onOpen: (id: PanelId) => void }) {
+  if (!panels.length) return null
+  const cur = panels.find(p => p.id === active) ?? panels[0]
+  return (
+    <section className={`dock-strip dock-strip-${side}`} aria-label={`${side} dock (collapsed)`} onPointerDown={e => e.stopPropagation()}>
+      {panels.map(p => (
+        <button key={p.id} className={'icon-btn' + (p.id === cur.id ? ' active' : '')} title={p.title} aria-label={`Open ${p.title}`} onClick={() => onOpen(p.id)}>
+          <Icon name={p.icon} size={18} />
+        </button>
+      ))}
+    </section>
+  )
 }
 
 const ICONS: Record<Dock, IconName> = { left: 'sidebar-left', right: 'sidebar-right', bottom: 'sidebar-bottom' }

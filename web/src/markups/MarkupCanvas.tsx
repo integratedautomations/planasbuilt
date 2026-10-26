@@ -33,9 +33,11 @@ import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } fr
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
 import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
 import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
-import { LINK_TOLERANCE, disconnectPoint, linkAt, DEFAULT_CABLE_SETTINGS, cableColor, cableLength, chainDevices, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, viaOf } from './cables'
+import { LINK_TOLERANCE, disconnectPoint, linkAt, DEFAULT_CABLE_SETTINGS, cableColor, cableLength, chainDevices, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, syncCables, viaOf } from './cables'
 import type { CableEnd, CableSettings, EndRing } from './cables'
-import { canEditVertices, insertVertex, nearestVertex, removeVertex } from './vertices'
+import { alignRadius, alignWithNearby } from './alignDevices'
+import type { AlignGuide } from './alignDevices'
+import { canEditVertices, insertVertex, nearestSegment, nearestVertex, removeVertex, toLocal } from './vertices'
 import { previewTag } from './tagPreview'
 import { tagPrefixFor } from '../catalog/catalog'
 import { activeSettings } from '../projectSettings'
@@ -166,6 +168,10 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     loadCompany().then(c => { if (live && c?.tag_padding) setTagPad(c.tag_padding) }).catch(() => {})
     return () => { live = false }
   }, [])
+  /** Dashed guides to the devices a device being placed / moved lines up with. */
+  const [alignGuides, setAlignGuides] = useState<AlignGuide[]>([])
+  /** Cables (full geometry) and devices as they are mid-drag, so linked cable ends follow live; nothing commits until the drop. */
+  const [liveDrag, setLiveDrag] = useState<{ cables: Map<string, PathGeometry>; devices: Map<string, Markup> } | null>(null)
   const [pointOverride, setPointOverride] = useState<{ id: string; points: number[] } | null>(null)
   const countGroup = useRef<{ id: string; n: number } | null>(null)
   const [marquee, setMarquee] = useState<Box | null>(null)
@@ -445,6 +451,18 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     return null
   }
 
+  /** A cable whose line passes within a few screen pixels of `p` (a safety net when Konva's hit test misses a thin or dashed run). Topmost wins. */
+  function cableNear(p: Pt): string | null {
+    const tol = 8 / liveZoom()
+    for (let i = markups.length - 1; i >= 0; i--) {
+      const m = markups[i]
+      if (m.type !== 'cable' || lockedIds.has(m.id) || !('points' in m.geometry)) continue
+      const hit = nearestSegment(m.geometry.points, false, toLocal(m.geometry, p))
+      if (hit && hit.dist <= Math.max(tol, m.style.strokeWidth / 2)) return m.id
+    }
+    return null
+  }
+
   /** Open a held placement at `c`: nothing commits until commitPlace. */
   function beginPlace(m: Markup, c: Pt, cx: number, cy: number, aligned = false, holdMs = 0) {
     placeRef.current = { m, base: m.geometry as BoxGeometry, c, cx, cy, moved: false, aligned, gate: createHoldGate(holdMs) }
@@ -461,7 +479,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const typeCov = newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.coverage : null
     const covFov = initialCoverage(set, typeCov, scale ?? null)
     const hit = snapAt(p, ev, {}, mark)
-    const at = hit?.point ?? p
+    let at = hit?.point ?? p
+    // Other snaps (wall, grid, corner, device centre) win; otherwise line up with a nearby device of the same type / set
+    let guides: AlignGuide[] = []
+    if (!hit && snapActive(snapEnv, ctrlOf(ev)) && snapSettings.alignDevices) {
+      const al = alignWithNearby(p, markups, { page: newBase.page, typeId: newBase.deviceTypeId, setId: set.id, tol: SNAP_RADIUS_PX / liveZoom(), radius: alignRadius(scale) })
+      if (al) { at = al.point; guides = al.guides }
+    }
+    if (mark) setAlignGuides(guides)
     let geometry: BoxGeometry = { x: at.x - size / 2, y: at.y - size / 2, width: size, height: size, rotation: 0, ...(covFov ? { fov: covFov } : {}) }
     const aligned = !!hit && snapSettings.align && alignable(hit)
     if (hit && aligned) geometry = alignDevice(geometry, hit as typeof hit & { angle: number }, p, newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined)
@@ -513,7 +538,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (e.evt.button !== 0) return
     const target = e.target
     const onTransformer = target.getParent()?.getClassName?.() === 'Transformer'
-    const hitId = markupIdOf(target)
+    const hitId = markupIdOf(target) ?? (!isDrawTool && tool === 'select' ? cableNear(pointer()) : null)
 
     if (!isDrawTool) {
       if (tool === 'pan') { consumedRef.current = false; return }
@@ -584,6 +609,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         return
       }
       const pl = placement(p, set, e.evt, false)
+      setAlignGuides([])
       const placed = newMarkup('device', pl.geometry)
       // On top of a device of another type: the viewer may replace it or ask first
       const over = onDeviceOverlap ? findOverlapTarget(markups, pl.at, set.id, newBase.deviceTypeId ?? null) : null
@@ -638,6 +664,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       if (e.evt.buttons & 4) setDevGhost(null)
       else { const pl = placement(pointer(), symbolSets.get(newBase.symbolSetId)!, e.evt); setDevGhost(pl.c); setGhostGeo(pl.geometry) }
     } else if (devGhost) setDevGhost(null)
+    if (tool !== 'device' && alignGuides.length) setAlignGuides([])
     if (marqueeStart.current) {
       const r = marqueeStart.current.right
       if (r && !r.moved) {
@@ -961,6 +988,34 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
    * whatever snaps. A lone device or box also turns to the line it lands on when Align to walls is on.
    */
   function onShapeDragMove(e: Konva.KonvaEventObject<DragEvent>) {
+    snapDrag(e)
+    followCables(e.target, e.evt)
+  }
+
+  /** While devices are dragged, the cables linked to them follow (transient geometry; the drop commits the real change as one step). */
+  function followCables(node: Konva.Node, ev: unknown) {
+    const id = markupIdOf(node)
+    const m = id ? byId.get(id) : undefined
+    if (!id || !m || readOnly || copyDrag.current || ctrlOf(ev)) { if (liveDrag) setLiveDrag(null); return }
+    const ids = selectedIds.includes(id) ? selectedIds : (stacks.byId.get(id)?.members.map(x => x.id) ?? [id])
+    const dx = node.x() - m.geometry.x, dy = node.y() - m.geometry.y
+    const change: Change = []
+    const devices = new Map<string, Markup>()
+    for (const mid of ids) {
+      const d = byId.get(mid)
+      if (!d || d.type !== 'device' || lockedIds.has(mid) || !('width' in d.geometry)) continue
+      const after: Markup = mid === id
+        ? { ...d, geometry: { ...d.geometry, x: node.x(), y: node.y(), rotation: node.rotation() } }
+        : { ...d, geometry: { ...d.geometry, x: d.geometry.x + dx, y: d.geometry.y + dy } }
+      change.push({ before: d, after }); devices.set(mid, after)
+    }
+    if (!change.length) { if (liveDrag) setLiveDrag(null); return }
+    const cables = new Map<string, PathGeometry>()
+    for (const c of syncCables(change, byId)) if (c.after?.type === 'cable' && 'points' in c.after.geometry && !devices.has(c.after.id)) cables.set(c.after.id, c.after.geometry)
+    setLiveDrag({ cables, devices })
+  }
+
+  function snapDrag(e: Konva.KonvaEventObject<DragEvent>) {
     const node = e.target
     const id = markupIdOf(node)
     const m = id ? byId.get(id) : undefined
@@ -968,11 +1023,22 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const orig = m.geometry
     if (node.rotation() !== orig.rotation) node.rotation(orig.rotation) // undo last frame's alignment before measuring
     dragAlignRef.current = null
-    if (copyDrag.current || !snapActive(snapEnv, ctrlOf(e.evt))) { showMark(null); return }
+    if (copyDrag.current || !snapActive(snapEnv, ctrlOf(e.evt))) { showMark(null); setAlignGuides(g => (g.length ? [] : g)); return }
     const moving = new Set(selectedIds.includes(id) ? selectedIds : (stacks.byId.get(id)?.members.map(x => x.id) ?? [id]))
     const cur: Markup = { ...m, geometry: { ...orig, x: node.x(), y: node.y() } }
     const res = snapHandles(snapEnv, handlePoints(cur), liveZoom(), { skip: moving })
-    if (!res) { showMark(null); return }
+    if (!res) {
+      showMark(null)
+      // No wall / grid / corner snap: a lone device lines up with a nearby device of the same type / set
+      if (m.type === 'device' && moving.size === 1 && snapSettings.alignDevices && 'width' in orig) {
+        const c = deviceCenter({ ...orig, x: node.x(), y: node.y() })
+        const al = alignWithNearby(c, markups, { page: m.page, typeId: m.device_type_id, setId: m.symbol_set_id, tol: SNAP_RADIUS_PX / liveZoom(), radius: alignRadius(scale), skip: moving })
+        if (al) { node.position({ x: node.x() + al.point.x - c.x, y: node.y() + al.point.y - c.y }); setAlignGuides(al.guides); return }
+      }
+      setAlignGuides(g => (g.length ? [] : g))
+      return
+    }
+    setAlignGuides(g => (g.length ? [] : g))
     showMark(res.hit)
     const moved = { ...orig, x: node.x() + res.dx, y: node.y() + res.dy }
     if (moving.size === 1 && snapSettings.align && alignable(res.hit) && 'width' in moved) {
@@ -1001,6 +1067,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   function onDragEnd(e: Konva.KonvaEventObject<DragEvent>) {
     const wasCopy = copyDrag.current
     copyDrag.current = false
+    setLiveDrag(null)
+    setAlignGuides([])
     setCopyGhosts(null)
     setSnapMark(null)
     const aligned = dragAlignRef.current
@@ -1081,12 +1149,12 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (!('points' in g)) return []
     const out: EndRing[] = []
     for (const end of linkedEnds(m, byId)) {
-      const d = byId.get((g as PathGeometry)[end]!)
+      const d = liveDrag?.devices.get((g as PathGeometry)[end]!) ?? byId.get((g as PathGeometry)[end]!)
       const c = deviceCentreOf(d)
       if (d && c && 'width' in d.geometry) out.push({ end, c, r: deviceRadius(d.geometry) })
     }
     for (const v of viaOf(g as PathGeometry)) {
-      const d = byId.get(v.id)
+      const d = liveDrag?.devices.get(v.id) ?? byId.get(v.id)
       const c = deviceCentreOf(d)
       if (d && c && 'width' in d.geometry) out.push({ end: 'via', c, r: deviceRadius(d.geometry) })
     }
@@ -1120,7 +1188,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   return (
     <>
     <Stage ref={stageRef} width={width} height={height} className={devGhost ? 'markup-stage no-cursor' : 'markup-stage'}
-      onPointerDown={onStageDown} onPointerMove={e => { if (e.evt.pointerType === 'touch') return; handleMove(e) }} onPointerUp={e => { if (e.evt.pointerType === 'touch') return; handleUp(e) }} onPointerLeave={() => { onCursor?.(null); setDevGhost(null) }}
+      onPointerDown={onStageDown} onPointerMove={e => { if (e.evt.pointerType === 'touch') return; handleMove(e) }} onPointerUp={e => { if (e.evt.pointerType === 'touch') return; handleUp(e) }} onPointerLeave={() => { onCursor?.(null); setDevGhost(null); setAlignGuides([]) }}
       onDblClick={onDoubleClick}>
       <Layer>
         {snapSettings.showGrid && snapEnv.gridStep > 0 && (
@@ -1144,6 +1212,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           if (m.id === contId) return null // the run being continued is redrawn as the draft
           const shown = pointOverride?.id === m.id && 'points' in m.geometry
             ? { ...m, geometry: { ...m.geometry, points: pointOverride.points } }
+            : liveDrag?.cables.has(m.id) ? { ...m, geometry: liveDrag.cables.get(m.id)! }
             : fovOverride?.id === m.id && 'width' in m.geometry
             ? { ...m, geometry: { ...m.geometry, fov: fovOverride.fov } } : m
           const editable = single?.id === m.id && !readOnly && tool === 'select'
@@ -1249,6 +1318,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
             </Group>
           )
         })()}
+        {alignGuides.map(g => (
+          <Line key={g.axis} points={[g.from.x, g.from.y, g.to.x, g.to.y]} listening={false} stroke="#e8590c" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} opacity={0.9} />
+        ))}
         {snapMark && <SnapMarker x={snapMark.x} y={snapMark.y} kind={snapMark.kind} zoom={zoom} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}

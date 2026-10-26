@@ -25,7 +25,7 @@ export const PROJECT_SECTIONS: { id: ProjectSection; label: string; icon: IconNa
 
 const rulesOf = (p: Project): ProjectRules => {
   const s = normalizeSettings(p.settings)
-  return { statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps, report: { sections: s.report.sections }, photo_quality: s.photo_quality, cable_via_drop: s.cable_via_drop }
+  return { statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps, report: { sections: s.report.sections }, photo_quality: s.photo_quality, cable_via_drop: s.cable_via_drop, cable_mode: s.cable_mode }
 }
 
 const PARTS: Partial<Record<ProjectSection, RulesPart[]>> = { rules: ['statuses', 'required'], tags: ['tags'], report: ['report', 'photos'] }

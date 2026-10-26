@@ -25,6 +25,15 @@ export function CableDefaults({ project, canEdit, onSaved }: { project: Project;
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
 
+  async function setMode(mode: 'daisy' | 'home') {
+    setBusy(true); setError('')
+    try {
+      const next = await api<unknown>(`/projects/${project.id}/settings`, { method: 'PUT', body: JSON.stringify({ cable_mode: mode }) })
+      applyProjectSettings(next)
+      onSaved({ ...project, settings: normalizeSettings(next) } as Project)
+    } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
+  }
+
   async function setViaDrop(on: boolean) {
     setBusy(true); setError('')
     try {
@@ -42,6 +51,12 @@ export function CableDefaults({ project, canEdit, onSaved }: { project: Project;
         <label className="field inline">Drop per linked end, ft<input type="number" min={0} max={10000} step="any" value={drop} onChange={e => setDrop(e.target.value)} /></label>
         {canEdit && <button className="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save cable defaults'}</button>}
       </fieldset>
+      <label className="field">Measure cables as
+        <select value={cur.mode ?? 'daisy'} disabled={!canEdit || busy} onChange={e => void setMode(e.target.value as 'daisy' | 'home')}>
+          <option value="daisy">Daisy chain (drawn path once)</option>
+          <option value="home">Home runs (a cable per device from the start)</option>
+        </select>
+      </label>
       <label className="check"><input type="checkbox" checked={viaDrop} disabled={!canEdit || busy} onChange={e => void setViaDrop(e.target.checked)} /> Add drop length at devices a cable passes through</label>
       <p className="muted small">A run clicked through devices counts each one like an end: one drop per device it passes through (on top of the two ends).</p>
       {error && <div className="error">{error}</div>}

@@ -6,6 +6,8 @@ describe('layout migration', () => {
   it('old layouts keep docking but take the new open defaults once, and gain Layers', () => {
     const l = normalizeLayout(old)
     expect(PANEL_IDS).toContain('layers')
+    expect(PANEL_IDS).toContain('cables')
+    expect(DEFAULT_LAYOUT.panels.cables.dock).toBe('bottom')
     expect(l.version).toBe(LAYOUT_VERSION)
     expect(l.panels.markups).toEqual({ dock: 'bottom', open: false })
     expect(l.panels.props).toEqual({ dock: 'right', open: false })

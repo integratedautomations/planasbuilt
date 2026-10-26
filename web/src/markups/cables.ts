@@ -15,14 +15,19 @@ export type CableEnd = 'from' | 'to'
 export const CABLE_ENDS: readonly CableEnd[] = ['from', 'to']
 
 /** Field keys on a cable markup. */
-export const CABLE_FIELD = { type: 'cable_type', count: 'cable_count', slack: 'cable_slack_pct', drop: 'cable_drop_ft' } as const
+export const CABLE_FIELD = { type: 'cable_type', count: 'cable_count', slack: 'cable_slack_pct', drop: 'cable_drop_ft', mode: 'cable_mode' } as const
+
+/** How a run is measured: 'daisy' = the drawn path once; 'home' = one cable per device pulled from the run's start along the path. */
+export type CableMode = 'daisy' | 'home'
+export const CABLE_MODES: readonly CableMode[] = ['daisy', 'home']
+export const CABLE_MODE_LABEL: Record<CableMode, string> = { daisy: 'Daisy chain', home: 'Home runs' }
 
 /** A cable end this close (page points) to a device centre counts as sitting on it. */
 export const LINK_TOLERANCE = 0.25
 
 /** `viaDrop`: also add the drop at devices the run passes through (default on). */
-export interface CableSettings { slackPct: number; dropFt: number; viaDrop?: boolean }
-export const DEFAULT_CABLE_SETTINGS: CableSettings = { slackPct: 10, dropFt: 0, viaDrop: true }
+export interface CableSettings { slackPct: number; dropFt: number; viaDrop?: boolean; /** Project default measurement mode (default daisy). */ mode?: CableMode }
+export const DEFAULT_CABLE_SETTINGS: CableSettings = { slackPct: 10, dropFt: 0, viaDrop: true, mode: 'daisy' }
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y)
 
@@ -30,9 +35,9 @@ const pathOf = (m: Markup): PathGeometry | null => (m.type === 'cable' && m.geom
 export const isCable = (m: Pick<Markup, 'type'>) => m.type === 'cable'
 
 /** Project settings (from the API) as cable defaults; anything unusable falls back to 10 % and 0 ft. */
-export function cableSettings(p?: { cable_slack_pct?: unknown; cable_drop_ft?: unknown; settings?: { cable_via_drop?: unknown } | null } | null): CableSettings {
+export function cableSettings(p?: { cable_slack_pct?: unknown; cable_drop_ft?: unknown; settings?: { cable_via_drop?: unknown; cable_mode?: unknown } | null } | null): CableSettings {
   const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : d)
-  return { slackPct: n(p?.cable_slack_pct, DEFAULT_CABLE_SETTINGS.slackPct), dropFt: n(p?.cable_drop_ft, DEFAULT_CABLE_SETTINGS.dropFt), viaDrop: p?.settings?.cable_via_drop !== false }
+  return { slackPct: n(p?.cable_slack_pct, DEFAULT_CABLE_SETTINGS.slackPct), dropFt: n(p?.cable_drop_ft, DEFAULT_CABLE_SETTINGS.dropFt), viaDrop: p?.settings?.cable_via_drop !== false, mode: p?.settings?.cable_mode === 'home' ? 'home' : 'daisy' }
 }
 
 export function endPoint(g: PathGeometry, end: CableEnd): Pt | null {
@@ -314,16 +319,53 @@ export interface CableLength {
   ends: number
   /** Devices the run passes through (each adds one drop when the project setting is on). */
   via: number
-  /** One run: drawn x (1 + slack %) + drop x linked ends. */
+  mode: CableMode
+  /** Home runs: the cables pulled (one per via / To device); 1 for a daisy chain. */
+  homeRuns: number
+  /** Home runs: each cable's length (one conductor), by device. */
+  stops: { id: string; runFt: number }[]
+  /** One run (daisy: drawn x (1 + slack %) + drop x linked ends; home runs: the sum of the per-device cables). */
   runFt: number
   count: number
   /** All runs: runFt x count. */
   totalFt: number
 }
 
+/** The measurement mode of a cable: its own setting, else the project default (daisy chain). */
+export function cableMode(m: Markup, defaults?: CableSettings): CableMode {
+  const v = m.fields?.[CABLE_FIELD.mode]
+  return v === 'home' || v === 'daisy' ? v : defaults?.mode === 'home' ? 'home' : 'daisy'
+}
+
+/** Cumulative path length (page units) at every vertex of a flat points array. */
+export function vertexDistances(points: readonly number[]): number[] {
+  const out: number[] = []
+  let acc = 0
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    if (i >= 2) acc += Math.hypot(points[i] - points[i - 2], points[i + 1] - points[i - 1])
+    out.push(acc)
+  }
+  return out
+}
+
+/** Devices a home-run cable is pulled to: the live via devices and the To device, with the vertex each sits on. */
+export function homeRunStops(m: Markup, byId: ReadonlyMap<string, Markup>): { role: 'via' | 'to'; id: string; i: number }[] {
+  const g = pathOf(m)
+  if (!g) return []
+  const live = (id: string | undefined) => { const d = id ? byId.get(id) : undefined; return !!d && d.type === 'device' && d.page === m.page && d.document_id === m.document_id }
+  const n = pathPoints(g).length
+  const out: { role: 'via' | 'to'; id: string; i: number }[] = []
+  for (const v of viaOf(g)) if (live(v.id) && v.i > 0 && v.i < n - 1) out.push({ role: 'via', id: v.id, i: v.i })
+  if (n > 1 && live(g.to)) out.push({ role: 'to', id: g.to!, i: n - 1 })
+  return out
+}
+
 /**
  * Length of a cable: total = (drawn x (1 + slack %) + drop ft x linked ends) x count. Slack and drop come from the cable's own
  * override, else the project defaults. null when the page has no scale.
+ * Home runs: each via / To device gets its own cable from the start along the shared path to that device's vertex
+ * (path length x (1 + slack %)) plus one drop at the device (via only when the project adds via drops) and one at the From end
+ * when it is linked; run length is the sum. A cable with no such device is measured as a daisy chain.
  */
 export function cableLength(m: Markup, ppf: number | null, defaults: CableSettings, byId: ReadonlyMap<string, Markup>): CableLength | null {
   const g = pathOf(m)
@@ -333,9 +375,23 @@ export function cableLength(m: Markup, ppf: number | null, defaults: CableSettin
   const dropFt = numField(m.fields?.[CABLE_FIELD.drop]) ?? defaults.dropFt
   const ends = linkedEnds(m, byId).length
   const via = viaCount(m, byId)
-  const runFt = drawnFt * (1 + slackPct / 100) + dropFt * (ends + (defaults.viaDrop === false ? 0 : via))
+  const viaDrops = defaults.viaDrop === false ? 0 : 1
   const count = cableCount(m)
-  return { drawnFt, slackPct, dropFt, ends, via, runFt, count, totalFt: runFt * count }
+  const stops = cableMode(m, defaults) === 'home' ? homeRunStops(m, byId) : []
+  if (stops.length) {
+    const dist = vertexDistances(g.points)
+    const fromDrop = linkedEnds(m, byId).includes('from') ? dropFt : 0
+    const each = stops.map(s => ({ id: s.id, runFt: (dist[s.i] ?? 0) / ppf * (1 + slackPct / 100) + fromDrop + (s.role === 'via' ? viaDrops : 1) * dropFt }))
+    const runFt = each.reduce((sum, s) => sum + s.runFt, 0)
+    return { drawnFt, slackPct, dropFt, ends, via, mode: 'home', homeRuns: stops.length, stops: each, runFt, count, totalFt: runFt * count }
+  }
+  const runFt = drawnFt * (1 + slackPct / 100) + dropFt * (ends + viaDrops * via)
+  return { drawnFt, slackPct, dropFt, ends, via, mode: 'daisy', homeRuns: 1, stops: [], runFt, count, totalFt: runFt * count }
+}
+
+/** Cables pulled for one markup: conductors x home runs (daisy chain: just the conductor count). */
+export function cableRuns(m: Markup, defaults: CableSettings, byId: ReadonlyMap<string, Markup>): number {
+  return cableCount(m) * (cableMode(m, defaults) === 'home' ? Math.max(1, homeRunStops(m, byId).length) : 1)
 }
 
 export interface CableTotal { typeId: string; name: string; color: string; /** Cable markups. */ cables: number; /** Runs (sum of counts). */ runs: number; lengthFt: number; /** Cables on pages without a scale (not in lengthFt). */ unscaled: number }
@@ -354,7 +410,7 @@ export function cableTotals(
     let r = rows.get(id)
     if (!r) { r = { typeId: id, name: t?.name ?? 'No type', color: t?.color ?? '#868e96', cables: 0, runs: 0, lengthFt: 0, unscaled: 0 }; rows.set(id, r) }
     r.cables++
-    r.runs += cableCount(m)
+    r.runs += cableRuns(m, defaults, byId)
     const len = cableLength(m, scaleFor(m.document_id, m.page), defaults, byId)
     if (len) r.lengthFt += len.totalFt; else r.unscaled++
   }

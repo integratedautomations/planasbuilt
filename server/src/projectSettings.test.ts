@@ -126,6 +126,18 @@ describe('tag format and numbering', () => {
   })
 })
 
+describe('cable_mode', () => {
+  it('defaults to daisy, validates, and travels with the company defaults', () => {
+    expect(S.cable_mode).toBe('daisy')
+    expect(readProjectSettings({ cable_mode: 'bogus' }).cable_mode).toBe('daisy')
+    expect(readProjectSettings({ cable_mode: 'home' }).cable_mode).toBe('home')
+    const home = merge({ cable_mode: 'home' })
+    expect('value' in home && home.value.cable_mode).toBe('home')
+    expect('error' in merge({ cable_mode: 'star' })).toBe(true)
+    expect(defaultsPart({ ...S, cable_mode: 'home' }).cable_mode).toBe('home')
+  })
+})
+
 describe('cable_via_drop', () => {
   it('defaults on, survives malformed values, and validates updates', () => {
     expect(S.cable_via_drop).toBe(true)

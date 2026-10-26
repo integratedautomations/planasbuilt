@@ -32,6 +32,8 @@ export interface ProjectSettings {
   photo_quality: number
   /** Cables: add the drop length at devices a run passes through, not only at its two ends. */
   cable_via_drop: boolean
+  /** Cables: how a run is measured by default: 'daisy' (the drawn path once) or 'home' (one cable per device from the run's start). */
+  cable_mode: 'daisy' | 'home'
   /** Only project admins may change anything. */
   locked: boolean
 }
@@ -45,6 +47,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   report: { sections: { title: true, sheets: true, devices: true, photos: true, legend: true, bom: true, wiring: true }, logo_key: '', logo_type: '' },
   photo_quality: 0.8,
   cable_via_drop: true,
+  cable_mode: 'daisy',
   locked: false,
 }
 
@@ -81,6 +84,7 @@ export function readProjectSettings(raw: unknown): ProjectSettings {
     report: { sections, logo_key: typeof rep.logo_key === 'string' ? rep.logo_key : '', logo_type: typeof rep.logo_type === 'string' ? rep.logo_type : '' },
     photo_quality: Number.isFinite(q) && q >= 0.3 && q <= 0.95 ? q : D.photo_quality,
     cable_via_drop: r.cable_via_drop !== false,
+    cable_mode: r.cable_mode === 'home' ? 'home' : 'daisy',
     locked: r.locked === true,
   }
 }
@@ -166,6 +170,10 @@ export function mergeProjectSettings(current: ProjectSettings, patch: unknown, c
     if (typeof p.cable_via_drop !== 'boolean') return { error: 'cable_via_drop must be true or false' }
     next.cable_via_drop = p.cable_via_drop
   }
+  if ('cable_mode' in p) {
+    if (p.cable_mode !== 'daisy' && p.cable_mode !== 'home') return { error: "cable_mode must be 'daisy' or 'home'" }
+    next.cable_mode = p.cable_mode
+  }
   if ('locked' in p) {
     if (typeof p.locked !== 'boolean') return { error: 'locked must be true or false' }
     next.locked = p.locked
@@ -177,7 +185,7 @@ export function mergeProjectSettings(current: ProjectSettings, patch: unknown, c
 export function defaultsPart(s: ProjectSettings) {
   return {
     statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps,
-    report: { sections: s.report.sections }, photo_quality: s.photo_quality, cable_via_drop: s.cable_via_drop,
+    report: { sections: s.report.sections }, photo_quality: s.photo_quality, cable_via_drop: s.cable_via_drop, cable_mode: s.cable_mode,
   }
 }
 

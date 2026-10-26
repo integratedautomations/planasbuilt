@@ -12,6 +12,8 @@ export interface SnapSettings {
   devices: boolean
   /** Phase 6: devices and boxes turn to the line they snap to. */
   align: boolean
+  /** Devices line up (x or y) with nearby devices of the same type / set while placing or moving. */
+  alignDevices: boolean
   /** Draw the grid when it is wide enough to read. */
   showGrid: boolean
   /** Grid spacing in feet when the page has a scale. */
@@ -21,7 +23,7 @@ export interface SnapSettings {
 }
 
 export const DEFAULT_SNAP: SnapSettings = {
-  on: true, grid: false, pdf: true, markups: true, devices: true, align: true, showGrid: false, gridFeet: 1, gridPoints: 12,
+  on: true, grid: false, pdf: true, markups: true, devices: true, align: true, alignDevices: true, showGrid: false, gridFeet: 1, gridPoints: 12,
 }
 
 export const SNAP_RADIUS_PX = 8
@@ -35,7 +37,7 @@ export function normalizeSnap(raw: unknown): SnapSettings {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const b = (k: keyof SnapSettings) => (typeof r[k] === 'boolean' ? (r[k] as boolean) : (DEFAULT_SNAP[k] as boolean))
   return {
-    on: b('on'), grid: b('grid'), pdf: b('pdf'), markups: b('markups'), devices: b('devices'), align: b('align'), showGrid: b('showGrid'),
+    on: b('on'), grid: b('grid'), pdf: b('pdf'), markups: b('markups'), devices: b('devices'), align: b('align'), alignDevices: b('alignDevices'), showGrid: b('showGrid'),
     gridFeet: num(r.gridFeet, DEFAULT_SNAP.gridFeet), gridPoints: num(r.gridPoints, DEFAULT_SNAP.gridPoints),
   }
 }

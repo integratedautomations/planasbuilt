@@ -122,6 +122,12 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled, parts
       <section className="card settings-card">
         <h3><Icon name="cable" size={18} /> Cables</h3>
         <label className="check"><input type="checkbox" checked={v.cable_via_drop} onChange={e => set({ cable_via_drop: e.target.checked })} /> Add drop length at devices a cable passes through</label>
+        <label className="field">Measure cables as
+          <select value={v.cable_mode} onChange={e => set({ cable_mode: e.target.value === 'home' ? 'home' : 'daisy' })}>
+            <option value="daisy">Daisy chain (drawn path once)</option>
+            <option value="home">Home runs (a cable per device from the start)</option>
+          </select>
+        </label>
         <p className="muted small">When a cable run is clicked through devices, each one counts like an end for the drop length (slack and drop are set per project under Cable defaults).</p>
       </section>
       )}

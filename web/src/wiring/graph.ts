@@ -128,6 +128,11 @@ export function buildWiring(markups: Iterable<Markup>, ctx: WiringContext): Wiri
     if (g.from === g.to) { problem('same-device'); continue }
     const len = cableLength(c, ctx.scaleFor(c.document_id, c.page), ctx.defaults, byId)
     const mk = (lengthFt: number | null): WLink => ({ cableId: c.id, typeName, color: ctx.cableTypes.get(cableTypeId(c))?.color ?? c.style.stroke ?? '#868e96', lengthFt, count: cableCount(c), parallel: 0 })
+    // Home runs: a star from the From device to every device on the run, each with its own cable length
+    if (len?.mode === 'home' && len.stops.length) {
+      for (const s of len.stops) if (s.id !== g.from && nodes.has(s.id)) edges.push({ a: g.from!, b: s.id, link: mk(s.runFt * len.count) })
+      continue
+    }
     // A run through devices is a chain From -> via... -> To: one edge per hop, the cable's length shared by hop length
     const chain = [{ id: g.from!, at: 0 }, ...viaOf(g).filter(v => nodes.has(v.id)).map(v => ({ id: v.id, at: v.i })), { id: g.to!, at: g.points.length / 2 - 1 }]
     if (chain.length === 2) { edges.push({ a: g.from!, b: g.to!, link: mk(len ? len.totalFt : null) }); continue }

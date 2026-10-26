@@ -60,3 +60,16 @@ describe('coverage cone in exported PDFs', () => {
     expect(buildAnnot(device({ fov }), { box: pbox, ppf: null, set, textWidth: approxTextWidth, showCones: false })!.ap.gstates.GC).toBeUndefined()
   })
 })
+
+describe('device tag stays level in exported PDFs', () => {
+  // Net orientation of the label = the device's matrix times the label-frame matrix; it must not depend on the rotation
+  const net = (m: Markup) => {
+    const cms = stream(m).split(String.fromCharCode(10)).filter(l => l.endsWith(' cm')).map(l => l.split(' ').slice(0, 4).map(Number))
+    const [a1, b1, c1, d1] = cms[0], [a2, b2, c2, d2] = cms[1]
+    return [a2 * a1 + b2 * c1, a2 * b1 + b2 * d1, c2 * a1 + d2 * c1, c2 * b1 + d2 * d1].map(v => Math.round(v * 100) / 100 + 0)
+  }
+  it('is the same orientation for every device rotation', () => {
+    const level = net(device())
+    for (const rotation of [30, 90, 135, 180, 270]) expect(net(device({ rotation }))).toEqual(level)
+  })
+})

@@ -12,7 +12,7 @@ import { Attribution, HistorySection } from './MarkupInfo'
 import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
 import { circleStats, formatArea, formatFeetInches, summarize } from './measure'
-import { CABLE_FIELD, DEFAULT_CABLE_SETTINGS, cableCount, cableLength, cableTypeId, clearDangling, danglingEnds, summarizeCables, viaOf } from './cables'
+import { CABLE_FIELD, CABLE_MODES, CABLE_MODE_LABEL, DEFAULT_CABLE_SETTINGS, cableCount, cableMode, cableLength, cableTypeId, clearDangling, danglingEnds, summarizeCables, viaOf } from './cables'
 import type { CableSettings } from './cables'
 import { useCatalogContext } from '../catalog/useCatalog'
 import type { MeasureTotal } from './measure'
@@ -104,7 +104,7 @@ interface Props {
   /** Live rows of each legend on this page (for manual row ordering). */
   legendRows?: Map<string, LegendRow[]>
   /** Per-viewer display options shown at the top of the Layers tab. */
-  display: { showCones: boolean; onShowCones: (v: boolean) => void; deviceScale?: number; onDeviceScale?: (v: number) => void; deviceScaleReadOnly?: boolean }
+  display: { showCones: boolean; onShowCones: (v: boolean) => void; showCables?: boolean; onShowCables?: (v: boolean) => void; deviceScale?: number; onDeviceScale?: (v: number) => void; deviceScaleReadOnly?: boolean }
   /** Device stacks on this page and the actions the stack panel needs. */
   stacks: StackIndex
   onSelectIds: (ids: string[]) => void
@@ -555,6 +555,7 @@ export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, o
     <div className="panel-body">
       <div className="panel-heading">Display</div>
       <label className="check"><input type="checkbox" checked={display.showCones} onChange={e => display.onShowCones(e.target.checked)} /> Show coverage</label>
+      {display.onShowCables && <label className="check"><input type="checkbox" checked={display.showCables !== false} onChange={e => display.onShowCables!(e.target.checked)} /> Show cable runs</label>}
       {display.onDeviceScale && (
         <>
           <div className="panel-heading">Device size</div>
@@ -616,6 +617,7 @@ function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults, on
   const count = commonValue(selected, m => cableCount(m))
   const slack = commonValue(selected, m => String(m.fields?.[CABLE_FIELD.slack] ?? ''))
   const drop = commonValue(selected, m => String(m.fields?.[CABLE_FIELD.drop] ?? ''))
+  const mode = commonValue(selected, m => cableMode(m, defaults))
   const setField = (key: string, value: string | number | null) => onUpdate(m => {
     const fields = { ...(m.fields ?? {}) }
     if (value === null || value === '') delete fields[key]; else fields[key] = value
@@ -651,6 +653,12 @@ function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults, on
           <input type="number" min={1} step={1} value={count.mixed ? '' : count.value ?? 1} placeholder={count.mixed ? 'Mixed' : '1'}
             onChange={e => { const n = Math.round(Number(e.target.value)); if (Number.isFinite(n) && n >= 1) setField(CABLE_FIELD.count, n === 1 ? null : n) }} />
         </label>
+        <label className="field">Measured as
+          <select value={mode.mixed ? '__mixed' : mode.value ?? 'daisy'} onChange={e => { if (e.target.value !== '__mixed') setField(CABLE_FIELD.mode, e.target.value === (defaults.mode ?? 'daisy') ? null : e.target.value) }}>
+            {mode.mixed && <option value="__mixed" disabled>Mixed</option>}
+            {CABLE_MODES.map(k => <option key={k} value={k}>{CABLE_MODE_LABEL[k]}{k === (defaults.mode ?? 'daisy') ? ' (project default)' : ''}</option>)}
+          </select>
+        </label>
         <label className="field">Slack % <span className="muted small">(blank = project {defaults.slackPct}%)</span>
           {numInput(CABLE_FIELD.slack, slack, String(defaults.slackPct))}
         </label>
@@ -669,7 +677,8 @@ function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults, on
               <dt>Total{len.count > 1 ? ` x${len.count}` : ''}</dt><dd>{formatFeetInches(len.totalFt)}</dd></>}
           </dl>
           {!len && <p className="scale-warn small">Set a scale to see the length.</p>}
-          {len && (() => { const n = len.ends + (defaults.viaDrop === false ? 0 : len.via); return <p className="muted small">Run = drawn x (1 + {len.slackPct}%) + {len.dropFt} ft x {n} linked device{n === 1 ? '' : 's'} ({len.ends} end{len.ends === 1 ? '' : 's'}{len.via ? `, ${len.via} passed through${defaults.viaDrop === false ? ', no drop' : ''}` : ''}).</p> })()}
+          {len && len.mode === 'home' && <p className="muted small">Home runs: {len.homeRuns} cable{len.homeRuns === 1 ? '' : 's'}, each from the start along the path to its device: path x (1 + {len.slackPct}%) + {len.dropFt} ft drop at the device{len.ends > 0 && len.dropFt > 0 ? ' and at the start' : ''}. One run = {formatFeetInches(len.runFt)} in total.</p>}
+          {len && len.mode !== 'home' && (() => { const n = len.ends + (defaults.viaDrop === false ? 0 : len.via); return <p className="muted small">Run = drawn x (1 + {len.slackPct}%) + {len.dropFt} ft x {n} linked device{n === 1 ? '' : 's'} ({len.ends} end{len.ends === 1 ? '' : 's'}{len.via ? `, ${len.via} passed through${defaults.viaDrop === false ? ', no drop' : ''}` : ''}).</p> })()}
           {!readOnly && onContinueRun && <button onClick={onContinueRun}>Continue run</button>}
           {!readOnly && dangling.length > 0 && (
             <button onClick={() => onUpdate(m => ('points' in m.geometry ? { ...m, geometry: clearDangling(m.geometry, m, byId) } : m), 'cable.clear')}>Clear open-end markers</button>

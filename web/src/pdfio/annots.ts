@@ -347,9 +347,13 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         const label = m.tag || set?.tag_prefix || '?'
         const fs = Math.max(4, r * 0.7)
         const tw = ctx.textWidth(label, fs, true)
-        const base = cy + r + r * 0.12 + fs * 0.85
-        ops.text(label, cx - tw / 2, base, fs, color, true, fs * 0.18)
-        ext.text(cx, base, tw, fs)
+        // The tag stays level with the plan (never rotated / upside down) and below the symbol: drawn in the page-oriented frame at the centre
+        const base = r + r * 0.12 + fs * 0.85
+        const LM = localMatrix(box, localToDisplay(b.x, b.y, b.rotation || 0)(cx, cy).x, localToDisplay(b.x, b.y, b.rotation || 0)(cx, cy).y, 0)
+        ops.save().cm(relativeMatrix(M, LM))
+        ops.text(label, -tw / 2, base, fs, color, true, fs * 0.18)
+        ops.restore()
+        for (const [px, py] of [[-tw / 2, base - fs], [tw / 2, base - fs], [-tw / 2, base + fs * 0.3], [tw / 2, base + fs * 0.3]]) extra.push(applyMatrix(LM, px, py))
         pad = r * 0.1 + 1
         spec.subtype = 'Stamp'; spec.stampName = set?.name ?? 'Device'; spec.borderWidth = 0
         break
