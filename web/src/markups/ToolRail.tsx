@@ -21,8 +21,7 @@ export const TOOLS: { tool: Tool; label: string; icon: ReactNode }[] = [
   { tool: 'device', label: 'Device', icon: icon(<><circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="2" fill="currentColor" /></>) },
   { tool: 'cable', label: 'Cable run', icon: icon(<><path d="M4 18c4 0 4-12 8-12s4 12 8 12" strokeDasharray="3 3" /><circle cx="4" cy="18" r="1.5" fill="currentColor" /><circle cx="20" cy="18" r="1.5" fill="currentColor" /></>) },
   { tool: 'stamp', label: 'Stamp', icon: icon(<><rect x="4" y="14" width="16" height="5" rx="1" /><path d="M9 14v-3a3 3 0 116 0v3" /></>) },
-  { tool: 'area', label: 'Area (click points)', icon: icon(<path d="M5 6h6M14 6h5v5M19 14v5h-6M10 19H5v-5M5 11V9" strokeDasharray="3 2.5" />) },
-  { tool: 'area-rect', label: 'Area (drag rectangle)', icon: icon(<><rect x="4" y="6" width="16" height="12" rx="1" strokeDasharray="3 2.5" /><path d="M7 9.5h4" /></>) },
+  { tool: 'area', label: 'Area (drag rectangle or click points)', icon: icon(<path d="M5 6h6M14 6h5v5M19 14v5h-6M10 19H5v-5M5 11V9" strokeDasharray="3 2.5" />) },
   { tool: 'legend', label: 'Legend', icon: icon(<><rect x="4" y="4" width="16" height="16" rx="1" /><path d="M4 9h16M9 9v11M13 13h4M13 16.5h4" /></>) },
   { tool: 'calibrate', label: 'Calibrate scale', icon: icon(<><path d="M3 15l12-12 6 6-12 12z" /><path d="M7 11l2 2M10 8l2 2M13 5l2 2" /></>) },
   { tool: 'measure-length', label: 'Length', icon: icon(<><path d="M4 12h16M4 8v8M20 8v8" /></>) },
@@ -48,7 +47,7 @@ const REDO_ICON = icon(<><path d="M15 14l5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0
 const GROUPS: { name: string; tools: Tool[] }[] = [
   { name: 'Draw', tools: ['line', 'arrow', 'rect', 'ellipse', 'cloud', 'polyline', 'polygon', 'freehand', 'text', 'highlight'] },
   { name: 'Measure', tools: ['calibrate', 'measure-length', 'measure-radius', 'measure-polylength', 'measure-area', 'count'] },
-  { name: 'Areas', tools: ['area', 'area-rect'] },
+  { name: 'Areas', tools: ['area'] },
   { name: 'Other', tools: ['cable', 'stamp', 'legend'] },
 ]
 

@@ -4,6 +4,9 @@ import { api, setToken, User } from '../api'
 import { UserAvatar } from '../ui/UserAvatar'
 
 
+/** Accessible backgrounds (each has >= 4.5:1 contrast with white or black text). */
+const AVATAR_COLORS = ['#c92a2a', '#d9480f', '#e67700', '#2b8a3e', '#087f5b', '#0b7285', '#1971c2', '#5f3dc4', '#a61e4d', '#495057']
+
 export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) => void }) {
   const [name, setName] = useState(user.name)
   const [nameMsg, setNameMsg] = useState('')
@@ -25,6 +28,14 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
   async function removePicture() {
     setPicMsg('')
     try { await api('/me/avatar', { method: 'DELETE' }); onUser({ ...user, avatar: null }) } catch (err) { setPicMsg((err as Error).message) }
+  }
+
+  async function pickColor(color: string | null) {
+    setPicMsg('')
+    try {
+      const r = await api<{ avatar_color: string | null }>('/me/avatar-color', { method: 'PUT', body: JSON.stringify({ color }) })
+      onUser({ ...user, avatar_color: r.avatar_color })
+    } catch (err) { setPicMsg((err as Error).message) }
   }
 
   async function saveName(e: FormEvent) {
@@ -50,12 +61,27 @@ export function PersonalTab({ user, onUser }: { user: User; onUser: (u: User) =>
       <section className="card settings-card">
         <h3><Icon name="user" size={18} /> Profile</h3>
         <div className="row">
-          <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} size={56} />
+          <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} color={user.avatar_color} size={56} />
           <button type="button" onClick={() => fileRef.current?.click()}>{user.avatar != null ? 'Change picture' : 'Upload picture'}</button>
           {user.avatar != null && <button type="button" onClick={removePicture}>Remove</button>}
           <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={e => uploadPicture(e.target.files?.[0])} />
           {picMsg && <span className="error small">{picMsg}</span>}
         </div>
+        {user.avatar == null && (
+          <div className="stack" style={{ gap: 6 }}>
+            <span className="small muted">Initials background</span>
+            <div className="row wrap" style={{ gap: 6 }} role="radiogroup" aria-label="Initials background colour">
+              {AVATAR_COLORS.map(c => (
+                <button key={c} type="button" role="radio" aria-checked={user.avatar_color === c} aria-label={`Colour ${c}`} title={c} onClick={() => void pickColor(c)}
+                  style={{ width: 28, height: 28, minHeight: 0, padding: 0, borderRadius: '50%', background: c, border: user.avatar_color === c ? '3px solid var(--text)' : '2px solid var(--border)' }} />
+              ))}
+              <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>Custom
+                <input type="color" value={user.avatar_color ?? '#1c7ed6'} onChange={e => void pickColor(e.target.value)} aria-label="Custom colour" style={{ width: 32, height: 28, padding: 0 }} />
+              </label>
+              {user.avatar_color && <button type="button" className="small" onClick={() => void pickColor(null)}>Automatic</button>}
+            </div>
+          </div>
+        )}
         <form className="stack" onSubmit={saveName}>
           <label className="field">Name<input value={name} onChange={e => setName(e.target.value)} required /></label>
           <label className="field">Email<input value={user.email} readOnly disabled /></label>

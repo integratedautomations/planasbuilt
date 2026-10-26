@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import '../viewer/viewer.css'
 import { Icon } from '../ui/Icon'
 import { api, post } from '../api'
+import { fetchAll } from '../devices/loadDevices'
 import type { DocumentRevision, Project } from '../api'
 import { clampRenderScale, loadPdf } from '../pdf'
 import type { PDFDocumentProxy, PDFPageProxy } from '../pdf'
@@ -14,6 +15,7 @@ import { loadLastView, saveLastView } from '../viewer/lastView'
 import type { View } from '../viewer/usePanZoom'
 import { clampDeviceScale, scaleDevice, scaleDevices, unscaleChange } from '../markups/deviceScale'
 import { cableSettings } from '../markups/cables'
+import { canDeleteVertex, canEditVertices } from '../markups/vertices'
 import { MarkupCanvas } from '../markups/MarkupCanvas'
 import type { MarkupCanvasHandle } from '../markups/MarkupCanvas'
 import { SelectionBar } from '../markups/SelectionBar'
@@ -252,7 +254,7 @@ export function ViewerPage() {
   const layout = prefs.layout
   /** Square / Circle tools are the rectangle / ellipse tools with the shape locked. */
   const [shapeLock, setShapeLock] = useState<'square' | 'circle' | null>(null)
-  const [ctx, setCtx] = useState<{ x: number; y: number; hitId: string | null; point: Pt } | null>(null)
+  const [ctx, setCtx] = useState<{ x: number; y: number; hitId: string | null; point: Pt; vertex?: number } | null>(null)
   const [showHotkeys, setShowHotkeys] = useState(false)
   /** Focus mode: every panel and the top bar hidden (F or Esc brings them back). */
   const [focus, setFocus] = useState(false)
@@ -743,7 +745,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     const z = Math.min(vp.clientWidth / (Math.max(b.width, 1) * 1.2), (vp.clientHeight - bottom) / (Math.max(b.height, 1) * 1.2))
     centerOn(b.x + b.width / 2, b.y + b.height / 2 + bottom / (2 * z), z)
   }
-  const drawArea = (t: 'area' | 'area-rect') => { if (isPhone) setShowPanel(false); chooseTool(t) }
+  const drawArea = () => { if (isPhone) setShowPanel(false); chooseTool('area') }
   const nameSheet = () => {
     const sheet = pageAreas.find(isSheetArea)
     setNaming({ id: sheet?.id ?? null, sheet: true, initial: sheet?.text ?? '' })
@@ -1052,10 +1054,20 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     const p = getPrefs()
     if (p.favorites.some(id => id.startsWith('set:'))) setPref('favorites', p.favorites.filter(id => !id.startsWith('set:')))
     if (p.recent.some(id => id.startsWith('set:'))) setPref('recent', p.recent.filter(id => !id.startsWith('set:')))
+    const fixArea = (l: string[]) => [...new Set(l.map(id => (id === 'tool:area-rect' ? 'tool:area' : id)))]
+    if (p.favorites.includes('tool:area-rect')) setPref('favorites', fixArea(p.favorites))
+    if (p.recent.includes('tool:area-rect')) setPref('recent', fixArea(p.recent))
   }, [prefs.favorites, prefs.recent])
-  const entryMap = useMemo(() => new Map(toolEntries.map(e => [e.id, e])), [toolEntries])
+  // Saved favorites, recents and hotkeys that still name the old drag-rectangle Area tool open the unified Area tool
+  const entryMap = useMemo(() => {
+    const m = new Map(toolEntries.map(e => [e.id, e]))
+    const area = m.get('tool:area')
+    if (area) m.set('tool:area-rect', area)
+    return m
+  }, [toolEntries])
 
-  const chooseTool = useCallback((t: Tool, shape: 'square' | 'circle' | null = null) => {
+  const chooseTool = useCallback((tIn: Tool, shape: 'square' | 'circle' | null = null) => {
+    const t: Tool = tIn === 'area-rect' ? 'area' : tIn // the old drag-rectangle Area tool is part of the Area tool now
     setTool(t)
     setShapeLock(shape)
     setCalLine(null)
@@ -1149,6 +1161,23 @@ Its PDF, markups and scales are restored as a new revision. The present state is
   const togglePanel = (id: PanelId) => setPanel(id, !panelOpen(id))
   const closeCtx = useCallback(() => setCtx(null), [])
 
+  /** Tags on the project's other plans (tags number across the whole project); empty offline. */
+  const [otherTags, setOtherTags] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    fetchAll(projectId, 'device').then(ms => { if (live) setOtherTags(ms.filter(m => m.document_id !== documentId).map(m => m.tag ?? '').filter(Boolean)) }).catch(() => {})
+    return () => { live = false }
+  }, [projectId, documentId])
+  /** Tags in use in the project (the cursor ghost previews the next free one). */
+  const usedTags = useMemo(() => [...otherTags, ...Array.from(allMarkups.values(), m => m.tag ?? '').filter(Boolean)], [allMarkups, otherTags])
+
+  /** Re-enters cable drawing from the free end of the selected cable (the one nearest `near` when both are free). */
+  const continueRun = (near?: Pt | null) => {
+    const m = selected.length === 1 ? selected[0] : null
+    if (readOnly || !m || m.type !== 'cable') return
+    if (markupRef.current?.continueCable(m.id, near ?? null)) setTool('cable')
+  }
+
   /** Runs a hotkey command. Returns false when the id is not handled. */
   const runCommand = (cmd: string): boolean => {
     if (isDynamicCommand(cmd)) {
@@ -1177,6 +1206,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       case 'panel.layers': togglePanel('layers'); return true
       case 'edit.escape': if (focus) { setFocus(false); return true }; markupRef.current?.cancelDraft(); setSelectedIds([]); setTool('select'); setShapeLock(null); return true
       case 'edit.finish': markupRef.current?.finishDraft(); return true
+      case 'cable.continue': continueRun(); return true
       case 'snap.toggle': setPref('snap', { ...getPrefs().snap, on: !getPrefs().snap.on }); return true
       case 'select.boxMode': setBoxMode(b => !b); setTool('select'); return true
       case 'view.zoomIn': zoomBy(1.25); return true
@@ -1258,7 +1288,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         <div className="tool-hint">Drag a line along a known dimension (Shift snaps 45°)</div>
       )}
       {(activeTool === 'area' || activeTool === 'area-rect') && (
-        <div className="tool-hint">{activeTool === 'area' ? 'Click corners; click the first point, double-click or Enter to close' : 'Drag a rectangle'}</div>
+        <div className="tool-hint">Drag for a rectangle, or click corners; click the first point, double-click or Enter to close</div>
       )}
       {chestRowOn && chest && (
         <ChestRow options={chests} chest={chest} activeId={currentEntryId} onChest={chooseChest} onPick={pickEntry} onMore={() => setShowChestList(true)} />
@@ -1350,7 +1380,8 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           zoom={settledZoom} markups={canvasMarkups} areaPaths={areaPaths} lockedIds={lockedIds} tool={activeTool} symbolSets={symbolSets} catalog={catalog}
           readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={canvasCommit} deviceScale={deviceScale}
           peers={peersHere} onMarquee={onMarquee} onCursor={canHover ? onCursor : undefined}
-          onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point })}
+          onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point, vertex: info.vertex })}
+          onContinueDone={() => setTool('select')} usedTags={usedTags}
           onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} pdfLines={snapLines} cableDefaults={cableDefaults} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
@@ -1359,7 +1390,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
             legendFields: (() => { const lp = legendPresetId ? legendPresets.find(x => x.id === legendPresetId) : undefined; return lp ? fieldsFromPreset(lp) : undefined })() }}
           onCreated={m => {
             if (m.type === 'legend') { openPanel('props'); setTool('select'); setSelectedIds([m.id]); return }
-            if (m.type === 'area') { setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
+            if (m.type === 'area') { if (getPrefs().general.afterPlace === 'select') setTool('select'); setNaming({ id: m.id, sheet: false, initial: '' }); return }
             if (m.type === 'text') { openPanel('props'); setTool('select'); setTimeout(() => textRef.current?.select(), 50) }
             if (m.type === 'device' && getPrefs().general.afterPlace === 'select') setTool('select')
           }} />
@@ -1397,7 +1428,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       hidden={hidden} locked={locked} onToggleHidden={toggleHidden} onToggleLocked={toggleLocked}
       display={{ showCones, onShowCones: setShowCones, ...deviceDisplay }}
       onReplace={selectedDevices.length && selectedDevices.length === selected.length ? () => setReplacing(true) : undefined}
-      stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack} cableDefaults={cableDefaults}
+      stacks={stackIndex} onSelectIds={setSelectedIds} onAddToStack={addToStack} onPullOut={pullOut} onDeleteStack={deleteStack} cableDefaults={cableDefaults} onContinueRun={readOnly ? undefined : continueRun}
       onAddLayer={addLayer} textRef={textRef} symbolSets={symbolSets} legendRows={legendRowsById}
       pinned={prefs.propsPinned} onPinned={v => setPref('propsPinned', v)}
       areas={areasProps}
@@ -1454,7 +1485,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     )
   }
 
-  const ctxItems = (c: { hitId: string | null; point: Pt }): MenuItem[] => {
+  const ctxItems = (c: { hitId: string | null; point: Pt; vertex?: number }): MenuItem[] => {
     const hint = (id: string) => hotkeys[id] || undefined
     const sub = (ids: string[]): MenuItem[] => ids.map(id => entryMap.get(id))
       .filter((e): e is ToolEntry => !!e && (!readOnly || e.tool === 'select' || e.tool === 'pan'))
@@ -1462,7 +1493,17 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     const tools: MenuItem[] = [{ label: 'Favorites', sub: sub(prefs.favorites) }, { label: 'Recent tools', sub: sub(prefs.recent) }]
     const canPaste = clipCount > 0 && !readOnly
     if (c.hitId) {
+      const one = selected.length === 1 ? selected[0] : null
+      const pointItems: MenuItem[] = []
+      if (one && one.id === c.hitId && !readOnly && canEditVertices(one) && c.vertex !== undefined) {
+        pointItems.push({ label: 'Delete point', disabled: !canDeleteVertex(one, c.vertex), onClick: () => { markupRef.current?.deleteVertex(one.id, c.vertex!) } })
+      }
+      if (one && one.id === c.hitId && !readOnly && one.type === 'cable') {
+        pointItems.push({ label: 'Continue run', hint: hint('cable.continue'), onClick: () => continueRun(c.point) })
+      }
+      if (pointItems.length) pointItems.push({ label: '', separator: true })
       return [
+        ...pointItems,
         { label: 'Cut', hint: hint('edit.cut'), disabled: readOnly, onClick: cutSelected },
         { label: 'Copy', hint: hint('edit.copy'), onClick: copySelected },
         { label: 'Paste', hint: hint('edit.paste'), disabled: !canPaste, onClick: () => paste() },

@@ -301,3 +301,70 @@ export function summarizeCables(
   }
   return { rows: [...rows.values()].map(({ ft, ...r }) => ({ ...r, value: formatFeetInches(ft) })), total: formatFeetInches(total), unscaled }
 }
+
+// ---- Continuing a run, and drawing linked ends
+
+/**
+ * The end a "Continue run" starts from: a free end (not linked to a device) wins; when both or neither are free, the one nearest
+ * to `near` (a page point), else the last point.
+ */
+export function pickContinueEnd(m: Markup, byId: ReadonlyMap<string, Markup>, near?: Pt | null): CableEnd {
+  const g = pathOf(m)
+  if (!g) return 'to'
+  const linked = new Set(linkedEnds(m, byId))
+  const free = CABLE_ENDS.filter(e => !linked.has(e))
+  if (free.length === 1) return free[0]
+  if (near) {
+    const a = endPoint(g, 'from'), b = endPoint(g, 'to')
+    if (a && b) return dist(near, a) < dist(near, b) ? 'from' : 'to'
+  }
+  return 'to'
+}
+
+/** The cable run backwards: points reversed, from / to links and open flags swapped. */
+export function reverseCable(g: PathGeometry): PathGeometry {
+  const out = pathFromPoints(pathPoints(g).reverse())
+  if (g.to) out.from = g.to
+  if (g.from) out.to = g.from
+  const open = (g.open ?? []).map(e => (e === 'from' ? 'to' : 'from') as CableEnd)
+  if (open.length) out.open = CABLE_ENDS.filter(e => open.includes(e))
+  return out
+}
+
+/** Absolute points of a cable oriented so that `end` is the tail (the point a continued run grows from). */
+export function continueSeed(g: PathGeometry, end: CableEnd): Pt[] {
+  return pathPoints(end === 'to' ? g : reverseCable(g))
+}
+
+/**
+ * The cable with `extra` points appended beyond `end`. The extended end loses its old link and open flag (the caller relinks it
+ * when it lands on a device); the other end keeps its own.
+ */
+export function extendCable(g: PathGeometry, end: CableEnd, extra: Pt[]): PathGeometry {
+  const oriented = end === 'to' ? g : reverseCable(g)
+  const out = pathFromPoints([...pathPoints(oriented), ...extra])
+  if (oriented.from) out.from = oriented.from
+  if (oriented.open?.includes('from')) out.open = ['from']
+  return end === 'to' ? out : reverseCable(out)
+}
+
+export interface EndRing { end: CableEnd; /** Device centre, page space. */ c: Pt; /** Symbol radius. */ r: number }
+
+/**
+ * Absolute points of a cable as drawn: an end linked to a device stops at the symbol's edge (radius `r` from its centre,
+ * along the first / last segment) instead of running to the centre. Short segments are left alone.
+ */
+export function trimCableEnds(abs: Pt[], rings: readonly EndRing[]): Pt[] {
+  const out = abs.map(p => ({ ...p }))
+  if (out.length < 2) return out
+  for (const ring of rings) {
+    const i = ring.end === 'from' ? 0 : out.length - 1
+    const next = out[ring.end === 'from' ? 1 : out.length - 2]
+    const p = out[i]
+    const len = dist(p, next)
+    if (len <= ring.r * 1.05 || len === 0) continue
+    const k = ring.r / len
+    out[i] = { x: p.x + (next.x - p.x) * k, y: p.y + (next.y - p.y) * k }
+  }
+  return out
+}

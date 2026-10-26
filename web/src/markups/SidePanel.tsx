@@ -38,7 +38,7 @@ export interface AreasProps {
   onSelectArea: (id: string) => void
   /** Replace the selection with these areas (multi-select; no zoom). */
   onSelectAreas: (ids: string[]) => void
-  onDraw: (tool: 'area' | 'area-rect') => void
+  onDraw: () => void
   onNameSheet: () => void
 }
 
@@ -113,6 +113,8 @@ interface Props {
   onDeleteStack: (stack: Stack) => void
   /** Project cable defaults (slack %, drop ft). */
   cableDefaults?: CableSettings
+  /** Re-enter cable drawing from a free end of the selected cable run. */
+  onContinueRun?: () => void
   /** Opens the "Replace with..." dialog for the selected devices. */
   onReplace?: () => void
   /** Desktop: keep the panel open with nothing selected. */
@@ -379,8 +381,7 @@ export function Areas({ areas, readOnly, selected, onDelete }: Pick<Props, 'area
       <div className="panel-heading">Areas, this sheet</div>
       {!readOnly && (
         <div className="area-actions">
-          <button onClick={() => areas.onDraw('area')}>Draw area</button>
-          <button onClick={() => areas.onDraw('area-rect')}>Draw rectangle</button>
+          <button onClick={() => areas.onDraw()} title="Drag for a rectangle, or click corners">Draw area</button>
           <button onClick={areas.onNameSheet}>{sheet ? 'Rename sheet' : 'Name this sheet'}</button>
           {onDelete && selectedAreaIds.length > 1 && <button className="danger" onClick={onDelete}>Delete {selectedAreaIds.length} areas</button>}
         </div>
@@ -606,7 +607,7 @@ export function Layers({ layers, activeLayerId, onActiveLayer, hidden, locked, o
 }
 
 /** Cable runs: type, runs, slack and drop (per-cable overrides of the project defaults), the two ends and the resulting length. */
-function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults }: Props) {
+function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults, onContinueRun }: Props) {
   const cat = useCatalogContext()
   const defaults = cableDefaults ?? DEFAULT_CABLE_SETTINGS
   const byId = new Map(measure.pageMarkups.map(m => [m.id, m]))
@@ -668,6 +669,7 @@ function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults }: 
           </dl>
           {!len && <p className="scale-warn small">Set a scale to see the length.</p>}
           {len && <p className="muted small">Run = drawn x (1 + {len.slackPct}%) + {len.dropFt} ft x {len.ends} linked end{len.ends === 1 ? '' : 's'}.</p>}
+          {!readOnly && onContinueRun && <button onClick={onContinueRun}>Continue run</button>}
           {!readOnly && dangling.length > 0 && (
             <button onClick={() => onUpdate(m => ('points' in m.geometry ? { ...m, geometry: clearDangling(m.geometry, m, byId) } : m), 'cable.clear')}>Clear open-end markers</button>
           )}

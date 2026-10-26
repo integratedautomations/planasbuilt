@@ -29,8 +29,7 @@ export const COMMANDS: Command[] = [
   tool('device', 'Device', 'D'),
   tool('cable', 'Cable run', 'W'),
   tool('stamp', 'Stamp', 'S'),
-  tool('area', 'Area (click points)', 'J'),
-  tool('area-rect', 'Area (drag rectangle)', 'U'),
+  tool('area', 'Area (drag rectangle or click points)', 'J'),
   tool('legend', 'Legend', 'Alt+L'),
   { id: 'edit.undo', label: 'Undo', group: 'Edit', combo: 'Ctrl+Z' },
   { id: 'edit.redo', label: 'Redo', group: 'Edit', combo: 'Ctrl+Y' },
@@ -45,6 +44,7 @@ export const COMMANDS: Command[] = [
   { id: 'edit.selectAll', label: 'Select all', group: 'Edit', combo: 'Ctrl+A' },
   { id: 'edit.escape', label: 'Cancel / deselect', group: 'Edit', combo: 'Escape' },
   { id: 'edit.finish', label: 'Finish drawing', group: 'Edit', combo: 'Enter' },
+  { id: 'cable.continue', label: 'Continue cable run (selected cable)', group: 'Edit', combo: 'Alt+W' },
   { id: 'snap.toggle', label: 'Toggle snapping', group: 'View', combo: 'Shift+S' },
   { id: 'select.boxMode', label: 'Toggle box select', group: 'Edit', combo: 'X' },
   { id: 'view.panHold', label: 'Pan (hold)', group: 'View', combo: 'Space' },
@@ -74,7 +74,10 @@ export const entryIdOfCommand = (cmd: string) => (isDynamicCommand(cmd) ? cmd.sl
 /** Effective map: defaults overlaid with the user's overrides ('' = unassigned). Unknown static command ids are dropped; dynamic tool commands are kept. */
 export function resolveHotkeys(overrides: Record<string, string> | undefined): Record<string, string> {
   const out = { ...DEFAULT_HOTKEYS }
-  for (const [id, combo] of Object.entries(overrides ?? {})) if ((id in out || isDynamicCommand(id)) && typeof combo === 'string') out[id] = combo
+  // The old drag-rectangle Area tool is part of the Area tool: a key the user gave it moves over unless Area has its own
+  const o = { ...overrides }
+  if (typeof o['tool.area-rect'] === 'string' && !('tool.area' in o)) o['tool.area'] = o['tool.area-rect']
+  for (const [id, combo] of Object.entries(o)) if ((id in out || isDynamicCommand(id)) && typeof combo === 'string') out[id] = combo
   return out
 }
 

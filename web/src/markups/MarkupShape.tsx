@@ -6,6 +6,10 @@ import { FONT_MONO, FONT_UI } from './canvasFonts'
 import { usePrefs } from '../prefs/store'
 import { labelVisible } from '../prefs/general'
 import { cloudArcs, deviceCenter } from './geometry'
+import { trimCableEnds } from './cables'
+import type { EndRing } from './cables'
+import { pathPoints } from './snap'
+import { toLocal } from './vertices'
 import { iconRect, mountShape, resolveMount, wallFacing } from './mount'
 import type { Mount } from './mount'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, radiusOf, sqftOf } from './measure'
@@ -57,6 +61,8 @@ interface Props {
   cableLabel?: string
   /** Cable only: ends whose device is gone; each shows a small red cross. */
   dangling?: ('from' | 'to')[]
+  /** Cable only: ends linked to a device (ring round the symbol, line stops at its edge). */
+  endRings?: EndRing[]
 }
 
 export interface StackView { count: number; label: string; statuses: Status[] }
@@ -69,7 +75,7 @@ export interface StackView { count: number; label: string; statuses: Status[] }
  * icon doesn't stretch the cone.
  */
 function MarkupShapeInner(props: Props) {
-  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDragMove: onDragMoveProp, snapHandle, onDblClick, showCones = true, stack, ghost, legendRows, cableLabel, dangling } = props
+  const { markup: m, zoom, scale = null, countNumber, symbolSet, iconSrc, typeMount, areaPath, draggable, listening = true, editPoints, onPointsChange, editFov, onFovChange, onDragStart, onDragEnd, onDragMove: onDragMoveProp, snapHandle, onDblClick, showCones = true, stack, ghost, legendRows, cableLabel, dangling, endRings } = props
   const g = m.geometry
   const fovRef = useRef<Konva.Group>(null)
   const fov = m.type === 'device' && 'width' in g && showCones && hasCoverage(g.fov) ? g.fov : undefined
@@ -92,7 +98,7 @@ function MarkupShapeInner(props: Props) {
         draggable={draggable} listening={listening && !ghost} opacity={m.style.opacity}
         onDragMove={fov || onDragMoveProp ? onDragMove : undefined}
         onDragStart={onDragStart} onDragEnd={onDragEnd} onDblClick={onDblClick} onDblTap={onDblClick}>
-        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} cableLabel={cableLabel} dangling={dangling} />
+        {'points' in g ? <PathBody m={m} g={g} zoom={zoom} scale={scale} countNumber={countNumber} areaPath={areaPath} cableLabel={cableLabel} dangling={dangling} endRings={endRings} />
           : m.type === 'device' ? (ghost ? <Rect width={g.width} height={g.height} fill="transparent" listening={false} />
             : <DeviceBody m={m} g={g} set={symbolSet} iconSrc={iconSrc} typeMount={typeMount} zoom={zoom} stack={stack} />)
           : m.type === 'legend' ? <LegendBody m={m} g={g} rows={legendRows ?? []} />
@@ -372,7 +378,7 @@ function hexAlpha(hex: string, a: number) {
   return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`
 }
 
-function PathBody({ m, g, zoom, scale, countNumber, areaPath, cableLabel, dangling }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number; areaPath?: string[]; cableLabel?: string; dangling?: ('from' | 'to')[] }) {
+function PathBody({ m, g, zoom, scale, countNumber, areaPath, cableLabel, dangling, endRings }: { m: Markup; g: PathGeometry; zoom: number; scale: number | null; countNumber?: number; areaPath?: string[]; cableLabel?: string; dangling?: ('from' | 'to')[]; endRings?: EndRing[] }) {
   const { stroke, fill, strokeWidth, dash } = m.style
   const common = {
     points: g.points, stroke: stroke || '#e03131', strokeWidth,
@@ -446,19 +452,35 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath, cableLabel, dangli
         </>
       )
     }
-    case 'cable':
+    case 'cable': {
+      const rings = endRings ?? []
+      const linked = new Set(rings.map(r => r.end))
+      // The line stops at the symbol edge of a linked end (points are local to the markup; the rings arrive in page space)
+      const drawn = rings.length ? trimCableEnds(pathPoints(g), rings).flatMap(p => { const q = toLocal(g, p); return [q.x, q.y] }) : g.points
+      const color = stroke || '#e03131'
+      const n = g.points.length
       return (
         <>
-          <Line {...common} />
+          <Line {...common} points={drawn} />
+          {rings.map(r => {
+            const c = toLocal(g, r.c)
+            return (
+              <Group key={r.end} x={c.x} y={c.y} listening={false} name="cable-link-ring">
+                <Circle radius={r.r * 1.12} stroke={color} strokeWidth={Math.max(strokeWidth, 1.5 / zoom)} opacity={0.35} />
+                <Circle radius={r.r * 1.12} stroke={color} strokeWidth={Math.max(strokeWidth * 0.6, 1 / zoom)} />
+              </Group>
+            )
+          })}
           {scale && <MeasureLabel at={pathMidpoint(g.points)} zoom={zoom} fontSize={m.style.fontSize} color={stroke || '#e03131'}
             text={cableLabel ?? formatFeetInches(feetOf(g.points, scale))} />}
-          <Circle x={g.points[0]} y={g.points[1]} radius={strokeWidth * 1.6} fill={stroke || '#e03131'} />
-          <Circle x={g.points[g.points.length - 2]} y={g.points[g.points.length - 1]} radius={strokeWidth * 1.6} fill={stroke || '#e03131'} />
+          {!linked.has('from') && <Circle x={g.points[0]} y={g.points[1]} radius={strokeWidth * 1.6} fill={color} />}
+          {!linked.has('to') && <Circle x={g.points[n - 2]} y={g.points[n - 1]} radius={strokeWidth * 1.6} fill={color} />}
           {dangling?.map(end => (
             <DanglingMark key={end} x={end === 'from' ? g.points[0] : g.points[g.points.length - 2]} y={end === 'from' ? g.points[1] : g.points[g.points.length - 1]} zoom={zoom} />
           ))}
         </>
       )
+    }
     default:
       return <Line {...common} />
   }
@@ -490,7 +512,7 @@ function PointHandles({ points, zoom, onChange, snap }: { points: number[]; zoom
       onChange(next, done)
     }
     handles.push(
-      <Circle key={i} name="point-handle" x={points[i]} y={points[i + 1]} radius={6 / zoom}
+      <Circle key={i} name="point-handle" {...({ vertexIndex: idx / 2 } as object)} x={points[i]} y={points[i + 1]} radius={6 / zoom}
         fill="#fff" stroke="#1971c2" strokeWidth={2 / zoom} draggable
         onDragStart={e => { e.cancelBubble = true }}
         onDragMove={e => move(e, false)} onDragEnd={e => move(e, true)} />,

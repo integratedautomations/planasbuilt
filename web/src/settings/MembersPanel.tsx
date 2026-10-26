@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
+import { UserAvatar } from '../ui/UserAvatar'
 import type { LinkResult, Member, Role, User } from '../api'
 import { EMPTY_SCOPE, ROLE_INFO } from '../roles'
 import type { Scope } from '../roles'
@@ -71,7 +72,7 @@ export function MembersPanel({ projectId, canManage, me }: { projectId: string; 
           <tbody>
             {members.map(m => (
               <tr key={m.id}>
-                <td>{m.name}{m.id === me.id && <span className="muted small"> (you)</span>}</td>
+                <td><span className="row" style={{ gap: 8 }}><UserAvatar userId={m.id} name={m.name} avatar={m.avatar} color={m.avatar_color} size={24} />{m.name}</span>{m.id === me.id && <span className="muted small"> (you)</span>}</td>
                 <td>{m.email}{m.status === 'invited' && <span className="status-pill invited">Invited</span>}</td>
                 <td>
                   {canManage ? (

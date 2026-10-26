@@ -387,6 +387,16 @@ export async function registerAdmin(ctx: AdminContext) {
     return u
   })
 
+  // Background colour of the initials avatar: '#rrggbb', or null for the automatic one.
+  app.put('/api/me/avatar-color', { preHandler: auth }, async (req, reply) => {
+    const c = (req.body as any)?.color
+    if (c !== null && !(typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c))) return reply.code(400).send({ error: 'Colour must be #rrggbb or null' })
+    const color = c === null ? null : c.toLowerCase()
+    await db.query('UPDATE users SET avatar_color = $1 WHERE id = $2', [color, req.user.id])
+    realtime.setAvatarColor(req.user.id, color)
+    return { avatar_color: color }
+  })
+
   app.post('/api/me/password', { preHandler: auth }, async (req, reply) => {
     const { current, password } = (req.body ?? {}) as any
     if (typeof password !== 'string' || password.length < 8) return reply.code(400).send({ error: 'The new password must be at least 8 characters' })

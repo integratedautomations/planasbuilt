@@ -99,7 +99,7 @@ export interface SymbolSet {
 
 export interface Layer { id: string; project_id: string; name: string; color: string; sort: number }
 
-/** 'area-rect' is a drag-a-rectangle variant of 'area'; it stores a 4-point polygon of type 'area'. */
+/** 'area-rect' is the old id of the drag-a-rectangle Area tool; it now means 'area' (press-drag draws a rectangle, clicks draw an outline). */
 export type Tool = 'select' | 'pan' | 'calibrate' | 'area-rect' | MarkupType
 
 export const DEFAULT_STYLE: MarkupStyle = {

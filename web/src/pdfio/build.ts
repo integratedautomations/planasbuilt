@@ -3,6 +3,8 @@ import type { PDFPage } from 'pdf-lib'
 import { areaPathIn, buildAreaIndex, isArea } from '../markups/areas'
 import { EMPTY_CATALOG } from '../catalog/catalog'
 import type { Catalog } from '../catalog/catalog'
+import { deviceCentreOf, linkedEnds } from '../markups/cables'
+import type { EndRing } from '../markups/cables'
 import { legendRowsFor } from '../markups/legend'
 import type { LegendRow } from '../markups/legend'
 import type { Markup, SymbolSet } from '../markups/types'
@@ -47,6 +49,19 @@ export function textWidthFn(res: Resources) {
   }
 }
 
+/** Linked ends of a cable with the device each meets (centre and symbol radius). */
+function cableRingsOf(m: Markup, byId: ReadonlyMap<string, Markup>): EndRing[] {
+  const g = m.geometry
+  if (!('points' in g)) return []
+  const out: EndRing[] = []
+  for (const end of linkedEnds(m, byId)) {
+    const d = byId.get(g[end]!)
+    const c = deviceCentreOf(d)
+    if (d && c && 'width' in d.geometry) out.push({ end, c, r: Math.min(d.geometry.width, d.geometry.height) / 2 })
+  }
+  return out
+}
+
 /** Specs for one page's markups (areas first so they sit underneath). */
 export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInput, res: Resources, counts: Map<string, number>,
   areaPaths: Map<string, string[]>, pageNumber: number, legend?: Map<string, LegendRow[]>): { spec: AnnotSpec; iconKey?: string }[] {
@@ -54,6 +69,7 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
   const tw = textWidthFn(res)
   const out: { spec: AnnotSpec; iconKey?: string }[] = []
   const ordered = [...markups.filter(m => m.type === 'area'), ...markups.filter(m => m.type !== 'area')]
+  const byId = new Map(markups.map(m => [m.id, m]))
   for (const m of ordered) {
     const set = m.symbol_set_id ? input.symbolSets.get(m.symbol_set_id) : undefined
     const typeKey = m.device_type_id ? `type:${m.device_type_id}` : ''
@@ -62,6 +78,7 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
       box, ppf: input.scales.get(pageNumber) ?? null, set, hasIcon: !!iconKey, textWidth: tw,
       typeMount: m.device_type_id ? input.catalog?.types.get(m.device_type_id)?.mount : undefined,
       areaPath: areaPaths.get(m.id), countNumber: counts.get(m.id), showCones: input.showCones, legendRows: legend?.get(m.id),
+      cableRings: m.type === 'cable' ? cableRingsOf(m, byId) : undefined,
     })
     if (spec) out.push({ spec, iconKey })
   }

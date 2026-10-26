@@ -46,7 +46,7 @@ const GROUPS: Record<string, string> = {
   line: 'Shapes', arrow: 'Shapes', rect: 'Shapes', ellipse: 'Shapes', cloud: 'Shapes', polyline: 'Shapes', polygon: 'Shapes', freehand: 'Shapes', highlight: 'Shapes',
   text: 'Text', stamp: 'Text',
   calibrate: 'Measure', 'measure-length': 'Measure', 'measure-polylength': 'Measure', 'measure-radius': 'Measure', 'measure-area': 'Measure', count: 'Measure',
-  cable: 'Site', legend: 'Site', area: 'Site', 'area-rect': 'Site',
+  cable: 'Site', legend: 'Site', area: 'Site',
 }
 
 const SQUARE_ICON = icon(<rect x="5" y="5" width="14" height="14" rx="1" />)

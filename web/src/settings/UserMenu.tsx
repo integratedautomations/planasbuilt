@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../ui/Icon'
 import { Link } from 'react-router-dom'
-import { UserAvatar } from '../ui/UserAvatar'
+import { UserAvatar, initialsStyle } from '../ui/UserAvatar'
 import { useSession } from './session'
 import { pendingInvitations } from '../company/switcher'
 
@@ -32,8 +32,9 @@ export function UserMenu() {
   }
   return (
     <div className="user-menu" ref={ref}>
-      <button className="avatar-btn" aria-haspopup="menu" aria-expanded={open} title={user.name} onClick={() => setOpen(o => !o)}>
-        <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} bare />
+      <button className="avatar-btn" aria-haspopup="menu" aria-expanded={open} title={user.name} onClick={() => setOpen(o => !o)}
+        style={user.avatar == null ? initialsStyle(user.avatar_color) : undefined}>
+        <UserAvatar userId={user.id} name={user.name} avatar={user.avatar} color={user.avatar_color} bare />
         {invites.length > 0 && <span className="invite-dot" aria-label={`${invites.length} pending invitation${invites.length === 1 ? '' : 's'}`} />}
       </button>
       {open && (

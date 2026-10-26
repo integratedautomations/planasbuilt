@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import { createPortal } from 'react-dom'
 import { Circle, Group, Label, Layer, Line, Rect, Shape, Stage, Tag, Text, Transformer } from 'react-konva'
 import Konva from 'konva'
-import { bakeBox, bakePath, boxFromDrag, pathFromPoints, hasDrawableGeometry, simplify, snap45 } from './geometry'
+import { bakeBox, bakePath, boxFromDrag, finalizeClickPoints, pathFromPoints, hasDrawableGeometry, simplify, snap45 } from './geometry'
 import type { Pt } from './geometry'
 import { MarkupShape } from './MarkupShape'
 import type { Change } from './useMarkups'
@@ -33,15 +33,20 @@ import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } fr
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
 import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
 import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
-import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, danglingEnds, deviceCentreOf, nearestDevice, relinkEnds } from './cables'
-import type { CableSettings } from './cables'
+import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds } from './cables'
+import type { CableEnd, CableSettings, EndRing } from './cables'
+import { canEditVertices, insertVertex, removeVertex } from './vertices'
+import { previewTag } from './tagPreview'
+import { tagPrefixFor } from '../catalog/catalog'
+import { activeSettings } from '../projectSettings'
+import { loadCompany } from '../settings/company'
 import { formatFeetInches } from './measure'
 
 // Only the left button drags markups: middle pans the plan and right box-selects.
 Konva.dragButtons = [0]
 
 /** A plain right-click: where it happened and which markup (if any) is under it. */
-export interface ContextInfo { clientX: number; clientY: number; hitId: string | null; point: Pt }
+export interface ContextInfo { clientX: number; clientY: number; hitId: string | null; point: Pt; /** Index of the control point that was right-clicked / long-pressed, if any. */ vertex?: number }
 
 export interface MarkupCanvasHandle {
   stage: () => Konva.Stage | null
@@ -51,6 +56,10 @@ export interface MarkupCanvasHandle {
   finishDraft: () => void
   /** A device is held down after placing (rotate-on-hold in progress): the viewport must not pan. */
   isPlacing: () => boolean
+  /** Removes one control point of a path markup (one undo step). False when the shape would drop below its minimum. */
+  deleteVertex: (id: string, index: number) => boolean
+  /** Starts drawing from a free end of a cable (the one nearest `near`), appending points to it. False when it cannot continue. */
+  continueCable: (id: string, near?: Pt | null) => boolean
 }
 
 interface Props {
@@ -117,6 +126,10 @@ interface Props {
   pdfLines?: SegIndex | null
   /** Project cable defaults (slack %, drop ft) for the length shown on a cable. */
   cableDefaults?: CableSettings
+  /** Called when a continued cable run is finished or cancelled (the viewer goes back to the Select tool). */
+  onContinueDone?: () => void
+  /** Tags in use in the document (the cursor ghost previews the next free one). Falls back to the page's markups. */
+  usedTags?: readonly string[]
 }
 
 const TWO_POINT: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-radius']
@@ -128,17 +141,31 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-ra
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap, pdfLines, cableDefaults } = props
+  const { width, height, zoom, markups, lockedIds, tool: toolProp, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap, pdfLines, cableDefaults, onContinueDone, usedTags } = props
+  // 'area-rect' is the old id of the drag-a-rectangle area tool: both are the one Area tool now
+  const tool: Tool = toolProp === 'area-rect' ? 'area' : toolProp
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
   const [draft, setDraft] = useState<Markup | null>(null)
   const dragStart = useRef<Pt | null>(null)
   const freehandPts = useRef<Pt[]>([])
   const clickPts = useRef<Pt[]>([])
+  /** Area tool: the press that may become a drag-rectangle (moved) or the first point of a click-by-click outline (released in place). */
+  const areaPress = useRef<{ a: Pt; cx: number; cy: number; moved: boolean; touch: boolean } | null>(null)
+  /** A cable run being continued: the original, the end being extended and how many leading points came from it. */
+  const continuing = useRef<{ orig: Markup; end: CableEnd; seedLen: number } | null>(null)
+  const [contId, setContId] = useState<string | null>(null)
+  const pendingContinue = useRef<{ id: string; end: CableEnd } | null>(null)
+  const [tagPad, setTagPad] = useState(2)
+  useEffect(() => {
+    let live = true
+    loadCompany().then(c => { if (live && c?.tag_padding) setTagPad(c.tag_padding) }).catch(() => {})
+    return () => { live = false }
+  }, [])
   const [pointOverride, setPointOverride] = useState<{ id: string; points: number[] } | null>(null)
   const countGroup = useRef<{ id: string; n: number } | null>(null)
   const [marquee, setMarquee] = useState<Box | null>(null)
-  const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean } } | null>(null)
+  const marqueeStart = useRef<{ p: Pt; add: boolean; right?: { cx: number; cy: number; hitId: string | null; moved: boolean; vertex?: number } } | null>(null)
   const marqueeRect = useRef<Box | null>(null)
   useEffect(() => {
     onMarquee?.(marquee && (marquee.width > 2 || marquee.height > 2) ? { x: marquee.x, y: marquee.y, w: marquee.width, h: marquee.height } : null)
@@ -194,7 +221,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   // Touch: nothing commits on pointerdown. The arbiter decides tap / drag / pinch; window listeners follow the finger
   // (the viewport captures the pointer for panning, so the stage never sees its move/up).
   const arb = useRef(createTouchArbiter())
-  const touch = useRef<{ ev: Konva.KonvaEventObject<PointerEvent> | null; pt: Pt; kind: 'draw' | 'marquee' | 'tap' | 'other'; hitId: string | null; handle: boolean; dragged: boolean; cancelled: boolean; timer: number; lastTap: { x: number; y: number; t: number } | null; unlisten: (() => void) | null }>(
+  const touch = useRef<{ ev: Konva.KonvaEventObject<PointerEvent> | null; pt: Pt; kind: 'draw' | 'marquee' | 'tap' | 'other'; hitId: string | null; handle: boolean; vertex?: number; dragged: boolean; cancelled: boolean; timer: number; lastTap: { x: number; y: number; t: number } | null; unlisten: (() => void) | null }>(
     { ev: null, pt: { x: 0, y: 0 }, kind: 'other', hitId: null, handle: false, dragged: false, cancelled: false, timer: 0, lastTap: null, unlisten: null })
   const pointerOverride = useRef<Pt | null>(null)
   const tapMode = useRef(false)
@@ -277,6 +304,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     setPlaceView(null)
     setDraft(null)
     dragStart.current = null
+    areaPress.current = null
+    continuing.current = null
+    setContId(null)
     freehandPts.current = []
     clickPts.current = []
     if (!m) return
@@ -286,14 +316,45 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     onCreated?.(m)
   }
 
-  const finishClickPath = () => {
+  /** Finishes the click-drawn path. `rubber`: the last point follows the mouse and is dropped, so Enter ends at the last click. */
+  const finishClickPath = (rubber = true) => {
     if (!draft || !CLICK_PATHS.includes(draft.type)) return
-    // Drop the rubber-band point and any double-click duplicate
-    const pts = clickPts.current.filter((p, i, a) => i === 0 || Math.hypot(p.x - a[i - 1].x, p.y - a[i - 1].y) > 0.5)
+    const pts = finalizeClickPoints(clickPts.current, rubber)
+    const cont = continuing.current
+    if (cont) {
+      // A continued cable run: the original gets the new points appended (one undo step); nothing new -> unchanged
+      const extra = pts.slice(cont.seedLen)
+      finish(null)
+      if (extra.length) {
+        const geometry = relinkEnds(extendCable(cont.orig.geometry as PathGeometry, cont.end, extra), byId, cont.orig.page)
+        commit([{ before: cont.orig, after: { ...cont.orig, geometry } }])
+        onSelect([cont.orig.id])
+      }
+      onContinueDone?.()
+      return
+    }
     const min = CLOSED.includes(draft.type) ? 3 : 2
     const geometry = pts.length >= min ? pathFromPoints(pts) : null
     // A cable end that sits on a device centre locks to that device
     finish(geometry ? newMarkup(draft.type, draft.type === 'cable' ? relinkEnds(geometry, byId, newBase.page) : geometry) : null)
+  }
+
+  /** Cable "Continue run": seed the draft with the run points, oriented so the chosen end is the one that grows. */
+  function seedContinue(m: Markup, end: CableEnd) {
+    const seed = continueSeed(m.geometry as PathGeometry, end)
+    if (seed.length < 2) return
+    continuing.current = { orig: m, end, seedLen: seed.length }
+    setContId(m.id)
+    clickPts.current = [...seed, seed[seed.length - 1]]
+    setDraft({ ...newMarkup('cable', pathFromPoints(clickPts.current)), style: { ...m.style, stroke: cableColor(m, catalog?.cableTypes) }, fields: m.fields })
+  }
+
+  /** The area tool press was released without dragging: the outline is drawn click by click from here. */
+  function startAreaPath(a: Pt) {
+    areaPress.current = null
+    dragStart.current = null
+    clickPts.current = [a, a]
+    setDraft(newMarkup('area', pathFromPoints(clickPts.current)))
   }
 
   const cancelMarquee = () => { marqueeStart.current = null; marqueeRect.current = null; setMarquee(null) }
@@ -302,12 +363,40 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     stage: () => stageRef.current,
     cancelDraft: () => { cancelMarquee(); finish(null) },
     cancelGesture: () => cancelGesture(),
-    finishDraft: finishClickPath,
+    finishDraft: () => finishClickPath(),
     isPlacing: () => !!placeRef.current,
+    deleteVertex: (id, index) => {
+      const m = byId.get(id)
+      const g = m && !readOnly && !lockedIds.has(id) ? removeVertex(m, index) : null
+      if (!m || !g) return false
+      commit([{ before: m, after: { ...m, geometry: m.type === 'cable' ? relinkEnds(g, byId, m.page) : g } }])
+      return true
+    },
+    continueCable: (id, near) => {
+      const m = byId.get(id)
+      if (!m || m.type !== 'cable' || readOnly || lockedIds.has(id) || !('points' in m.geometry)) return false
+      const end = pickContinueEnd(m, byId, near)
+      if (tool === 'cable') seedContinue(m, end)
+      else pendingContinue.current = { id, end }
+      return true
+    },
   }))
 
   // Leaving a tool abandons its half-drawn markup
-  useEffect(() => { cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null); setDevGhost(null); setSnapMark(null) }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    cancelMarquee(); finish(null); countGroup.current = null; setSnapHint(null); setDevGhost(null); setSnapMark(null)
+    const pc = pendingContinue.current
+    pendingContinue.current = null
+    const m = pc && tool === 'cable' ? byId.get(pc.id) : undefined
+    if (m && pc) seedContinue(m, pc.end)
+  }, [tool]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Index of the control point a node is the handle of, or undefined. */
+  const vertexOf = (node: Konva.Node | null): number | undefined => {
+    if (!node || node.name() !== 'point-handle') return undefined
+    const v = Number(node.getAttr('vertexIndex'))
+    return Number.isInteger(v) ? v : undefined
+  }
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
     while (node && node !== stageRef.current) {
@@ -389,7 +478,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (e.evt.button === 2) {
       // Right button: box-select in any tool; released without dragging it is a context-menu click
       const p = pointer()
-      marqueeStart.current = { p, add: e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey, right: { cx: e.evt.clientX, cy: e.evt.clientY, hitId: markupIdOf(e.target), moved: false } }
+      marqueeStart.current = { p, add: e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey, right: { cx: e.evt.clientX, cy: e.evt.clientY, hitId: markupIdOf(e.target), moved: false, vertex: vertexOf(e.target) } }
       marqueeRect.current = rectFromCorners(p, p)
       return
     }
@@ -401,6 +490,15 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (!isDrawTool) {
       if (tool === 'pan') { consumedRef.current = false; return }
       if (onTransformer || target.name() === 'point-handle') { consumedRef.current = true; return }
+      // Shift+click on a segment of the selected path adds a control point there (undoable)
+      if (hitId && e.evt.shiftKey && single && single.id === hitId && !readOnly && !lockedIds.has(hitId) && canEditVertices(single) && !tapMode.current) {
+        const ins = insertVertex(single, pointer(), 10 / liveZoom())
+        if (ins) {
+          consumedRef.current = true
+          commit([{ before: single, after: { ...single, geometry: single.type === 'cable' ? relinkEnds(ins.geometry, byId, single.page) : ins.geometry } }])
+          return
+        }
+      }
       if (hitId) {
         consumedRef.current = true
         // Tapping a stack acts on all of its members (locked ones excluded)
@@ -425,9 +523,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     consumedRef.current = true
     const p = pointer()
     const cal = tool === 'calibrate'
-    if (tool === 'area-rect') {
+    if (tool === 'area' && !clickPts.current.length) {
+      // Press: a drag from here draws a rectangle, a release in place starts a click-by-click outline
       const a = snapAt(p, e.evt, {}, false)?.point ?? p
       dragStart.current = a
+      areaPress.current = { a, cx: e.evt.clientX, cy: e.evt.clientY, moved: false, touch: e.evt.pointerType === 'touch' }
       setDraft(newMarkup('area', pathFromPoints(rectPoints(a, a))))
       return
     }
@@ -482,7 +582,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
         if (CLOSED.includes(t) && pts.length >= 4 && Math.hypot(p.x - first.x, p.y - first.y) < 10 / zoom) {
           clickPts.current = pts.slice(0, -1)
           setDraft(newMarkup(t, pathFromPoints(clickPts.current)))
-          finishClickPath()
+          finishClickPath(false)
           return
         }
         const last = e.evt.shiftKey ? snap45(pts[pts.length - 2], p) : sp
@@ -552,6 +652,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const a = dragStart.current
     if (!a) return
     if (draft.type === 'area') {
+      const press = areaPress.current
+      if (press && !press.moved) {
+        if (!press.touch && Math.hypot(e.evt.clientX - press.cx, e.evt.clientY - press.cy) < 4) return
+        press.moved = true
+      }
       setDraft({ ...draft, geometry: pathFromPoints(rectPoints(a, p)) })
       return
     }
@@ -576,7 +681,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const stk = stacks.byId.get(hitId)
           onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
         }
-        onContextMenu?.({ clientX: ms.right.cx, clientY: ms.right.cy, hitId, point: ms.p })
+        onContextMenu?.({ clientX: ms.right.cx, clientY: ms.right.cy, hitId, point: ms.p, vertex: ms.right.vertex })
         return
       }
       const ids = box ? markupsInBox(markups, box, lockedIds) : []
@@ -597,6 +702,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const g = draft.geometry
     const tiny = 4 / zoom
     if (draft.type === 'area') {
+      const press = areaPress.current
+      if (press && !press.moved) { startAreaPath(press.a); return }
+      areaPress.current = null
       const pts = (g as PathGeometry).points
       finish(Math.abs(pts[4]) < tiny * 3 || Math.abs(pts[5]) < tiny * 3 ? null : draft)
       return
@@ -658,13 +766,14 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const target = e.target
     t.handle = target.getParent()?.getClassName?.() === 'Transformer' || target.name() === 'point-handle'
     t.hitId = markupIdOf(target)
-    const drawDrag = isDrawTool && (tool === 'area-rect' || DRAG_TOOLS.includes((tool === 'calibrate' ? 'line' : tool) as MarkupType))
+    t.vertex = vertexOf(target)
+    const drawDrag = isDrawTool && ((tool === 'area' && clickPts.current.length === 0) || DRAG_TOOLS.includes((tool === 'calibrate' ? 'line' : tool) as MarkupType))
     t.kind = drawDrag ? 'draw' : isDrawTool ? 'tap'
       : tool === 'select' && !t.handle && !t.hitId && boxSelect ? 'marquee' : 'other'
     // Markup drags, handles, drawing: the layer owns the finger. Everything else pans.
     consumedRef.current = isDrawTool ? drawDrag : tool === 'select' && (t.handle || !!t.hitId || boxSelect)
     window.clearTimeout(t.timer)
-    if ((onContextMenu || tool === 'device') && !t.handle) {
+    if ((onContextMenu || tool === 'device') && (!t.handle || t.vertex !== undefined)) {
       t.timer = window.setTimeout(() => {
         if (a.phase !== 'pending') return
         // Device tool, empty space: hold = place, then drag to turn it (the arbiter keeps following the finger)
@@ -678,7 +787,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const stk = stacks.byId.get(hitId)
           onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
         }
-        onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt })
+        onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt, vertex: t.vertex })
       }, tool === 'device' ? touchHoldMs(holdPref, general.longPressMs) : general.longPressMs)
     }
     if (!t.unlisten) {
@@ -734,6 +843,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const prevTap = t.lastTap
     t.lastTap = { x: p.x, y: p.y, t: now }
     if (t.kind === 'draw') {
+      if (tool === 'area') { startAreaPath(snapAt(p, null, {}, false)?.point ?? p); return } // a tap starts the outline
       if (tool === 'text') {
         const b = boxFromDrag(p, p)
         finish({ ...newMarkup('text', { ...b, width: 180, height: 40 }) })
@@ -932,11 +1042,37 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     }
   }
 
+  /** Linked cable ends with the device they meet: the ring is drawn around the symbol and the line stops at its edge. */
+  const endRingsOf = (m: Markup): EndRing[] => {
+    const g = m.geometry
+    if (!('points' in g)) return []
+    const out: EndRing[] = []
+    for (const end of linkedEnds(m, byId)) {
+      const d = byId.get((g as PathGeometry)[end]!)
+      const c = deviceCentreOf(d)
+      if (d && c && 'width' in d.geometry) out.push({ end, c, r: deviceRadius(d.geometry) })
+    }
+    return out
+  }
+
   const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id) && !isSheetArea(m)
 
   // Areas draw first (below everything) so they never cover devices
   const drawable = markups.filter(hasDrawableGeometry)
   const ordered = [...drawable.filter(m => m.type === 'area'), ...drawable.filter(m => m.type !== 'area')]
+
+  // Cursor ghost label: the tag the next placed device will get (project tag format, fill-gaps, per-set / per-type prefix)
+  const ghostTag = (() => {
+    if (!devGhost || !newBase.symbolSetId) return ''
+    const prefixOf = (setId: string | null | undefined, typeId: string | null | undefined) =>
+      tagPrefixFor(setId ? symbolSets.get(setId) : undefined, typeId ? catalog?.types.get(typeId) : undefined)
+    const prefix = prefixOf(newBase.symbolSetId, newBase.deviceTypeId)
+    if (!prefix) return ''
+    const st = activeSettings()
+    // Devices placed but not yet numbered by the server still take a number, in order
+    const pending = markups.filter(m => m.type === 'device' && !m.tag && prefixOf(m.symbol_set_id, m.device_type_id) === prefix).length
+    return previewTag(prefix, usedTags ?? markups.map(m => m.tag), { format: st.tag_format, fillGaps: st.tag_fill_gaps, orgPadding: tagPad, pending })
+  })()
 
   const multiPointActive = touchUi && !!draft && CLICK_PATHS.includes(draft.type) && !readOnly
   const btn: React.CSSProperties = { minHeight: 44, padding: '0 20px', borderRadius: 22, border: '1px solid var(--border, #888)', background: 'var(--surface, #fff)', color: 'inherit', font: 'inherit', fontWeight: 600, boxShadow: '0 4px 16px rgb(0 0 0 / 0.3)' }
@@ -965,6 +1101,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           }} />
         )}
         {ordered.map(m => {
+          if (m.id === contId) return null // the run being continued is redrawn as the draft
           const shown = pointOverride?.id === m.id && 'points' in m.geometry
             ? { ...m, geometry: { ...m.geometry, points: pointOverride.points } }
             : fovOverride?.id === m.id && 'width' in m.geometry
@@ -978,6 +1115,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           return (
             <MarkupShape key={m.id} markup={drawn}
               dangling={isCable ? danglingEnds(m, byId) : undefined}
+              endRings={isCable ? endRingsOf(m) : undefined}
               cableLabel={len ? `${formatFeetInches(len.runFt)}${len.count > 1 ? ` x${len.count}` : ''}` : undefined}
               ghost={!!stk && stackTop(stk).id !== m.id}
               stack={stk && stackTop(stk).id === m.id ? { count: stk.members.length, label: tagRange(stk.members.map(x => x.tag ?? '')), statuses: stk.members.map(x => x.status ?? '') } : undefined} zoom={zoom} scale={scale} countNumber={countNumbers.get(m.id)}
@@ -1026,7 +1164,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const gm = newMarkup('device', ghostGeo ?? { x: devGhost.x - 12 * (props.deviceScale ?? 1), y: devGhost.y - 12 * (props.deviceScale ?? 1), width: 24 * (props.deviceScale ?? 1), height: 24 * (props.deviceScale ?? 1), rotation: 0, ...(ghostFov ? { fov: ghostFov } : {}) })
           return (
             <Group opacity={0.5} listening={false}>
-              <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost' }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}
+              <MarkupShape markup={{ ...gm, id: 'device-cursor-ghost', tag: ghostTag }} zoom={zoom} scale={scale} listening={false} symbolSet={set} showCones={false}
                 iconSrc={deviceIcon(gm, set, catalog)} typeMount={newBase.deviceTypeId ? catalog?.types.get(newBase.deviceTypeId)?.mount : undefined} />
             </Group>
           )
@@ -1125,7 +1263,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     {multiPointActive && createPortal(
       <div data-no-pan style={{ position: 'fixed', left: 0, right: 0, bottom: 24, zIndex: 'var(--z-popover)' as unknown as number, display: 'flex', gap: 12, justifyContent: 'center', pointerEvents: 'none', touchAction: 'manipulation' }}>
         <button type="button" style={{ ...btn, pointerEvents: 'auto' }} onClick={() => { cancelMarquee(); finish(null) }}>Cancel</button>
-        <button type="button" style={{ ...btn, pointerEvents: 'auto', background: REDLINE, color: '#fff', borderColor: REDLINE }} onClick={finishClickPath}>Finish</button>
+        <button type="button" style={{ ...btn, pointerEvents: 'auto', background: REDLINE, color: '#fff', borderColor: REDLINE }} onClick={() => finishClickPath()}>Finish</button>
       </div>, document.body)}
     </>
   )

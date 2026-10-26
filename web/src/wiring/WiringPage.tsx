@@ -84,7 +84,7 @@ export function WiringPage({ user }: { user: User }) {
 
   return (
     <CatalogContext.Provider value={catalog}>
-      <ProjectBody width="wide">
+      <ProjectBody width="full">
           <div className="row wrap">
             <h2>Wiring riser</h2>
             <span className="spacer" />

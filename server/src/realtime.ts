@@ -12,6 +12,8 @@ export interface Peer {
   name: string
   /** Avatar version (changes whenever the picture does); null = no picture. */
   avatar: number | null
+  /** Chosen initials background colour (#rrggbb), or null. */
+  avatarColor?: string | null
   color: string
   page: number | null
   cursor: { x: number; y: number } | null
@@ -61,9 +63,9 @@ export class Realtime {
 
   close() { clearInterval(this.timer) }
 
-  add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null; companyId?: string | null }): Conn {
+  add(socket: WebSocket, info: { clientId: string; userId: string; name: string; avatar?: number | null; avatarColor?: string | null; companyId?: string | null }): Conn {
     const c: Conn = {
-      socket, ...info, avatar: info.avatar ?? null, companyId: info.companyId ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
+      socket, ...info, avatar: info.avatar ?? null, avatarColor: info.avatarColor ?? null, companyId: info.companyId ?? null, color: colorFor(info.userId), page: null, cursor: null, selection: [], viewport: null, marquee: null,
       documentId: null, access: null, alive: true, windowStart: 0, windowCount: 0, joinWindowStart: 0, joinCount: 0,
     }
     this.conns.add(c)
@@ -96,6 +98,9 @@ export class Realtime {
     for (const c of [...this.conns]) if (c.userId === userId) { try { c.socket.close(4401, 'Signed out') } catch { /* going away */ } this.remove(c) }
   }
 
+  /** A user picked a new initials colour: their open sockets report it from the next presence update. */
+  setAvatarColor(userId: string, color: string | null) { for (const c of this.conns) if (c.userId === userId) c.avatarColor = color }
+
   /** The socket now works in another company (the user switched). */
   setCompany(c: Conn, companyId: string | null) { c.companyId = companyId }
 
@@ -120,7 +125,7 @@ export class Realtime {
   }
 
   private static peerOf(c: Conn): Peer {
-    return { clientId: c.clientId, userId: c.userId, name: c.name, avatar: c.avatar, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection, viewport: c.viewport, marquee: c.marquee }
+    return { clientId: c.clientId, userId: c.userId, name: c.name, avatar: c.avatar, avatarColor: c.avatarColor ?? null, color: c.color, page: c.page, cursor: c.cursor, selection: c.selection, viewport: c.viewport, marquee: c.marquee }
   }
 
   private toRoom(documentId: string, msg: unknown, except?: string | null, exceptConn?: Conn) {

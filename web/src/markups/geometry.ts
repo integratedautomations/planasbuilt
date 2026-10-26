@@ -94,3 +94,13 @@ export function hasDrawableGeometry(m: { geometry?: unknown }): boolean {
   if ('points' in g) return Array.isArray(g.points) && g.points.length % 2 === 0 && g.points.every(fin)
   return fin(g.width) && fin(g.height)
 }
+
+/**
+ * Points of a click-drawn path (polyline, polygon, cable, area...) when it is finished. While drawing, the last point follows
+ * the mouse; `rubber` (default true) drops it so Enter finishes at the last clicked point. Repeats (a double-click's second
+ * click) are removed too.
+ */
+export function finalizeClickPoints(pts: Pt[], rubber = true): Pt[] {
+  const kept = rubber && pts.length > 1 ? pts.slice(0, -1) : pts
+  return kept.filter((p, i, a) => i === 0 || Math.hypot(p.x - a[i - 1].x, p.y - a[i - 1].y) > 0.5)
+}

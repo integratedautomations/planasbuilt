@@ -4,7 +4,7 @@ import type { MenuItem } from '../markups/ContextMenu'
 import { PDFDocumentProxy } from '../pdf'
 import { clearTextSelection, clickSelect, guardRangeMouseDown, keySelect } from '../ui/listSelection'
 
-const THUMB_WIDTH = 132
+const THUMB_WIDTH = 200
 
 /** What the Pages panel asks the viewer to do. `pages` are 1-based and sorted. */
 export type PageAction =

@@ -31,6 +31,9 @@ export function CatalogPanel({ user }: { user: User }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [typeDraft, setTypeDraft] = useState<TypeDraft | null>(null)
   const [sel, setSel] = useState<Sel>(null)
+  /** Phone: the details open as a full-screen sheet once the person taps an entry. */
+  const [sheet, setSheet] = useState(false)
+  const pick = (s: Sel) => { setSel(s); setSheet(true) }
   const [dialog, setDialog] = useState<'excel' | 'btx' | 'library' | null>(null)
   /** Which editor the icon picker fills in. */
   const [picking, setPicking] = useState<'set' | null>(null)
@@ -116,21 +119,22 @@ export function CatalogPanel({ user }: { user: User }) {
           <nav className="catalog-nav" aria-label="Sets and device types">
             {sets.map(s => (
               <div key={s.id} className="catalog-nav">
-                <button className={sel?.kind === 'set' && sel.setId === s.id ? 'on' : ''} onClick={() => setSel({ kind: 'set', setId: s.id })}>
+                <button className={sel?.kind === 'set' && sel.setId === s.id ? 'on' : ''} onClick={() => pick({ kind: 'set', setId: s.id })}>
                   <span className="set-icon" style={{ background: s.color }}>{s.icon && <img src={s.icon} alt="" />}</span>{s.name}
                 </button>
                 {(catalog.typesBySet.get(s.id) ?? []).map(t => (
-                  <button key={t.id} className={'sub' + (sel?.kind === 'type' && sel.typeId === t.id ? ' on' : '')} onClick={() => setSel({ kind: 'type', setId: s.id, typeId: t.id })}>
+                  <button key={t.id} className={'sub' + (sel?.kind === 'type' && sel.typeId === t.id ? ' on' : '')} onClick={() => pick({ kind: 'type', setId: s.id, typeId: t.id })}>
                     <MountBadge mount={t.mount ?? 'ceiling'} color={s.color} src={t.icon || s.icon || undefined} size={22} />{t.name}
                   </button>
                 ))}
               </div>
             ))}
-            <button className={sel?.kind === 'accessories' ? 'on' : ''} onClick={() => setSel({ kind: 'accessories' })}>Standalone accessories</button>
-            <button className={sel?.kind === 'cables' ? 'on' : ''} onClick={() => setSel({ kind: 'cables' })}>Cable types</button>
+            <button className={sel?.kind === 'accessories' ? 'on' : ''} onClick={() => pick({ kind: 'accessories' })}>Standalone accessories</button>
+            <button className={sel?.kind === 'cables' ? 'on' : ''} onClick={() => pick({ kind: 'cables' })}>Cable types</button>
           </nav>
 
-          <section aria-label="Details" className="stack">
+          <section aria-label="Details" className={'stack catalog-detail' + (sheet ? ' sheet-open' : '')}>
+            <div className="catalog-detail-bar"><button type="button" onClick={() => setSheet(false)}>&larr; Back to catalog</button></div>
             {sel?.kind === 'set' && selSet && (
               <>
                 <div className="row wrap">
@@ -154,7 +158,7 @@ export function CatalogPanel({ user }: { user: User }) {
                       }}
                       onDragEnd={() => { setDragType(null); setOverType(null) }}>
                       {admin && <span className="type-handle" title="Drag to reorder" aria-hidden>{'\u2807'}</span>}
-                      <button className="list-item set-item" onClick={() => setSel({ kind: 'type', setId: selSet.id, typeId: t.id })}>
+                      <button className="list-item set-item" onClick={() => pick({ kind: 'type', setId: selSet.id, typeId: t.id })}>
                         <span className="set-icon" style={{ background: selSet.color }}>{(t.icon || selSet.icon) && <img src={t.icon || selSet.icon} alt="" />}</span>
                         <span className="grow">
                           <span className="list-title">{t.name}</span>

@@ -7,7 +7,7 @@ export type { Role, Scope }
 
 /** The company a user is working in (null: no company yet). */
 export interface ActiveCompany { id: string; name: string; role: CompanyRole | null; archived: boolean }
-export interface User { id: string; email: string; name: string; /** Admin of the active company, or a platform admin. */ is_admin: boolean; /** Can create and see every company. */ platform_admin?: boolean; company?: ActiveCompany | null; /** Admins always can; other people only when an admin granted it. */ can_create_projects?: boolean; avatar?: number | null }
+export interface User { id: string; email: string; name: string; /** Admin of the active company, or a platform admin. */ is_admin: boolean; /** Can create and see every company. */ platform_admin?: boolean; company?: ActiveCompany | null; /** Admins always can; other people only when an admin granted it. */ can_create_projects?: boolean; avatar?: number | null; /** Chosen background of the initials avatar (#rrggbb). */ avatar_color?: string | null }
 export interface Project { id: string; name: string; company_id?: string; /** False when an owner or admin sees a project they are not a member of. */ is_member?: boolean; created_at: string; role: Role; document_count?: number; status?: 'open' | 'completed'; completed_at?: string | null
   /** Sub only: the symbol sets and layers they work on. */
   scope?: Scope
@@ -24,7 +24,7 @@ export interface DocumentSummary {
   id: string; name: string; created_at: string; device_scale?: number
   revision_id: string; revision: number; page_count: number
 }
-export interface Member { id: string; email: string; name: string; role: Role; /** Only sent to people who manage members. */ scope?: Scope }
+export interface Member { id: string; email: string; name: string; avatar?: number | null; avatar_color?: string | null; role: Role; /** Only sent to people who manage members. */ scope?: Scope }
 
 const TOKEN_KEY = 'planmark.token'
 

@@ -12,6 +12,11 @@ a.crumb:hover { text-decoration: underline; }
 .subbar-catalog:hover { background: rgb(255 255 255 / 0.14); }
 @media (max-width: 640px) {
   .topbar:has(> .subbar) { flex-wrap: wrap; row-gap: 0; }
+  /* Row one (logo, company, complete, avatar) never wraps: the company switcher gives way, the avatar stays top right. */
+  .topbar:has(> .subbar) > .brand, .topbar:has(> .subbar) > .user-menu, .topbar:has(> .subbar) > .pp-complete { flex: 0 0 auto; }
+  .topbar:has(> .subbar) > .company-switcher { flex: 1 1 0; min-width: 0; max-width: 260px; }
+  .topbar:has(> .subbar) > .spacer { flex: 0 1 0; }
+  .topbar:has(> .subbar) > .user-menu { margin-left: auto; }
   .topbar > .subbar { display: flex; align-items: center; gap: 6px; order: 10; flex: 0 0 100%; min-width: 0; min-height: 44px; margin: 4px -10px -8px; padding: 0 10px; border-top: 1px solid rgb(255 255 255 / 0.14); }
   .crumb-back { display: inline-flex; width: 44px; height: 44px; margin-left: -8px; }
   .subbar .crumbs { flex: 1 1 0; min-width: 0; overflow: hidden; }
@@ -76,7 +81,12 @@ html:has(.content) { scrollbar-gutter: stable; }
 /* Project pages: the shell gives a full-width column; each page picks its own readable width. */
 .content.project-content { padding-top: 16px; }
 .project-body { margin: 0 auto; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.pb-default, .pb-wide, .pb-full { max-width: var(--page-w); }
+.pb-default, .pb-wide { max-width: var(--page-w); }
+/* Table-heavy pages (Devices, BOM, Wiring) expand to the available width; the tab bar follows. */
+.pb-full { max-width: none; }
+.project-tabs-bar:has(~ .content .pb-full) .tabs { max-width: none; }
+.page:has(.pb-full) .project-tabs-bar .tabs { max-width: none; }
+.content.project-content:has(.pb-full) { max-width: none; }
 
 /* Cards of unequal height flow into columns instead of leaving holes in a grid. */
 .masonry { columns: 340px; column-gap: 16px; }

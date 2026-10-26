@@ -400,13 +400,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const who = { id: u.id as string, isAdmin: !!u.is_admin }
     const id = await defaultCompanyId(who)
     const ctx = id ? await companyCtx(who, id) : null
-    const { token_version: _tv, password_hash: _ph, can_create_projects: _cc, avatar_key, avatar_version, ...rest } = u
+    const { token_version: _tv, password_hash: _ph, can_create_projects: _cc, avatar_key, avatar_version, avatar_color, ...rest } = u
     return {
       ...rest,
       is_admin: ctx ? ctx.isAdmin : who.isAdmin,
       platform_admin: who.isAdmin,
       can_create_projects: ctx ? ctx.canCreateProjects : who.isAdmin,
       ...(avatar_key !== undefined ? { avatar: avatar_key ? avatar_version : null } : {}),
+      ...(avatar_color !== undefined ? { avatar_color } : {}),
       company: ctx ? { id: ctx.id, name: ctx.name, role: ctx.role } : null,
     }
   }
@@ -519,7 +520,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       // Browsers cannot set headers on a WebSocket, so the token (login or file token) rides in the query string.
       const user = await authenticate(String(q.token ?? q.ft ?? ''), 'any').catch(() => null)
       if (!user) { socket.close(4401, 'Invalid token'); return null }
-      const [u] = await db.query("SELECT name, avatar_key, avatar_version FROM users WHERE id = $1 AND status = 'active'", [user.id])
+      const [u] = await db.query("SELECT name, avatar_key, avatar_version, avatar_color FROM users WHERE id = $1 AND status = 'active'", [user.id])
       if (!u) { socket.close(4401, 'Invalid token'); return null }
       if (closed) return null
       if (realtime.countFor(user.id) >= MAX_SOCKETS) { socket.close(4429, 'Too many connections'); return null }
@@ -528,7 +529,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       if (closed) return null
       conn = realtime.add(socket, {
         clientId: typeof q.clientId === 'string' && q.clientId ? q.clientId : randomUUID(),
-        userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null, companyId,
+        userId: user.id, name: u.name, avatar: u.avatar_key ? u.avatar_version : null, avatarColor: u.avatar_color ?? null, companyId,
       })
       return { user, conn }
     })().catch(() => { try { socket.close(4401, 'Invalid token') } catch { /* going away */ } return null })
@@ -643,14 +644,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     accountFailures.delete(key)
     if (user.status === 'deactivated')
       return reply.code(403).send({ error: 'This account has been deactivated. Ask an admin.' })
-    const { id, email: mail, name, is_admin, avatar, can_create_projects, platform_admin, company } = await sessionUser(user) as any
-    return { token: sign(user), user: { id, email: mail, name, is_admin, platform_admin, can_create_projects, avatar, company } }
+    const { id, email: mail, name, is_admin, avatar, avatar_color, can_create_projects, platform_admin, company } = await sessionUser(user) as any
+    return { token: sign(user), user: { id, email: mail, name, is_admin, platform_admin, can_create_projects, avatar, avatar_color, company } }
   })
 
   // is_admin = admin of the active company (or platform admin); platform_admin = may create companies and enter any of them.
   app.get('/api/me', { preHandler: auth }, async (req) => {
     const [user] = await db.query(
-      `SELECT id, email, name, is_admin, CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar FROM users WHERE id = $1`, [req.user.id])
+      `SELECT id, email, name, is_admin, CASE WHEN avatar_key IS NULL THEN NULL ELSE avatar_version END AS avatar, avatar_color FROM users WHERE id = $1`, [req.user.id])
     const r = await resolveCompany(req)
     const c = 'ctx' in r ? r.ctx : null
     return {
@@ -783,7 +784,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const access = await requireCap(req, reply, id, 'view')
     if (!access) return
     const rows = await db.query(
-      `SELECT u.id, u.email, u.name, u.status, m.role, m.scope FROM project_members m JOIN users u ON u.id = m.user_id
+      `SELECT u.id, u.email, u.name, u.status, u.avatar_color, CASE WHEN u.avatar_key IS NULL THEN NULL ELSE u.avatar_version END AS avatar, m.role, m.scope FROM project_members m JOIN users u ON u.id = m.user_id
        WHERE m.project_id = $1 ORDER BY u.name`, [id])
     // Scopes are only for the people who manage members.
     return accessCan(access, 'members.manage') ? rows : rows.map(({ scope: _s, email: _e, ...r }: any) => r)

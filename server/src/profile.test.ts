@@ -69,3 +69,17 @@ describe('completing projects', () => {
     expect((await patch(admin, 'archived')).statusCode).toBe(400)
   })
 })
+
+describe('initials avatar colour', () => {
+  it('stores a colour, returns it from /api/me and the members list, and clears it', async () => {
+    const put = (color: unknown) => app.inject({ method: 'PUT', url: '/api/me/avatar-color', headers: H(admin), payload: { color } })
+    expect((await app.inject({ url: '/api/me', headers: H(admin) })).json().avatar_color).toBeNull()
+    expect((await put('red')).statusCode).toBe(400)
+    expect((await put('#12ABef')).json().avatar_color).toBe('#12abef')
+    expect((await app.inject({ url: '/api/me', headers: H(admin) })).json().avatar_color).toBe('#12abef')
+    const members = (await app.inject({ url: `/api/projects/${projectId}/members`, headers: H(admin) })).json()
+    expect(members.find((m: any) => m.id === adminId).avatar_color).toBe('#12abef')
+    expect((await put(null)).json().avatar_color).toBeNull()
+    expect((await app.inject({ url: '/api/me', headers: H(admin) })).json().avatar_color).toBeNull()
+  })
+})

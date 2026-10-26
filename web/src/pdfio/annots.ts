@@ -1,5 +1,9 @@
 import { COVERAGE_OPACITY, hasCoverage, rangePx, sectorPoints } from '../markups/coverage'
 import { cloudArcs } from '../markups/geometry'
+import { trimCableEnds } from '../markups/cables'
+import type { EndRing } from '../markups/cables'
+import { pathPoints } from '../markups/snap'
+import { toLocal } from '../markups/vertices'
 import { iconRect, mountShape, outlineAt, resolveMount, wallFacing } from '../markups/mount'
 import type { Mount } from '../markups/mount'
 import { legendAlign, legendCell, legendLayout, legendSettings } from '../markups/legend'
@@ -76,6 +80,8 @@ export interface BuildCtx {
   areaPath?: string[]
   countNumber?: number
   showCones?: boolean
+  /** Cable only: ends linked to a device (ring round the symbol, line stops at its edge), in page space. */
+  cableRings?: EndRing[]
   /** Rows of a legend markup. */
   legendRows?: LegendRow[]
 }
@@ -462,12 +468,29 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         strokePath(false); spec.subtype = 'Ink'; spec.inkList = [vertsPdf()]
         break
       case 'cable': {
-        strokePath(false)
+        const rings = ctx.cableRings ?? []
+        if (rings.length) {
+          // A linked end stops at the symbol edge and gets a ring in the cable colour
+          const drawn = trimCableEnds(pathPoints(p), rings).flatMap(q => { const l = toLocal(p, q); return [l.x, l.y] })
+          styleStroke()
+          ops.poly(drawn, false).paint(false, true)
+          ops.stroke(stroke ?? RED).width(Math.max(1, sw * 0.7)).dash(undefined)
+          for (const r of rings) {
+            const c = toLocal(p, r.c)
+            ops.ellipse(c.x, c.y, r.r * 1.12, r.r * 1.12).paint(false, true)
+            ext.box(c.x - r.r * 1.12, c.y - r.r * 1.12, r.r * 2.24, r.r * 2.24)
+          }
+        } else strokePath(false)
         const rr = sw * 1.6
         ops.fill(stroke ?? RED).dash(undefined)
-        ops.ellipse(pts[0], pts[1], rr, rr).paint(true, false)
-        ops.ellipse(pts[pts.length - 2], pts[pts.length - 1], rr, rr).paint(true, false)
-        ext.box(pts[0] - rr, pts[1] - rr, rr * 2, rr * 2).box(pts[pts.length - 2] - rr, pts[pts.length - 1] - rr, rr * 2, rr * 2)
+        if (!rings.some(r => r.end === 'from')) {
+          ops.ellipse(pts[0], pts[1], rr, rr).paint(true, false)
+          ext.box(pts[0] - rr, pts[1] - rr, rr * 2, rr * 2)
+        }
+        if (!rings.some(r => r.end === 'to')) {
+          ops.ellipse(pts[pts.length - 2], pts[pts.length - 1], rr, rr).paint(true, false)
+          ext.box(pts[pts.length - 2] - rr, pts[pts.length - 1] - rr, rr * 2, rr * 2)
+        }
         if (ctx.ppf) {
           measureText = formatFeetInches(feetOf(pts, ctx.ppf))
           label(measureText, pathMidpoint(pts))
