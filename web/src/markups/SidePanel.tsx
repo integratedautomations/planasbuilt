@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Icon } from '../ui/Icon'
 import { clearTextSelection, clickSelect, guardRangeMouseDown, keySelect } from '../ui/listSelection'
@@ -12,7 +12,7 @@ import { Attribution, HistorySection } from './MarkupInfo'
 import { ScaleControl } from './ScaleControl'
 import type { PageScale } from './ScaleControl'
 import { circleStats, formatArea, formatFeetInches, summarize } from './measure'
-import { CABLE_FIELD, DEFAULT_CABLE_SETTINGS, cableCount, cableLength, cableTypeId, clearDangling, danglingEnds, summarizeCables } from './cables'
+import { CABLE_FIELD, DEFAULT_CABLE_SETTINGS, cableCount, cableLength, cableTypeId, clearDangling, danglingEnds, summarizeCables, viaOf } from './cables'
 import type { CableSettings } from './cables'
 import { useCatalogContext } from '../catalog/useCatalog'
 import type { MeasureTotal } from './measure'
@@ -662,13 +662,14 @@ function CableSection({ selected, readOnly, onUpdate, measure, cableDefaults, on
         <>
           <dl className="kv">
             <dt>From</dt><dd>{endText('from')}</dd>
+            {g && viaOf(g).map((v, k) => <Fragment key={v.i}><dt>Via {k + 1}</dt><dd>{byId.get(v.id)?.tag || 'Device'}</dd></Fragment>)}
             <dt>To</dt><dd>{endText('to')}</dd>
             {len && <><dt>Drawn</dt><dd>{formatFeetInches(len.drawnFt)}</dd>
               <dt>One run</dt><dd>{formatFeetInches(len.runFt)}</dd>
               <dt>Total{len.count > 1 ? ` x${len.count}` : ''}</dt><dd>{formatFeetInches(len.totalFt)}</dd></>}
           </dl>
           {!len && <p className="scale-warn small">Set a scale to see the length.</p>}
-          {len && <p className="muted small">Run = drawn x (1 + {len.slackPct}%) + {len.dropFt} ft x {len.ends} linked end{len.ends === 1 ? '' : 's'}.</p>}
+          {len && (() => { const n = len.ends + (defaults.viaDrop === false ? 0 : len.via); return <p className="muted small">Run = drawn x (1 + {len.slackPct}%) + {len.dropFt} ft x {n} linked device{n === 1 ? '' : 's'} ({len.ends} end{len.ends === 1 ? '' : 's'}{len.via ? `, ${len.via} passed through${defaults.viaDrop === false ? ', no drop' : ''}` : ''}).</p> })()}
           {!readOnly && onContinueRun && <button onClick={onContinueRun}>Continue run</button>}
           {!readOnly && dangling.length > 0 && (
             <button onClick={() => onUpdate(m => ('points' in m.geometry ? { ...m, geometry: clearDangling(m.geometry, m, byId) } : m), 'cable.clear')}>Clear open-end markers</button>

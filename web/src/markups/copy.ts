@@ -36,7 +36,7 @@ export function copyMarkup(m: Markup, opts: CopyOptions = {}): Markup {
   }
   // A copied cable is not locked to the original devices (they stay where they are)
   if (copy.type === 'cable' && 'points' in copy.geometry) {
-    delete copy.geometry.from; delete copy.geometry.to; delete copy.geometry.open
+    delete copy.geometry.from; delete copy.geometry.to; delete copy.geometry.open; delete copy.geometry.via
   }
   if (device) {
     copy.tag = ''

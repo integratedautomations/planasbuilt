@@ -33,9 +33,9 @@ import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } fr
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
 import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
 import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
-import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds } from './cables'
+import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, viaOf } from './cables'
 import type { CableEnd, CableSettings, EndRing } from './cables'
-import { canEditVertices, insertVertex, removeVertex } from './vertices'
+import { canEditVertices, insertVertex, nearestVertex, removeVertex } from './vertices'
 import { previewTag } from './tagPreview'
 import { tagPrefixFor } from '../catalog/catalog'
 import { activeSettings } from '../projectSettings'
@@ -113,6 +113,8 @@ interface Props {
   onMarquee?: (r: { x: number; y: number; w: number; h: number } | null) => void
   /** Right-click without dragging. */
   onContextMenu?: (info: ContextInfo) => void
+  /** A short message for the viewer's toast. */
+  onNotice?: (msg: string) => void
   /** Drawn rectangles/ellipses are forced to squares/circles (Square and Circle tools). */
   constrain?: boolean
   /** A right-drag box picked markups while a drawing tool was active: the viewer switches to the Select tool so they show as selected. */
@@ -141,7 +143,7 @@ const DRAG_TOOLS: MarkupType[] = ['line', 'arrow', 'measure-length', 'measure-ra
 const CAL_STYLE: MarkupStyle = { stroke: '#1971c2', fill: '', strokeWidth: 2, opacity: 1, fontSize: 18, dash: true }
 
 export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function MarkupCanvas(props, ref) {
-  const { width, height, zoom, markups, lockedIds, tool: toolProp, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, constrain, onBoxSelected, onDeviceOverlap, pdfLines, cableDefaults, onContinueDone, usedTags } = props
+  const { width, height, zoom, markups, lockedIds, tool: toolProp, readOnly, selectedIds, onSelect, commit, newBase, symbolSets, catalog, consumedRef, onCreated, scale, onCalibrate, calLine, areaPaths, boxSelect, multiSelect, showCones, legendRows, stacks, peers, onCursor, onMarquee, onContextMenu, onNotice, constrain, onBoxSelected, onDeviceOverlap, pdfLines, cableDefaults, onContinueDone, usedTags } = props
   // 'area-rect' is the old id of the drag-a-rectangle area tool: both are the one Area tool now
   const tool: Tool = toolProp === 'area-rect' ? 'area' : toolProp
   const stageRef = useRef<Konva.Stage>(null)
@@ -300,6 +302,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
   const finish = (m: Markup | null) => {
     placeRef.current = null
     boxAlignRef.current = null
+    setCloseHover(false)
+    if (stageRef.current) stageRef.current.container().style.cursor = ''
     setSnapMark(null)
     setPlaceView(null)
     setDraft(null)
@@ -326,9 +330,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       const extra = pts.slice(cont.seedLen)
       finish(null)
       if (extra.length) {
+        const before = (cont.orig.geometry as PathGeometry).via?.length ?? 0
         const geometry = relinkEnds(extendCable(cont.orig.geometry as PathGeometry, cont.end, extra), byId, cont.orig.page)
         commit([{ before: cont.orig, after: { ...cont.orig, geometry } }])
         onSelect([cont.orig.id])
+        if (viaOf(geometry).length > before) onNotice?.(`Run passes through ${viaOf(geometry).length} device${viaOf(geometry).length === 1 ? '' : 's'}`)
       }
       onContinueDone?.()
       return
@@ -336,7 +342,9 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const min = CLOSED.includes(draft.type) ? 3 : 2
     const geometry = pts.length >= min ? pathFromPoints(pts) : null
     // A cable end that sits on a device centre locks to that device
-    finish(geometry ? newMarkup(draft.type, draft.type === 'cable' ? relinkEnds(geometry, byId, newBase.page) : geometry) : null)
+    const linked = geometry && draft.type === 'cable' ? relinkEnds(geometry, byId, newBase.page) : geometry
+    finish(linked ? newMarkup(draft.type, linked) : null)
+    if (linked && viaOf(linked).length) onNotice?.(`Run passes through ${viaOf(linked).length} device${viaOf(linked).length === 1 ? '' : 's'}`)
   }
 
   /** Cable "Continue run": seed the draft with the run points, oriented so the chosen end is the one that grows. */
@@ -357,6 +365,8 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     setDraft(newMarkup('area', pathFromPoints(clickPts.current)))
   }
 
+  /** The pointer is over the first point of a click-drawn closed shape (click it to finish). */
+  const [closeHover, setCloseHover] = useState(false)
   const cancelMarquee = () => { marqueeStart.current = null; marqueeRect.current = null; setMarquee(null) }
 
   useImperativeHandle(ref, () => ({
@@ -396,6 +406,12 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     if (!node || node.name() !== 'point-handle') return undefined
     const v = Number(node.getAttr('vertexIndex'))
     return Number.isInteger(v) ? v : undefined
+  }
+
+  /** The control point of markup `id` under a page point (any tool, selected or not), for menus opened where no handle is drawn. */
+  const vertexAt = (id: string | null, p: Pt): number | undefined => {
+    const m = id ? byId.get(id) : undefined
+    return m && !lockedIds.has(m.id) ? nearestVertex(m, p, 10 / liveZoom()) : undefined
   }
 
   const markupIdOf = (node: Konva.Node | null): string | null => {
@@ -644,6 +660,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const p = hit?.point ?? raw
     if (clickPath) {
       const pts = clickPts.current
+      const f = pts[0]
+      const over = CLOSED.includes(draft.type) && pts.length >= 4 && Math.hypot(raw.x - f.x, raw.y - f.y) < 10 / liveZoom()
+      setCloseHover(h => (h === over ? h : over))
+      const stg = stageRef.current?.container()
+      if (stg) stg.style.cursor = over ? 'pointer' : ''
       const last = shift && pts.length > 1 ? snap45(pts[pts.length - 2], p) : p
       clickPts.current = [...pts.slice(0, -1), last]
       setDraft({ ...draft, geometry: pathFromPoints(clickPts.current) })
@@ -681,7 +702,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const stk = stacks.byId.get(hitId)
           onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
         }
-        onContextMenu?.({ clientX: ms.right.cx, clientY: ms.right.cy, hitId, point: ms.p, vertex: ms.right.vertex })
+        onContextMenu?.({ clientX: ms.right.cx, clientY: ms.right.cy, hitId, point: ms.p, vertex: ms.right.vertex ?? vertexAt(hitId, ms.p) })
         return
       }
       const ids = box ? markupsInBox(markups, box, lockedIds) : []
@@ -787,7 +808,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           const stk = stacks.byId.get(hitId)
           onSelect(stk ? stk.members.map(x => x.id).filter(i => !lockedIds.has(i)) : [hitId])
         }
-        onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt, vertex: t.vertex })
+        onContextMenu({ clientX: e.evt.clientX, clientY: e.evt.clientY, hitId, point: t.pt, vertex: t.vertex ?? vertexAt(hitId, t.pt) })
       }, tool === 'device' ? touchHoldMs(holdPref, general.longPressMs) : general.longPressMs)
     }
     if (!t.unlisten) {
@@ -1052,6 +1073,11 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
       const c = deviceCentreOf(d)
       if (d && c && 'width' in d.geometry) out.push({ end, c, r: deviceRadius(d.geometry) })
     }
+    for (const v of viaOf(g as PathGeometry)) {
+      const d = byId.get(v.id)
+      const c = deviceCentreOf(d)
+      if (d && c && 'width' in d.geometry) out.push({ end: 'via', c, r: deviceRadius(d.geometry) })
+    }
     return out
   }
 
@@ -1192,6 +1218,23 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
           )
         })()}
         {draft && <MarkupShape markup={draft} zoom={zoom} scale={scale} listening={false} />}
+        {draft && CLOSED.includes(draft.type) && clickPts.current.length >= 4 && (() => {
+          const f = clickPts.current[0]
+          const k = closeHover ? 1.5 : 1
+          return (
+            <Group x={f.x} y={f.y} scaleX={1 / zoom} scaleY={1 / zoom} listening={false}>
+              {closeHover && <Circle radius={20} fill="rgba(25,113,194,0.25)" />}
+              <Circle radius={11 * k} fill={closeHover ? '#1971c2' : 'rgba(25,113,194,0.35)'} stroke="#1971c2" strokeWidth={2.5} shadowColor="#1971c2" shadowBlur={closeHover ? 14 : 0} />
+              <Circle radius={3.5 * k} fill="#fff" />
+              {closeHover && (
+                <Label x={16} y={-30}>
+                  <Tag fill="#1971c2" cornerRadius={3} />
+                  <Text text="Click to finish" fill="#fff" fontSize={11} padding={4} />
+                </Label>
+              )}
+            </Group>
+          )
+        })()}
         {snapMark && <SnapMarker x={snapMark.x} y={snapMark.y} kind={snapMark.kind} zoom={zoom} />}
         {calLine && <MarkupShape zoom={zoom} listening={false}
           markup={{ id: 'calibration', document_id: '', page: 0, type: 'line', geometry: pathFromPoints(calLine), style: CAL_STYLE, text: '', layer_id: null }} />}

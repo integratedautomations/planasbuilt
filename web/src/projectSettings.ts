@@ -29,6 +29,8 @@ export interface ProjectRules {
   tag_fill_gaps: boolean
   report: { sections: Record<ReportSectionKey, boolean> }
   photo_quality: number
+  /** Cables: add the drop length at devices a run passes through (default on). */
+  cable_via_drop: boolean
 }
 export interface ProjectSettings extends ProjectRules {
   report: { sections: Record<ReportSectionKey, boolean>; has_logo: boolean }
@@ -47,7 +49,7 @@ const allOn = (): Record<ReportSectionKey, boolean> =>
 
 export const DEFAULT_SETTINGS: ProjectSettings = {
   statuses: DEFAULT_STATUS_LIST, required: {}, tag_prefixes: {}, tag_format: 'org', tag_fill_gaps: false,
-  report: { sections: allOn(), has_logo: false }, photo_quality: 0.8, locked: false,
+  report: { sections: allOn(), has_logo: false }, photo_quality: 0.8, cable_via_drop: true, locked: false,
 }
 
 const obj = (v: unknown): Record<string, any> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {})
@@ -73,6 +75,7 @@ export function normalizeSettings(raw: unknown): ProjectSettings {
     tag_fill_gaps: r.tag_fill_gaps === true,
     report: { sections, has_logo: obj(r.report).has_logo === true },
     photo_quality: Number.isFinite(q) && q >= 0.3 && q <= 0.95 ? q : 0.8,
+    cable_via_drop: r.cable_via_drop !== false,
     locked: r.locked === true,
   }
 }

@@ -180,9 +180,11 @@ function NamePrompt({ title, hint, initial, onSave, onCancel }: {
   title: string; hint: string; initial: string; onSave: (name: string) => void; onCancel: () => void
 }) {
   const [value, setValue] = useState(initial)
+  // The Enter that finished the drawing (or its key repeat) must not submit the prompt it just opened
+  const openedAt = useRef(Date.now())
   return (
     <div className="name-modal" onPointerDown={e => e.stopPropagation()}>
-      <form onSubmit={e => { e.preventDefault(); onSave(value) }} onKeyDown={e => { if (e.key === 'Escape') onCancel() }}>
+      <form onSubmit={e => { e.preventDefault(); if (Date.now() - openedAt.current < 350) return; onSave(value) }} onKeyDown={e => { if (e.key === 'Escape') onCancel() }}>
         <div className="panel-heading">{title}</div>
         <input autoFocus value={value} placeholder={hint} aria-label="Name" onChange={e => setValue(e.target.value)}
           onFocus={e => e.currentTarget.select()} />
@@ -1236,6 +1238,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
       if (isTypingTarget(e.target)) return
       const cmd = commandForEvent(e, hotkeys)
       if (!cmd) return
+      if (cmd === 'edit.finish' && e.repeat) { e.preventDefault(); return }
       if (cmd === 'view.panHold') { e.preventDefault(); if (!e.repeat) setSpaceHeld(true); return }
       if (runRef.current(cmd)) e.preventDefault()
     }
@@ -1381,7 +1384,7 @@ Its PDF, markups and scales are restored as a new revision. The present state is
           readOnly={readOnly} selectedIds={selectedIds} onSelect={setSelectedIds} commit={canvasCommit} deviceScale={deviceScale}
           peers={peersHere} onMarquee={onMarquee} onCursor={canHover ? onCursor : undefined}
           onContextMenu={info => setCtx({ x: info.clientX, y: info.clientY, hitId: info.hitId, point: info.point, vertex: info.vertex })}
-          onContinueDone={() => setTool('select')} usedTags={usedTags}
+          onNotice={setToast} onContinueDone={() => setTool('select')} usedTags={usedTags}
           onDeviceOverlap={readOnly ? undefined : onDeviceOverlap} constrain={!!shapeLock} onBoxSelected={() => { setTool('select'); setShapeLock(null) }}
           consumedRef={consumedRef} boxSelect={boxMode && activeTool === 'select'} multiSelect={multiSelect && !readOnly} showCones={showCones} legendRows={legendRowsById} stacks={stackIndex} scale={pageScale?.pointsPerFoot ?? null} pdfLines={snapLines} cableDefaults={cableDefaults} calLine={calLine}
           onCalibrate={(a, b) => { setCalLine([a, b]); setTool('select') }}
@@ -1495,8 +1498,9 @@ Its PDF, markups and scales are restored as a new revision. The present state is
     if (c.hitId) {
       const one = selected.length === 1 ? selected[0] : null
       const pointItems: MenuItem[] = []
-      if (one && one.id === c.hitId && !readOnly && canEditVertices(one) && c.vertex !== undefined) {
-        pointItems.push({ label: 'Delete point', disabled: !canDeleteVertex(one, c.vertex), onClick: () => { markupRef.current?.deleteVertex(one.id, c.vertex!) } })
+      const hitM = pageMarkups.find(m => m.id === c.hitId)
+      if (hitM && !readOnly && canEditVertices(hitM) && c.vertex !== undefined) {
+        pointItems.push({ label: 'Delete point', disabled: !canDeleteVertex(hitM, c.vertex), onClick: () => { markupRef.current?.deleteVertex(hitM.id, c.vertex!) } })
       }
       if (one && one.id === c.hitId && !readOnly && one.type === 'cable') {
         pointItems.push({ label: 'Continue run', hint: hint('cable.continue'), onClick: () => continueRun(c.point) })

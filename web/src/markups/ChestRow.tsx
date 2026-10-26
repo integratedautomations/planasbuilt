@@ -24,8 +24,13 @@ function ChipIcon({ e }: { e: ToolEntry }) {
 export function ChestRow({ options, chest, activeId, onChest, onPick, onMore }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const el = scroller.current?.querySelector<HTMLElement>('[aria-pressed="true"]')
-    el?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
+    // Scroll only the chip row: scrollIntoView would also slide every scrollable ancestor (the viewport / stage) sideways
+    const row = scroller.current
+    const el = row?.querySelector<HTMLElement>('[aria-pressed="true"]')
+    if (!row || !el) return
+    const left = el.offsetLeft - (row.clientWidth - el.offsetWidth) / 2
+    const max = Math.max(0, row.scrollWidth - row.clientWidth)
+    row.scrollTo?.({ left: Math.min(max, Math.max(0, left)) })
   }, [activeId, chest.id])
   return (
     <div className="chest-row-bar" data-no-pan onPointerDown={e => e.stopPropagation()} role="toolbar" aria-label="Tool chest">

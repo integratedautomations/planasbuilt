@@ -1,7 +1,8 @@
 // Wiring graph: devices are nodes, cables locked to two devices are edges. Hubs (panels, controllers, switches, NVRs, power
 // supplies, racks...) become the columns of the riser; every other device hangs under the hub it is cabled to, directly (a
 // home run) or through a daisy chain (fire alarm loops, NAC circuits, door readers on a controller). Pure, no React.
-import { cableCount, cableLength, cableTypeId, danglingEnds, linkedEnds } from '../markups/cables'
+import { cableCount, cableLength, cableTypeId, danglingEnds, linkedEnds, viaOf } from '../markups/cables'
+import { polylineLength } from '../markups/measure'
 import type { CableSettings } from '../markups/cables'
 import { naturalCompare } from '../markups/stacks'
 import { resolveMount } from '../markups/mount'
@@ -126,10 +127,16 @@ export function buildWiring(markups: Iterable<Markup>, ctx: WiringContext): Wiri
     if (live.length === 1) { problem('one-end'); continue }
     if (g.from === g.to) { problem('same-device'); continue }
     const len = cableLength(c, ctx.scaleFor(c.document_id, c.page), ctx.defaults, byId)
-    edges.push({
-      a: g.from!, b: g.to!,
-      link: { cableId: c.id, typeName, color: ctx.cableTypes.get(cableTypeId(c))?.color ?? c.style.stroke ?? '#868e96', lengthFt: len ? len.totalFt : null, count: cableCount(c), parallel: 0 },
-    })
+    const mk = (lengthFt: number | null): WLink => ({ cableId: c.id, typeName, color: ctx.cableTypes.get(cableTypeId(c))?.color ?? c.style.stroke ?? '#868e96', lengthFt, count: cableCount(c), parallel: 0 })
+    // A run through devices is a chain From -> via... -> To: one edge per hop, the cable's length shared by hop length
+    const chain = [{ id: g.from!, at: 0 }, ...viaOf(g).filter(v => nodes.has(v.id)).map(v => ({ id: v.id, at: v.i })), { id: g.to!, at: g.points.length / 2 - 1 }]
+    if (chain.length === 2) { edges.push({ a: g.from!, b: g.to!, link: mk(len ? len.totalFt : null) }); continue }
+    const total = polylineLength(g.points) || 1
+    for (let k = 0; k + 1 < chain.length; k++) {
+      if (chain[k].id === chain[k + 1].id) continue
+      const part = polylineLength(g.points.slice(chain[k].at * 2, chain[k + 1].at * 2 + 2))
+      edges.push({ a: chain[k].id, b: chain[k + 1].id, link: mk(len ? len.totalFt * (part / total) : null) })
+    }
   }
 
   // ---- adjacency (parallel cables between the same pair collapse onto the first)

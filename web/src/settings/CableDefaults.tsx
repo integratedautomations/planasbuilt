@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { Project } from '../api'
 import { cableSettings } from '../markups/cables'
+import { applyProjectSettings, normalizeSettings } from '../projectSettings'
 
 /** Project cable defaults: slack added to every drawn run and the drop added at each end locked to a device. Cables can override both. */
 export function CableDefaults({ project, canEdit, onSaved }: { project: Project; canEdit: boolean; onSaved: (p: Project) => void }) {
+  const viaDrop = normalizeSettings(project.settings).cable_via_drop
   const cur = cableSettings(project)
   const [slack, setSlack] = useState(String(cur.slackPct))
   const [drop, setDrop] = useState(String(cur.dropFt))
@@ -23,6 +25,15 @@ export function CableDefaults({ project, canEdit, onSaved }: { project: Project;
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
   }
 
+  async function setViaDrop(on: boolean) {
+    setBusy(true); setError('')
+    try {
+      const next = await api<unknown>(`/projects/${project.id}/settings`, { method: 'PUT', body: JSON.stringify({ cable_via_drop: on }) })
+      applyProjectSettings(next)
+      onSaved({ ...project, settings: normalizeSettings(next) } as Project)
+    } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
+  }
+
   return (
     <div className="pp-cable stack">
       <p className="muted small">A cable run's length = drawn length x (1 + slack %) + drop x ends locked to a device, times its run count. Each cable can override both in Properties.</p>
@@ -31,6 +42,8 @@ export function CableDefaults({ project, canEdit, onSaved }: { project: Project;
         <label className="field inline">Drop per linked end, ft<input type="number" min={0} max={10000} step="any" value={drop} onChange={e => setDrop(e.target.value)} /></label>
         {canEdit && <button className="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save cable defaults'}</button>}
       </fieldset>
+      <label className="check"><input type="checkbox" checked={viaDrop} disabled={!canEdit || busy} onChange={e => void setViaDrop(e.target.checked)} /> Add drop length at devices a cable passes through</label>
+      <p className="muted small">A run clicked through devices counts each one like an end: one drop per device it passes through (on top of the two ends).</p>
       {error && <div className="error">{error}</div>}
     </div>
   )

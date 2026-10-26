@@ -20,7 +20,7 @@ const preview = (s: string) => s.replace(/\{(\w+)\}/g, (m, k: keyof typeof SAMPL
 /** Rules a new project starts with (a copy; existing projects are not touched). */
 const rulesOf = (raw: unknown): ProjectRules => {
   const s = normalizeSettings(raw)
-  return { statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps, report: { sections: s.report.sections }, photo_quality: s.photo_quality }
+  return { statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps, report: { sections: s.report.sections }, photo_quality: s.photo_quality, cable_via_drop: s.cable_via_drop }
 }
 
 /** Company profile and branding, plus what new projects and invitations start with. One form, one Save bar. */

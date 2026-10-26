@@ -125,3 +125,15 @@ describe('tag format and numbering', () => {
     expect(tagPrefixFromTag('CAM7', 'dash2')).toBe('CAM7')
   })
 })
+
+describe('cable_via_drop', () => {
+  it('defaults on, survives malformed values, and validates updates', () => {
+    expect(S.cable_via_drop).toBe(true)
+    expect(readProjectSettings({ cable_via_drop: 'no' }).cable_via_drop).toBe(true)
+    expect(readProjectSettings({ cable_via_drop: false }).cable_via_drop).toBe(false)
+    const off = merge({ cable_via_drop: false })
+    expect('value' in off && off.value.cable_via_drop).toBe(false)
+    expect('error' in merge({ cable_via_drop: 'x' })).toBe(true)
+    expect(defaultsPart({ ...S, cable_via_drop: false }).cable_via_drop).toBe(false)
+  })
+})

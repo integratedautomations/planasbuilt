@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cableCount, cableColor, cableLength, cableTotals, danglingEnds, DEFAULT_CABLE_SETTINGS, endPoint, linkedEnds, nearestDevice, relinkEnds, setEnd, syncCables, withLink } from './cables'
+import { cableCount, cableColor, cableLength, cableTotals, danglingEnds, DEFAULT_CABLE_SETTINGS, endPoint, linkedEnds, nearestDevice, relinkEnds, setEnd, syncCables, viaAfterInsert, viaAfterRemove, viaOf, withVia, chainDevices, withLink } from './cables'
 import { pathFromPoints } from './geometry'
 import { pathPoints } from './snap'
 import type { Markup, PathGeometry } from './types'
@@ -180,5 +180,68 @@ describe('length math', () => {
     expect(cableColor({ ...C, fields: { cable_type: 't6' } }, types)).toBe('#1971c2')
     expect(cableColor(C, types)).toBe('#e03131')
     expect(endPoint(C.geometry as PathGeometry, 'to')).toEqual({ x: 300, y: 100 })
+  })
+})
+
+describe('via links (daisy chain)', () => {
+  const A = dev('A', 0, 0), B = dev('B', 100, 0), C = dev('C', 200, 0), D = dev('D', 300, 0)
+  const P = (x: number, y: number) => ({ x, y })
+  const base = () => map(A, B, C, D)
+
+  it('records intermediate devices with their vertex index when drawing', () => {
+    const g = relinkEnds(pathFromPoints([P(0, 0), P(50, 30), P(100, 0), P(200, 0), P(300, 0)]), base(), 1)
+    expect([g.from, g.to]).toEqual(['A', 'D'])
+    expect(g.via).toEqual([{ id: 'B', i: 2 }, { id: 'C', i: 3 }])
+  })
+  it('leaves a run with no intermediate device without via', () => {
+    const g = relinkEnds(pathFromPoints([P(0, 0), P(50, 50), P(300, 0)]), base(), 1)
+    expect(g.via).toBeUndefined()
+  })
+  it('ignores devices on other pages', () => {
+    expect(withVia(pathFromPoints([P(0, 0), P(100, 0), P(300, 0)]), base(), 2).via).toBeUndefined()
+  })
+  it('re-indexes on vertex insert and remove', () => {
+    const g = { ...pathFromPoints([P(0, 0), P(100, 0), P(200, 0), P(300, 0)]), via: [{ id: 'B', i: 1 }, { id: 'C', i: 2 }] }
+    expect(viaAfterInsert(g, 2).via).toEqual([{ id: 'B', i: 1 }, { id: 'C', i: 3 }])
+    expect(viaAfterRemove(g, 1).via).toEqual([{ id: 'C', i: 1 }])
+    expect(viaAfterRemove(g, 2).via).toEqual([{ id: 'B', i: 1 }])
+  })
+  it('moves the vertex with its device and restores both on undo', () => {
+    const g = relinkEnds(pathFromPoints([P(0, 0), P(100, 0), P(300, 0)]), base(), 1)
+    const cable = cableOf('c1', [{ x: 0, y: 0 }], {}, { geometry: g })
+    const all = map(A, B, C, D, cable)
+    const change = syncCables([{ before: B, after: move(B, 0, 40) }], all)
+    expect(change).toHaveLength(2)
+    const after = change[1].after as Markup
+    near(abs(after)[1], 100, 40)
+    expect((after.geometry as PathGeometry).via).toEqual([{ id: 'B', i: 1 }])
+    const undone = applyTo(new Map(all), change, 'back')
+    near(abs(undone.get('c1')!)[1], 100, 0)
+  })
+  it('drops the via link when its device is deleted, keeping the vertex', () => {
+    const g = relinkEnds(pathFromPoints([P(0, 0), P(100, 0), P(300, 0)]), base(), 1)
+    const cable = cableOf('c1', [{ x: 0, y: 0 }], {}, { geometry: g })
+    const change = syncCables([{ before: B, after: null }], map(A, B, C, D, cable))
+    const after = change.find(c => c.after?.id === 'c1')!.after as Markup
+    expect((after.geometry as PathGeometry).via).toBeUndefined()
+    expect(abs(after)).toHaveLength(3)
+  })
+  it('lists the chain in order', () => {
+    const g = relinkEnds(pathFromPoints([P(0, 0), P(100, 0), P(300, 0)]), base(), 1)
+    expect(chainDevices(g, base()).map(x => `${x.role}:${x.id}`)).toEqual(['from:A', 'via:B', 'to:D'])
+    expect(viaOf(g)).toHaveLength(1)
+  })
+})
+
+describe('via drop in the length formula', () => {
+  const A = dev('A', 0, 0), B = dev('B', 100, 0), D = dev('D', 300, 0)
+  const g = relinkEnds(pathFromPoints([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 300, y: 0 }]), map(A, B, D), 1)
+  const c = cableOf('c', [{ x: 0, y: 0 }], {}, { geometry: g })
+  const all = map(A, B, D, c)
+  it('adds one drop per passed-through device by default and drops it when the setting is off', () => {
+    const on = cableLength(c, 10, { slackPct: 0, dropFt: 2 }, all)!
+    expect(on.via).toBe(1)
+    expect(on.runFt).toBeCloseTo(30 + 2 * 3, 6)
+    expect(cableLength(c, 10, { slackPct: 0, dropFt: 2, viaDrop: false }, all)!.runFt).toBeCloseTo(30 + 2 * 2, 6)
   })
 })

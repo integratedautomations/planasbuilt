@@ -30,6 +30,8 @@ export interface ProjectSettings {
   report: { sections: Record<ReportSection, boolean>; logo_key: string; logo_type: string }
   /** JPEG quality (0.3 to 0.95) the phone uses when shrinking photos. */
   photo_quality: number
+  /** Cables: add the drop length at devices a run passes through, not only at its two ends. */
+  cable_via_drop: boolean
   /** Only project admins may change anything. */
   locked: boolean
 }
@@ -42,6 +44,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   tag_fill_gaps: false,
   report: { sections: { title: true, sheets: true, devices: true, photos: true, legend: true, bom: true, wiring: true }, logo_key: '', logo_type: '' },
   photo_quality: 0.8,
+  cable_via_drop: true,
   locked: false,
 }
 
@@ -77,6 +80,7 @@ export function readProjectSettings(raw: unknown): ProjectSettings {
     tag_fill_gaps: r.tag_fill_gaps === true,
     report: { sections, logo_key: typeof rep.logo_key === 'string' ? rep.logo_key : '', logo_type: typeof rep.logo_type === 'string' ? rep.logo_type : '' },
     photo_quality: Number.isFinite(q) && q >= 0.3 && q <= 0.95 ? q : D.photo_quality,
+    cable_via_drop: r.cable_via_drop !== false,
     locked: r.locked === true,
   }
 }
@@ -158,6 +162,10 @@ export function mergeProjectSettings(current: ProjectSettings, patch: unknown, c
     if (!(Number.isFinite(q) && q >= 0.3 && q <= 0.95)) return { error: 'Photo quality must be between 0.3 and 0.95' }
     next.photo_quality = Math.round(q * 100) / 100
   }
+  if ('cable_via_drop' in p) {
+    if (typeof p.cable_via_drop !== 'boolean') return { error: 'cable_via_drop must be true or false' }
+    next.cable_via_drop = p.cable_via_drop
+  }
   if ('locked' in p) {
     if (typeof p.locked !== 'boolean') return { error: 'locked must be true or false' }
     next.locked = p.locked
@@ -169,7 +177,7 @@ export function mergeProjectSettings(current: ProjectSettings, patch: unknown, c
 export function defaultsPart(s: ProjectSettings) {
   return {
     statuses: s.statuses, required: s.required, tag_prefixes: s.tag_prefixes, tag_format: s.tag_format, tag_fill_gaps: s.tag_fill_gaps,
-    report: { sections: s.report.sections }, photo_quality: s.photo_quality,
+    report: { sections: s.report.sections }, photo_quality: s.photo_quality, cable_via_drop: s.cable_via_drop,
   }
 }
 

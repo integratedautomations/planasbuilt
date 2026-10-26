@@ -24,7 +24,7 @@ interface Props {
   /** Which cards to show (default: all). Project Settings shows them one section at a time. */
   parts?: RulesPart[]
 }
-export type RulesPart = 'statuses' | 'required' | 'tags' | 'report' | 'photos'
+export type RulesPart = 'statuses' | 'required' | 'tags' | 'report' | 'photos' | 'cables'
 
 /** Status workflow, required fields, tags, report sections and photo quality. Shared by the project and the organization defaults. */
 export function ProjectRulesForm({ value, onChange, sets, inUse, disabled, parts }: Props) {
@@ -115,6 +115,14 @@ export function ProjectRulesForm({ value, onChange, sets, inUse, disabled, parts
             </tbody>
           </table>
         </div>
+      </section>
+      )}
+
+      {show('cables') && !parts && (
+      <section className="card settings-card">
+        <h3><Icon name="cable" size={18} /> Cables</h3>
+        <label className="check"><input type="checkbox" checked={v.cable_via_drop} onChange={e => set({ cable_via_drop: e.target.checked })} /> Add drop length at devices a cable passes through</label>
+        <p className="muted small">When a cable run is clicked through devices, each one counts like an end for the drop length (slack and drop are set per project under Cable defaults).</p>
       </section>
       )}
 

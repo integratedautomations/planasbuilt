@@ -1,6 +1,7 @@
 // Editing the control points of a path markup: insert a point on a segment (Shift+click) and delete one (right-click or
 // long-press on a point). Pure helpers working on markup geometry (local points + x/y/rotation).
 import type { Pt } from './geometry'
+import { viaAfterInsert, viaAfterRemove } from './cables'
 import type { Markup, MarkupType, PathGeometry } from './types'
 
 /** Path types whose points can be added and removed (two-point lines keep exactly two). */
@@ -58,7 +59,7 @@ export function insertVertex(m: Markup, pagePt: Pt, tol: number): { geometry: Pa
   if (near(hit.index) || near(j)) return null
   const at = hit.index + 1
   const points = [...g.points.slice(0, at * 2), hit.point.x, hit.point.y, ...g.points.slice(at * 2)]
-  return { geometry: { ...g, points }, index: at }
+  return { geometry: m.type === 'cable' ? viaAfterInsert({ ...g, points }, at) : { ...g, points }, index: at }
 }
 
 /** Can vertex `index` be removed without dropping below the minimum for the shape? */
@@ -73,5 +74,19 @@ export function removeVertex(m: Markup, index: number): PathGeometry | null {
   if (!canDeleteVertex(m, index)) return null
   const g = m.geometry as PathGeometry
   const points = g.points.filter((_, i) => Math.floor(i / 2) !== index)
-  return { ...g, points }
+  const next = { ...g, points }
+  return m.type === 'cable' ? viaAfterRemove(next, index) : next
+}
+
+/** Index of the control point of an editable path nearest to a page-space point, within `tol` (page units), or undefined. */
+export function nearestVertex(m: Markup, pagePt: Pt, tol: number): number | undefined {
+  if (!canEditVertices(m)) return undefined
+  const g = m.geometry as PathGeometry
+  const p = toLocal(g, pagePt)
+  let best: number | undefined, bd = tol
+  for (let i = 0; i + 1 < g.points.length; i += 2) {
+    const d = Math.hypot(g.points[i] - p.x, g.points[i + 1] - p.y)
+    if (d <= bd) { bd = d; best = i / 2 }
+  }
+  return best
 }

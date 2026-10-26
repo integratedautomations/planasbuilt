@@ -26,7 +26,10 @@ export interface PathGeometry {
   from?: string; to?: string
   /** Cables only: ends whose device was deleted or left the page. They show a red cross until relinked or cleared. */
   open?: ('from' | 'to')[]
+  /** Cables only: devices the run passes through (daisy chain), in vertex order. `i` = index of the vertex on the device centre. */
+  via?: ViaLink[]
 }
+export interface ViaLink { id: string; i: number }
 
 export interface MarkupStyle {
   stroke: string

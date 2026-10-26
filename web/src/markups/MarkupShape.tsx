@@ -462,10 +462,10 @@ function PathBody({ m, g, zoom, scale, countNumber, areaPath, cableLabel, dangli
       return (
         <>
           <Line {...common} points={drawn} />
-          {rings.map(r => {
+          {rings.map((r, ri) => {
             const c = toLocal(g, r.c)
             return (
-              <Group key={r.end} x={c.x} y={c.y} listening={false} name="cable-link-ring">
+              <Group key={`${r.end}${ri}`} x={c.x} y={c.y} listening={false} name="cable-link-ring">
                 <Circle radius={r.r * 1.12} stroke={color} strokeWidth={Math.max(strokeWidth, 1.5 / zoom)} opacity={0.35} />
                 <Circle radius={r.r * 1.12} stroke={color} strokeWidth={Math.max(strokeWidth * 0.6, 1 / zoom)} />
               </Group>
