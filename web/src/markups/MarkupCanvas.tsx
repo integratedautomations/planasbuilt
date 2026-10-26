@@ -33,7 +33,7 @@ import { buildMarkupIndex, handlePoints, snapActive, snapHandles, snapPoint } fr
 import type { SegIndex, SnapEnv, SnapHit, SnapKind, SnapOpts } from './snap'
 import { GRID_DRAW_MIN_PX, SNAP_RADIUS_PX, gridStep as gridStepOf } from './snapConfig'
 import { ALIGN_BOX_TYPES, alignBox, alignDevice, alignable, boxFromDragAligned, withCenter } from './align'
-import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, viaOf } from './cables'
+import { DEFAULT_CABLE_SETTINGS, cableColor, cableLength, chainDevices, continueSeed, danglingEnds, deviceCentreOf, extendCable, linkedEnds, nearestDevice, pickContinueEnd, relinkEnds, viaOf } from './cables'
 import type { CableEnd, CableSettings, EndRing } from './cables'
 import { canEditVertices, insertVertex, nearestVertex, removeVertex } from './vertices'
 import { previewTag } from './tagPreview'
@@ -259,7 +259,7 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     const tr = trRef.current, stage = stageRef.current
     if (!tr || !stage) return
     const nodes = readOnly || tool !== 'select' ? [] : selected
-      .filter(m => !(selected.length === 1 && TWO_POINT.includes(m.type)) && !isSheetArea(m))
+      .filter(m => !(selected.length === 1 && TWO_POINT.includes(m.type)) && !isSheetArea(m) && !hasDeviceLinks(m)) // a linked run is reshaped by its vertices; its transformer box would cover the devices on it
       .map(m => stage.findOne<Konva.Group>('#' + m.id))
       .filter((n): n is Konva.Group => !!n)
     tr.nodes(nodes)
@@ -1081,11 +1081,13 @@ export const MarkupCanvas = forwardRef<MarkupCanvasHandle, Props>(function Marku
     return out
   }
 
+  function hasDeviceLinks(m: Markup) { return m.type === 'cable' && 'points' in m.geometry && chainDevices(m.geometry, byId).some(c => byId.has(c.id)) }
   const canDrag = (m: Markup) => tool === 'select' && !readOnly && !lockedIds.has(m.id) && !isSheetArea(m)
+    && !hasDeviceLinks(m) // a run with device links is reshaped by its vertices, not translated
 
   // Areas draw first (below everything) so they never cover devices
   const drawable = markups.filter(hasDrawableGeometry)
-  const ordered = [...drawable.filter(m => m.type === 'area'), ...drawable.filter(m => m.type !== 'area')]
+  const ordered = [...drawable.filter(m => m.type === 'area'), ...drawable.filter(m => m.type === 'cable'), ...drawable.filter(m => m.type !== 'area' && m.type !== 'cable')] // cables sit under devices so a device on a run is always the one grabbed
 
   // Cursor ghost label: the tag the next placed device will get (project tag format, fill-gaps, per-set / per-type prefix)
   const ghostTag = (() => {
