@@ -45,6 +45,8 @@ export interface RawAnnot {
   columns?: Record<string, string>
   /** Has an /Image key (Revu embeds an image inside the annotation). */
   hasImage?: boolean
+  /** Points per foot from /Measure (/X /C is feet per point), when present. */
+  measurePpf?: number
 }
 
 type Dict = PDFDict
@@ -92,6 +94,14 @@ function columnsOf(doc: PDFDocument, d: Dict): Record<string, string> | undefine
   const out: Record<string, string> = {}
   for (const [k] of c.entries()) { const v = str(doc, c, k.decodeText()); if (v) out[k.decodeText()] = v }
   return Object.keys(out).length ? out : undefined
+}
+
+function measurePpfOf(doc: PDFDocument, d: Dict): number | undefined {
+  const m = doc.context.lookupMaybe(d.get(PDFName.of('Measure')), PDFDict)
+  const x = m ? doc.context.lookupMaybe(m.get(PDFName.of('X')), PDFArray) : undefined
+  const nf = x ? doc.context.lookupMaybe(x.get(0), PDFDict) : undefined
+  const c = nf ? doc.context.lookupMaybe(nf.get(PDFName.of('C')), PDFNumber)?.asNumber() : undefined
+  return c && c > 0 && Number.isFinite(1 / c) ? 1 / c : undefined
 }
 
 /** Reads every markup-type annotation of the document (links, widgets and popups are skipped). */
@@ -152,6 +162,7 @@ export function readAnnotations(doc: PDFDocument): { page: number; box: PageBox;
         label: str(doc, d, 'Label') || undefined,
         columns: columnsOf(doc, d),
         hasImage: d.has(PDFName.of('Image')) || undefined,
+        measurePpf: measurePpfOf(doc, d),
       })
     }
     out.push({ page: i + 1, box: pageBoxOf(page), annots })

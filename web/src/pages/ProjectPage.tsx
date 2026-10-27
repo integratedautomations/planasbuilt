@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, documentFileUrl, fetchBlob } from '../api'
 import type { DocumentRevision, DocumentSummary, RevisionUpload, User } from '../api'
-import { docCacheStates, invalidatePdf, loadDocuments, makeProjectOffline, projectCacheSize } from '../offline/cache'
+import { docCacheStates, invalidatePdf, loadMarkups, loadDocuments, makeProjectOffline, projectCacheSize } from '../offline/cache'
 import type { Progress } from '../offline/cache'
 import { requestPersistence } from '../offline/storagePersist'
 import { noteMadeOffline } from '../offline/installPrompt'
 import { loadPdf } from '../pdf'
+import { detectAnnotations } from '../pdfio/annotStrip'
+import type { AnnotSummary } from '../pdfio/annotStrip'
+import { applyUploadImport, describeSummary, planUploadImport, strippedFile } from '../pdfio/uploadImport'
 import { exportProjectReport } from '../pdfio/actions'
 import { ReportDialog } from '../pdfio/ReportDialog'
 import type { ReportOptions } from '../pdfio/reportOptions'
@@ -89,6 +92,16 @@ export function ProjectPage({ user }: { user: User }) {
   const [offlineState, setOfflineState] = useState<Map<string, { offline: boolean }>>(new Map())
   const [cacheBytes, setCacheBytes] = useState(0)
   const [progress, setProgress] = useState<Progress | null>(null)
+  /** Asks whether markups found in an uploaded PDF should become editable ones. */
+  const [importAsk, setImportAsk] = useState<{ name: string; summary: AnnotSummary; resolve: (v: boolean) => void } | null>(null)
+  const askImport = (name: string, summary: AnnotSummary) => new Promise<boolean>(resolve => setImportAsk({ name, summary, resolve }))
+  const answerImport = (v: boolean) => { importAsk?.resolve(v); setImportAsk(null) }
+  /** Looks for importable markups in the file; when there are some and the user agrees, returns the file without them. */
+  async function prepareUpload(file: File, bytes: ArrayBuffer): Promise<{ file: File; summary: AnnotSummary | null }> {
+    const summary = await detectAnnotations(bytes)
+    if (!summary || !(await askImport(file.name, summary))) return { file, summary: null }
+    return { file: await strippedFile(file, bytes), summary }
+  }
 
   useEffect(() => {
     loadDocuments(projectId!).then(r => setDocs(r.data)).catch(e => setError(e.message))
@@ -131,11 +144,17 @@ export function ProjectPage({ user }: { user: User }) {
       setUploading(file.name)
       try {
         // Count pages in the browser so the server stays lightweight
-        const numPages = await countPages(await file.arrayBuffer())
+        const bytes = await file.arrayBuffer()
+        const prepared = await prepareUpload(file, bytes)
+        const numPages = await countPages(await prepared.file.arrayBuffer())
         const form = new FormData()
         form.append('pageCount', String(numPages))
-        form.append('file', file)
+        form.append('file', prepared.file)
         const doc = await api<DocumentSummary>(`/projects/${projectId}/documents`, { method: 'POST', body: form })
+        if (prepared.summary) {
+          try { await applyUploadImport(doc.id, await planUploadImport(bytes, projectId!, doc.id, new Map())) }
+          catch (err) { setError(`${file.name}: uploaded, but the markups could not be imported (${(err as Error).message}). Use Import markups from PDF in the viewer.`) }
+        }
         setDocs(ds => [...ds, doc].sort((a, b) => a.name.localeCompare(b.name)))
       } catch (err) {
         setError(`${file.name}: ${(err as Error).message}`)
@@ -174,11 +193,19 @@ export function ProjectPage({ user }: { user: User }) {
     if (!file || !doc) return
     setError(''); setRevNotice(''); setRevising(doc.id)
     try {
-      const numPages = await countPages(await file.arrayBuffer())
+      const bytes = await file.arrayBuffer()
+      const prepared = await prepareUpload(file, bytes)
+      const numPages = await countPages(await prepared.file.arrayBuffer())
       const form = new FormData()
       form.append('pageCount', String(numPages))
-      form.append('file', file)
+      form.append('file', prepared.file)
       const rev = await api<RevisionUpload>(`/documents/${doc.id}/revisions`, { method: 'POST', body: form })
+      if (prepared.summary) {
+        try {
+          const existing = new Map((await loadMarkups(doc.id)).data.map(m => [m.id, m]))
+          await applyUploadImport(doc.id, await planUploadImport(bytes, projectId!, doc.id, existing))
+        } catch (err) { setError(`${file.name}: revision uploaded, but the markups could not be imported (${(err as Error).message}).`) }
+      }
       await invalidatePdf(doc.id) // the stored offline copy is the old revision
       setDocs(ds => ds.map(d => d.id === doc.id ? { ...d, revision: rev.revision, revision_id: rev.id, page_count: rev.page_count } : d))
       if (openRevs === doc.id) setRevs(await api<DocumentRevision[]>(`/documents/${doc.id}/revisions`))
@@ -325,6 +352,19 @@ Its PDF, markups and scales are restored as a new revision. The present state is
         )}
         {reportOpen && project && (
           <ReportDialog projectName={project.name} docs={docs} busy={!!reporting} onGenerate={asBuiltReport} onClose={() => setReportOpen(false)} />
+        )}
+        {importAsk && (
+          <div className="name-modal" role="dialog" aria-label="Import markups" onPointerDown={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') answerImport(false) }}>
+            <div className="dialog-card">
+              <div className="panel-heading">Import markups?</div>
+              <p>This PDF contains {describeSummary(importAsk.summary)}. Import them as editable markups?</p>
+              <p className="muted small">Choosing "Keep as a plain PDF" leaves them as part of the page.</p>
+              <div className="row">
+                <button onClick={() => answerImport(false)}>Keep as a plain PDF</button>
+                <button className="primary" autoFocus onClick={() => answerImport(true)}>Import markups</button>
+              </div>
+            </div>
+          </div>
         )}
         {renaming && (
           <div className="name-modal" onPointerDown={e => e.stopPropagation()}>

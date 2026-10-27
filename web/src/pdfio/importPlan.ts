@@ -16,6 +16,8 @@ export interface ImportContext {
   /** Lower-case device type / symbol set names to ids, so Revu edits of Subject / Layer map back (optional). */
   typeIdByName?: ReadonlyMap<string, string>
   setIdByName?: ReadonlyMap<string, string>
+  /** Keep payload tags on devices from another document; the server renumbers any that collide. */
+  keepTags?: boolean
 }
 
 export interface ImportPlan {
@@ -31,6 +33,8 @@ export interface ImportPlan {
   skipped: number
   /** Counts by resulting markup type. */
   byType: Record<string, number>
+  /** Page scales (points per foot) found in /Measure entries, by page. */
+  scales: Map<number, number>
 }
 
 /** Fields that come from the server and must not be copied onto a new markup. */
@@ -43,12 +47,13 @@ const same = (a: Markup, b: Markup) => JSON.stringify([a.page, a.type, a.geometr
 export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportContext): Promise<ImportPlan> {
   const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
   const newId = ctx.newId ?? uuid
-  const plan: ImportPlan = { changes: [], restored: 0, mapped: 0, unchanged: 0, skipped: 0, byType: {} }
+  const plan: ImportPlan = { changes: [], restored: 0, mapped: 0, unchanged: 0, skipped: 0, byType: {}, scales: new Map() }
   const seen = new Set<string>()
   const count = (type: string) => { plan.byType[type] = (plan.byType[type] ?? 0) + 1 }
 
   for (const { box, annots } of readAnnotations(doc)) {
     for (const a of annots) {
+      if (a.measurePpf && !plan.scales.has(a.page)) plan.scales.set(a.page, a.measurePpf)
       const payload = parsePayload(a.payload, ctx.known)
       if (payload) {
         const sameDoc = payload.document_id === ctx.documentId
@@ -66,7 +71,7 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
           if (sid) clean.symbol_set_id = sid
           if (a.label !== undefined) clean.tag = a.label
         }
-        if (!sameDoc) { clean.layer_id = null; if (clean.type === 'device') clean.tag = '' } // the server numbers new devices
+        if (!sameDoc) { clean.layer_id = null; if (clean.type === 'device' && !ctx.keepTags) clean.tag = '' } // the server numbers new devices
         if (existing) {
           const after: Markup = { ...existing, ...clean, layer_id: clean.layer_id ?? existing.layer_id }
           if (same(existing, after)) { plan.unchanged++; continue }
