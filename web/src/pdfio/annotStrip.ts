@@ -2,7 +2,7 @@ import { PDFDict, PDFDocument, PDFName, PDFRef } from 'pdf-lib'
 import { mapAnnotation } from './importMap'
 import { planImport } from './importPlan'
 import type { ImportPlan } from './importPlan'
-import { readAnnotations } from './reader'
+import { readAnnotations, readSpaces } from './reader'
 
 /** What an uploaded PDF holds that could become editable markups. */
 export interface AnnotSummary {
@@ -38,7 +38,10 @@ export async function stripImportedAnnotations(bytes: ArrayBuffer | Uint8Array):
       if (a.payload || (!(a.flags & 2) && mapAnnotation(a, box).length)) gone.add(a.ref)
     }
   }
-  if (!gone.size) return new Uint8Array(bytes instanceof ArrayBuffer ? bytes : bytes.slice().buffer)
+  // Spaces become areas on import, so they are removed too
+  const hasSpaces = readSpaces(doc).length > 0
+  if (hasSpaces) for (const page of doc.getPages()) page.node.delete(PDFName.of('BSISpaces'))
+  if (!gone.size && !hasSpaces) return new Uint8Array(bytes instanceof ArrayBuffer ? bytes : bytes.slice().buffer)
   for (const page of doc.getPages()) {
     const list = page.node.Annots()
     if (!list) continue

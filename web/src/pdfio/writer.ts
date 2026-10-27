@@ -133,3 +133,53 @@ export function flattenAnnotation(doc: PDFDocument, page: PDFPage, spec: AnnotSp
   page.node.setXObject(name, ref)
   page.pushOperators(pushGraphicsState(), drawObject(name), popGraphicsState())
 }
+
+/** An area as a Revu Space. */
+export interface SpaceSpec {
+  id: string
+  title: string
+  /** Flat x,y pairs in user space. */
+  path: number[]
+  color: [number, number, number]
+  opacity: number
+  /** Our full markup JSON, kept under /PABPayload so a re-import restores it exactly. */
+  payload: string
+  /** Id of the enclosing space in the same list, if any. */
+  parentId: string | null
+}
+
+/** Writes Revu "Spaces" (/BSISpaces on the page, nested through /Kids and /Parent). */
+export function addSpaces(doc: PDFDocument, page: PDFPage, spaces: SpaceSpec[]) {
+  if (!spaces.length) return
+  const ctx = doc.context
+  const dicts = new Map<string, PDFDict>()
+  const refs = new Map<string, PDFRef>()
+  for (const sp of spaces) {
+    const d = ctx.obj({
+      Type: 'Space', Title: text(sp.title), C: sp.color, CA: sp.opacity,
+      Path: chunk(sp.path), PABPayload: text(sp.payload),
+    }) as PDFDict
+    dicts.set(sp.id, d)
+    refs.set(sp.id, ctx.register(d))
+  }
+  const top: PDFRef[] = []
+  const kids = new Map<string, PDFRef[]>()
+  for (const sp of spaces) {
+    const pr = sp.parentId ? refs.get(sp.parentId) : undefined
+    if (sp.parentId && pr) {
+      dicts.get(sp.id)!.set(PDFName.of('Parent'), pr)
+      const l = kids.get(sp.parentId)
+      if (l) l.push(refs.get(sp.id)!); else kids.set(sp.parentId, [refs.get(sp.id)!])
+    } else top.push(refs.get(sp.id)!)
+  }
+  for (const [id, list] of kids) dicts.get(id)!.set(PDFName.of('Kids'), ctx.obj(list))
+  const existing = ctx.lookupMaybe(page.node.get(PDFName.of('BSISpaces')), PDFArray)
+  if (existing) for (const r of top) existing.push(r)
+  else page.node.set(PDFName.of('BSISpaces'), ctx.obj(top))
+}
+
+const chunk = (flat: number[]) => {
+  const out: number[][] = []
+  for (let i = 0; i + 1 < flat.length; i += 2) out.push([Math.round(flat[i] * 1000) / 1000, Math.round(flat[i + 1] * 1000) / 1000])
+  return out
+}

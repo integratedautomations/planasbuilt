@@ -1,10 +1,10 @@
 import { pathFromPoints } from '../markups/geometry'
 import { isMount } from '../markups/mount'
-import { BOX_TYPES, DEFAULT_STYLE, STATUSES } from '../markups/types'
+import { AREA_STYLE, BOX_TYPES, DEFAULT_STYLE, STATUSES } from '../markups/types'
 import type { BoxGeometry, Markup, MarkupStyle, MarkupType, PathGeometry, Status } from '../markups/types'
 import { boundsOf, fromPdf } from './coords'
 import type { PageBox } from './coords'
-import type { RawAnnot } from './reader'
+import type { RawAnnot, RawSpace } from './reader'
 import { rgbToHex } from './stream'
 
 /** What a foreign annotation becomes; the caller supplies id / document. */
@@ -67,6 +67,15 @@ function pathMarkup(box: PageBox, flat: number[], type: MarkupType, a: RawAnnot,
   const pts = displayPoints(box, flat)
   if (pts.length < 2) return null
   return { page: a.page, type, geometry: pathFromPoints(pts), style, text: a.contents, author: a.author }
+}
+
+/** A Revu Space (no payload) as an area markup; null when the outline is unusable. */
+export function mapSpace(sp: RawSpace, box: PageBox): MappedMarkup | null {
+  const pts = displayPoints(box, sp.path)
+  if (pts.length < 3) return null
+  const c = sp.color && sp.color.length ? rgbToHex(sp.color) : AREA_STYLE.stroke
+  return { page: sp.page, type: 'area', geometry: pathFromPoints(pts), text: sp.title.trim(), author: '',
+    style: { ...AREA_STYLE, stroke: c, fill: c } }
 }
 
 /**

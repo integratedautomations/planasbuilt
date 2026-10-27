@@ -230,7 +230,6 @@ describe('flattened export', () => {
 
 describe('Revu compatibility', () => {
   const pbox = { llx: 0, lly: 0, width: 612, height: 792, rotation: 0 }
-  const squares = (a: number[][]) => a.flat()
   const room = (id: string, name: string, pts: number[]): Markup =>
     ({ ...mk('area', path(0, 0, pts), { text: name }), id })
 
@@ -246,25 +245,72 @@ describe('Revu compatibility', () => {
     expect(stream.slice(haloAt - 80, fillAt)).not.toMatch(/ rg\n1 Tr/)
   })
 
-  it('exports calibrated areas as Revu area measurements and imports them back', async () => {
+  it('builds calibrated areas as Revu area measurements (flattened export still draws them)', async () => {
     const a = room('a1', 'Kitchen', [0, 0, 144, 0, 144, 72, 0, 72])
     const spec = buildAnnot(a, { box: pbox, ppf: 9, textWidth: approxTextWidth })!
     expect(spec).toMatchObject({ subtype: 'Polygon', intent: 'PolygonDimension', subject: 'Area', label: 'Kitchen' })
     expect(spec.measure?.ratio).toBe('1 in = 8 ft')
     expect(spec.contents).toMatch(/sq ?ft|SF/i)
     expect(buildAnnot(a, { box: pbox, ppf: null, textWidth: approxTextWidth })!.intent).toBeUndefined()
-    const out = await exportAnnotated(input(await blankPdf(0), [a]))
-    const d = (await PDFDocument.load(out)).getPages()[0].node.Annots()!
-    const doc2 = await PDFDocument.load(out)
-    const dict = doc2.context.lookup(doc2.getPages()[0].node.Annots()!.get(0)) as any
-    expect(String(dict.get(PDFName.of('IT')))).toBe('/PolygonDimension')
-    expect(dict.get(PDFName.of('Label')).decodeText()).toBe('Kitchen')
-    expect(d.size()).toBe(1)
-    const plan = await planImport(out, { documentId: DOC, existing: new Map() })
-    expect(plan.changes[0].after).toEqual(a)
-    const raw = readAnnotations(doc2)[0].annots[0]
-    expect(mapAnnotation({ ...raw, payload: undefined }, pbox)[0].type).toBe('measure-area')
-    void squares
+    const flat = await PDFDocument.load(await exportFlattened(input(await blankPdf(0), [a])))
+    expect(readAnnotations(flat)[0].annots).toHaveLength(0)
+  })
+
+  const spacesOf = async (bytes: Uint8Array) => {
+    const doc = await PDFDocument.load(bytes)
+    const arr = doc.context.lookup(doc.getPages()[0].node.get(PDFName.of('BSISpaces'))) as any
+    return { doc, arr }
+  }
+
+  it('exports areas as nested /BSISpaces, not annotations', async () => {
+    const floor = room('f1', 'First Floor', [0, 0, 400, 0, 400, 400, 0, 400])
+    const bath = room('b1', 'Bathroom', [10, 10, 100, 10, 100, 100, 10, 100])
+    const out = await exportAnnotated(input(await blankPdf(0), [floor, bath]))
+    const { doc, arr } = await spacesOf(out)
+    expect(readAnnotations(doc)[0].annots).toHaveLength(0)
+    expect(arr.size()).toBe(1)
+    const top = doc.context.lookup(arr.get(0)) as any
+    expect(String(top.get(PDFName.of('Type')))).toBe('/Space')
+    expect(top.get(PDFName.of('Title')).decodeText()).toBe('First Floor')
+    expect(top.get(PDFName.of('Path')).size()).toBe(4)
+    const p0 = top.lookup(PDFName.of('Path')).lookup(0) as any
+    expect([p0.lookup(0).asNumber(), p0.lookup(1).asNumber()]).toEqual([0, 792]) // display y 0 -> user y 792
+    expect(top.lookup(PDFName.of('C')).size()).toBe(3)
+    expect(top.lookup(PDFName.of('CA')).asNumber()).toBeCloseTo(0.1)
+    const kids = top.lookup(PDFName.of('Kids')) as any
+    expect(kids.size()).toBe(1)
+    const kid = doc.context.lookup(kids.get(0)) as any
+    expect(kid.get(PDFName.of('Title')).decodeText()).toBe('Bathroom')
+    expect(kid.get(PDFName.of('Parent'))).toBe(arr.get(0))
+  })
+
+  it('round-trips our own spaces exactly and imports Revu spaces (no payload) as new areas', async () => {
+    const floor = room('f2', 'First Floor', [0, 0, 400, 0, 400, 400, 0, 400])
+    const bath = room('b2', 'Bathroom', [10, 10, 100, 10, 100, 100, 10, 100])
+    const out = await exportAnnotated(input(await blankPdf(0), [floor, bath]))
+    const same = await planImport(out, { documentId: DOC, existing: new Map([[floor.id, floor], [bath.id, bath]]) })
+    expect(same.unchanged).toBe(2)
+    const back = await planImport(out, { documentId: DOC, existing: new Map() })
+    expect(back.restored).toBe(2)
+    expect(back.changes.map(c => c.after).sort((x, y) => (x!.id < y!.id ? -1 : 1))).toEqual([bath, floor])
+
+    // strip the payloads: a Revu-made file
+    const doc = await PDFDocument.load(out)
+    const arr = doc.context.lookup(doc.getPages()[0].node.get(PDFName.of('BSISpaces'))) as any
+    const top = doc.context.lookup(arr.get(0)) as any
+    top.delete(PDFName.of('PABPayload'))
+    ;(doc.context.lookup((top.lookup(PDFName.of('Kids')) as any).get(0)) as any).delete(PDFName.of('PABPayload'))
+    const revu = await doc.save()
+    const plan = await planImport(revu, { documentId: DOC, existing: new Map(), newId: () => 'n' + ++n })
+    expect(plan.mapped).toBe(2)
+    const areas = plan.changes.map(c => c.after!)
+    expect(areas.map(x => x.type)).toEqual(['area', 'area'])
+    expect(areas.map(x => x.text)).toEqual(['First Floor', 'Bathroom'])
+    expect(absolutePoints(areas[1]).map(p => [p.x, p.y])).toEqual([[10, 10], [100, 10], [100, 100], [10, 100]])
+
+    const { stripImportedAnnotations } = await import('./annotStrip')
+    const stripped = await PDFDocument.load(await stripImportedAnnotations(revu))
+    expect(stripped.getPages()[0].node.has(PDFName.of('BSISpaces'))).toBe(false)
   })
 
   it('maps device columns: Subject = type, Layer = set, Label = tag, Status and Location custom columns', async () => {

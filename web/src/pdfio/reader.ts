@@ -169,3 +169,45 @@ export function readAnnotations(doc: PDFDocument): { page: number; box: PageBox;
   })
   return out
 }
+
+/** A Revu Space (/BSISpaces entry) reduced to what the importer needs. */
+export interface RawSpace {
+  page: number
+  title: string
+  /** Flat x,y pairs in user space. */
+  path: number[]
+  color: number[] | null
+  opacity: number
+  /** Our /PABPayload (full area markup JSON). */
+  payload?: string
+}
+
+/** Every Space on every page, nested ones included (parents first). */
+export function readSpaces(doc: PDFDocument): { page: number; box: PageBox; spaces: RawSpace[] }[] {
+  const out: { page: number; box: PageBox; spaces: RawSpace[] }[] = []
+  doc.getPages().forEach((page, i) => {
+    const spaces: RawSpace[] = []
+    const seen = new Set<PDFDict>()
+    const walk = (list: PDFArray | undefined, depth: number) => {
+      for (let k = 0; list && k < list.size(); k++) {
+        const d = doc.context.lookupMaybe(list.get(k), PDFDict)
+        if (!d || seen.has(d) || depth > 64) continue
+        seen.add(d)
+        const pa = doc.context.lookupMaybe(d.get(PDFName.of('Path')), PDFArray)
+        const path: number[] = []
+        for (let j = 0; pa && j < pa.size(); j++) {
+          const pt = doc.context.lookupMaybe(pa.get(j), PDFArray)
+          const x = pt && doc.context.lookupMaybe(pt.get(0), PDFNumber), y = pt && doc.context.lookupMaybe(pt.get(1), PDFNumber)
+          if (x && y) path.push(x.asNumber(), y.asNumber())
+        }
+        const ca = doc.context.lookupMaybe(d.get(PDFName.of('CA')), PDFNumber)
+        spaces.push({ page: i + 1, title: str(doc, d, 'Title'), path, color: numbers(doc, d, 'C') ?? null,
+          opacity: ca ? ca.asNumber() : 0.1, payload: str(doc, d, 'PABPayload') || undefined })
+        walk(doc.context.lookupMaybe(d.get(PDFName.of('Kids')), PDFArray), depth + 1)
+      }
+    }
+    walk(doc.context.lookupMaybe(page.node.get(PDFName.of('BSISpaces')), PDFArray), 0)
+    if (spaces.length) out.push({ page: i + 1, box: pageBoxOf(page), spaces })
+  })
+  return out
+}

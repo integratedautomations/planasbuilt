@@ -2,9 +2,9 @@ import { PDFDocument } from 'pdf-lib'
 import type { Change } from '../markups/useMarkups'
 import type { Markup } from '../markups/types'
 import { uuid } from '../uuid'
-import { mapAnnotation, parsePayload } from './importMap'
+import { mapAnnotation, mapSpace, parsePayload } from './importMap'
 import type { KnownIds } from './importMap'
-import { readAnnotations } from './reader'
+import { readAnnotations, readSpaces } from './reader'
 
 export interface ImportContext {
   documentId: string
@@ -92,6 +92,39 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
         plan.mapped++
         count(m.type)
       }
+    }
+  }
+
+  // Revu Spaces (areas); ours carry a /PABPayload and are restored exactly
+  for (const { box, spaces } of readSpaces(doc)) {
+    for (const sp of spaces) {
+      const payload = parsePayload(sp.payload, ctx.known)
+      if (payload && payload.type === 'area') {
+        const sameDoc = payload.document_id === ctx.documentId
+        const id = sameDoc ? payload.id : newId()
+        if (seen.has(id)) continue
+        seen.add(id)
+        const existing = sameDoc ? ctx.existing.get(id) : undefined
+        const clean: Markup = { ...payload, id, document_id: ctx.documentId, page: sp.page }
+        for (const k of SERVER_FIELDS) delete clean[k]
+        if (!sameDoc) clean.layer_id = null
+        if (existing) {
+          const after: Markup = { ...existing, ...clean, layer_id: clean.layer_id ?? existing.layer_id }
+          if (same(existing, after)) { plan.unchanged++; continue }
+          plan.changes.push({ before: existing, after })
+        } else plan.changes.push({ before: null, after: clean })
+        plan.restored++
+        count('area')
+        continue
+      }
+      const m = mapSpace(sp, box)
+      if (!m) { plan.skipped++; continue }
+      plan.changes.push({
+        before: null,
+        after: { id: newId(), document_id: ctx.documentId, page: m.page, type: m.type, geometry: m.geometry, style: m.style, text: m.text, layer_id: null },
+      })
+      plan.mapped++
+      count('area')
     }
   }
   return plan

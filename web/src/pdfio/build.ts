@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import type { PDFPage } from 'pdf-lib'
-import { areaPathIn, buildAreaIndex, isArea } from '../markups/areas'
+import { areaPathIn, buildAreaIndex, isArea, areaName, isSheetArea } from '../markups/areas'
 import { EMPTY_CATALOG } from '../catalog/catalog'
 import type { Catalog } from '../catalog/catalog'
 import { deviceCentreOf, linkedEnds } from '../markups/cables'
@@ -11,7 +11,9 @@ import type { Markup, SymbolSet } from '../markups/types'
 import { approxTextWidth, buildAnnot, countNumbers } from './annots'
 import type { AnnotSpec } from './annots'
 import { sanitizeText } from './stream'
-import { addAnnotation, flattenAnnotation, pageBoxOf } from './writer'
+import { addAnnotation, addSpaces, flattenAnnotation, pageBoxOf } from './writer'
+import type { SpaceSpec } from './writer'
+import { hexToRgb } from './stream'
 import type { Resources } from './writer'
 
 export interface ExportInput {
@@ -109,13 +111,38 @@ export function applyMarkups(doc: PDFDocument, mode: Mode, input: ExportInput, r
     if (path.length) locations.set(m.id, path[path.length - 1])
   }
   let n = 0
+  const byId = new Map(input.markups.map(m => [m.id, m]))
+  const spaceIdsOnPage = new Set<string>()
   for (const [pageNumber, list] of byPage) {
     const page = pages[pageNumber - 1]
+    const spaces: SpaceSpec[] = []
     for (const { spec, iconKey } of specsForPage(page, list, input, res, counts, areaPaths, pageNumber, legend, locations)) {
+      const m = byId.get(spec.markupId)
+      if (mode === 'annotate' && m && isArea(m) && !isSheetArea(m)) {
+        // areas are Revu Spaces, not annotations
+        const spaceIds = spaceIdsOnPage
+        if (spec.vertices && spec.vertices.length >= 6) {
+          spaceIds.add(m.id)
+          spaces.push({
+            id: m.id, title: areaName(m), path: spec.vertices, color: spec.color && spec.color.length === 3 ? spec.color as [number, number, number] : (hexToRgb(m.style.fill || m.style.stroke, [0.37, 0.48, 0.6]) as [number, number, number]),
+            opacity: 0.1, payload: spec.payload, parentId: null,
+          })
+          n++
+        }
+        continue
+      }
       if (mode === 'annotate') addAnnotation(doc, page, spec, res, iconKey)
       else if (!(spec.flags & 2)) flattenAnnotation(doc, page, spec, res, iconKey)
       n++
     }
+    for (const sp of spaces) {
+      // nearest exported ancestor (the sheet area and anything unexported is skipped)
+      let p = idx.parents.get(sp.id) ?? null
+      for (let k = 0; p && !spaceIdsOnPage.has(p) && k < 1000; k++) p = idx.parents.get(p) ?? null
+      sp.parentId = p && spaceIdsOnPage.has(p) ? p : null
+    }
+    spaceIdsOnPage.clear()
+    addSpaces(doc, page, spaces)
   }
   return n
 }
