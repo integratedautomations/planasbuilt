@@ -11,7 +11,7 @@ import type { Markup, SymbolSet } from '../markups/types'
 import { approxTextWidth, buildAnnot, countNumbers } from './annots'
 import type { AnnotSpec } from './annots'
 import { sanitizeText } from './stream'
-import { addAnnotation, addSpaces, addStatusReply, flattenAnnotation, pageBoxOf } from './writer'
+import { addAnnotation, addSpaces, addStatusReply, addTagChild, flattenAnnotation, pageBoxOf } from './writer'
 import type { SpaceSpec } from './writer'
 import { hexToRgb } from './stream'
 import type { Resources } from './writer'
@@ -69,7 +69,7 @@ function cableRingsOf(m: Markup, byId: ReadonlyMap<string, Markup>): EndRing[] {
 
 /** Specs for one page's markups (areas first so they sit underneath). */
 export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInput, res: Resources, counts: Map<string, number>,
-  areaPaths: Map<string, string[]>, pageNumber: number, legend?: Map<string, LegendRow[]>, locations?: Map<string, string>): { spec: AnnotSpec; iconKey?: string }[] {
+  areaPaths: Map<string, string[]>, pageNumber: number, legend?: Map<string, LegendRow[]>, locations?: Map<string, string>, separateTag = false): { spec: AnnotSpec; iconKey?: string }[] {
   const box = pageBoxOf(page)
   const tw = textWidthFn(res)
   const out: { spec: AnnotSpec; iconKey?: string }[] = []
@@ -80,6 +80,7 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
     const typeKey = m.device_type_id ? `type:${m.device_type_id}` : ''
     const iconKey = typeKey && res.icons.has(typeKey) ? typeKey : set && res.icons.has(set.id) ? set.id : undefined
     const spec = buildAnnot(m, {
+      separateTag,
       box, ppf: input.scales.get(pageNumber) ?? null, set, hasIcon: !!iconKey, textWidth: tw,
       typeMount: m.device_type_id ? input.catalog?.types.get(m.device_type_id)?.mount : undefined,
       areaPath: areaPaths.get(m.id), authorMode: input.authorMode, author: input.author, location: locations?.get(m.id),
@@ -116,7 +117,7 @@ export function applyMarkups(doc: PDFDocument, mode: Mode, input: ExportInput, r
   for (const [pageNumber, list] of byPage) {
     const page = pages[pageNumber - 1]
     const spaces: SpaceSpec[] = []
-    for (const { spec, iconKey } of specsForPage(page, list, input, res, counts, areaPaths, pageNumber, legend, locations)) {
+    for (const { spec, iconKey } of specsForPage(page, list, input, res, counts, areaPaths, pageNumber, legend, locations, mode === 'annotate')) {
       const m = byId.get(spec.markupId)
       if (mode === 'annotate' && m && isArea(m) && !isSheetArea(m)) {
         // areas are Revu Spaces, not annotations
@@ -131,7 +132,7 @@ export function applyMarkups(doc: PDFDocument, mode: Mode, input: ExportInput, r
         }
         continue
       }
-      if (mode === 'annotate') { const pr = addAnnotation(doc, page, spec, res, iconKey); addStatusReply(doc, page, pr, spec) }
+      if (mode === 'annotate') { const pr = addAnnotation(doc, page, spec, res, iconKey); addTagChild(doc, page, pr, spec, res, byId.get(spec.markupId)?.document_id ?? ''); addStatusReply(doc, page, pr, spec) }
       else if (!(spec.flags & 2)) flattenAnnotation(doc, page, spec, res, iconKey)
       n++
     }

@@ -28,7 +28,7 @@ const text = (s: string) => PDFHexString.fromText(s)
 const nums = (doc: PDFDocument, a: number[]) => doc.context.obj(a) as PDFArray
 
 /** The /AP form XObject for a spec; BBox = Rect, content already in user space. */
-export function buildAppearance(doc: PDFDocument, spec: AnnotSpec, res: Resources, iconKey?: string): PDFRef {
+export function buildAppearance(doc: PDFDocument, spec: Pick<AnnotSpec, 'ap' | 'rect'>, res: Resources, iconKey?: string): PDFRef {
   const gs: Record<string, any> = {}
   for (const [name, g] of Object.entries(spec.ap.gstates)) {
     gs[name] = { Type: 'ExtGState', ...(g.CA !== undefined ? { CA: g.CA } : {}), ...(g.ca !== undefined ? { ca: g.ca } : {}), ...(g.BM ? { BM: g.BM } : {}) }
@@ -121,6 +121,53 @@ export function addAnnotation(doc: PDFDocument, page: PDFPage, spec: AnnotSpec, 
   d.set(PDFName.of('AP'), ctx.obj({ N: buildAppearance(doc, spec, res, iconKey) }))
   const ref = ctx.register(d)
   page.node.addAnnot(ref)
+  return ref
+}
+
+/** 16 uppercase letters derived from `seed` (Revu Sequence /IID: one id per numbering series). */
+export function sequenceId(seed: string): string {
+  let out = ''
+  for (let k = 0; k < 4; k++) {
+    let h = (0x811c9dc5 ^ Math.imul(k + 1, 0x9e3779b1)) >>> 0
+    for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+    for (let j = 0; j < 4; j++) { out += String.fromCharCode(65 + (h % 26)); h = Math.floor(h / 26) }
+  }
+  return out
+}
+
+const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const hex2 = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')
+
+/**
+ * Writes a device's tag as a Revu grouped /FreeText child of the stamp (/RT /Group, /IRT stamp, /Sequence) and
+ * records the group on the stamp (/GroupNesting [name stampNM childNM]).
+ */
+export function addTagChild(doc: PDFDocument, page: PDFPage, parent: PDFRef, spec: AnnotSpec, res: Resources, seqSeed: string): PDFRef | null {
+  const t = spec.tagChild
+  if (!t) return null
+  const ctx = doc.context
+  const nm = `${spec.markupId}-tag`
+  const date = PDFString.of(pdfDate(spec.modified))
+  const size = Math.round(t.size * 1000) / 1000
+  const rgb = t.color.map(v => Math.round(v * 1000) / 1000)
+  const hex = '#' + t.color.map(hex2).join('')
+  const style = `font:bold Helvetica ${size}pt; text-align:center; text-valign:middle; margin:0pt; line-height:${Math.round(size * 0.575 * 1000) / 1000}pt; color:${hex}`
+  const rc = `<?xml version="1.0"?><body xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" xfa:APIVersion="BluebeamPDFRevu:2018" xfa:spec="2.2.0" style="${style}" xmlns="http://www.w3.org/1999/xhtml"><p>${xml(t.text)}</p></body>`
+  const d = ctx.obj({
+    Type: 'Annot', Subtype: 'FreeText', F: 4, C: [], T: text(spec.author), Subj: text(spec.subject), NM: text(nm),
+    CreationDate: date, M: date, Rect: t.rect,
+    DA: PDFString.of(`${rgb.join(' ')} rg /HelvBld ${size} Tf`), DS: PDFString.of(style), RC: text(rc), Autosize: true,
+    RT: 'Group', IRT: parent, Contents: text(t.text),
+    BS: { W: 0, S: 'S', Type: 'Border' },
+  }) as PDFDict
+  if (t.index !== undefined) d.set(PDFName.of('Sequence'), ctx.obj({ IID: PDFString.of(sequenceId(`${seqSeed}|${t.prefix}`)), Index: t.index }))
+  const ocg = spec.layerName ? ocgFor(doc, spec.layerName) : undefined
+  if (ocg) d.set(PDFName.of('OC'), ocg)
+  d.set(PDFName.of('AP'), ctx.obj({ N: buildAppearance(doc, t, res) }))
+  const ref = ctx.register(d)
+  page.node.addAnnot(ref)
+  const head = ctx.lookupMaybe(parent, PDFDict)
+  if (head) head.set(PDFName.of('GroupNesting'), ctx.obj([text(spec.subject), PDFName.of(spec.markupId), PDFName.of(nm)]))
   return ref
 }
 

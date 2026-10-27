@@ -36,7 +36,7 @@ describe('annotation detect / strip', () => {
     const dev: Markup = { ...rect, id: 'd1', type: 'device', geometry: { x: 50, y: 50, width: 20, height: 20, rotation: 0 }, tag: 'CAM-01', status: 'planned', symbol_set_id: 's1' }
     const set = { id: 's1', name: 'Cameras', color: '#1971c2', tag_prefix: 'CAM', icon: '', fields: [], has_fov: false, sort: 0 }
     const out = await exportAnnotated({ pdfBytes: await blank(), markups: [dev], symbolSets: new Map([['s1', set]]), scales: new Map(), icons: new Map() })
-    expect(readAnnotations(await PDFDocument.load(out))[0].annots.map(a => a.subtype).sort()).toEqual(['Stamp', 'Text'])
+    expect(readAnnotations(await PDFDocument.load(out))[0].annots.map(a => a.subtype).sort()).toEqual(['FreeText', 'Stamp', 'Text'])
     const stripped = await PDFDocument.load(await stripImportedAnnotations(out))
     expect(readAnnotations(stripped)[0].annots).toHaveLength(0)
   })

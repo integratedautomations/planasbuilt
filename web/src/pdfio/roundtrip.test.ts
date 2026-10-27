@@ -360,4 +360,53 @@ describe('Revu compatibility', () => {
     const p2 = await edit('Accepted', 'D:20990101000000Z')
     expect(p2.unchanged).toBe(1)
   })
+
+  it('writes the device tag as a grouped FreeText child with a Sequence, and reads it back', async () => {
+    const mkDev = (tag: string, extra: Partial<Markup> = {}) => mk('device', box(60, 60, 20, 20), { symbol_set_id: camSet.id, tag, status: 'planned', ...extra })
+    const d1 = mkDev('CAM-01'), d2 = mkDev('CAM-02', { geometry: box(160, 60, 20, 20) }), d3 = mkDev('CAMX', { geometry: box(260, 60, 20, 20) })
+    const out = await exportAnnotated(input(await blankPdf(0), [d1, d2, d3]))
+    const doc = await PDFDocument.load(out)
+    const list = doc.getPages()[0].node.Annots()!
+    const dicts = list.asArray().map(r => doc.context.lookup(r) as any)
+    const kids = dicts.filter(d => d.get(PDFName.of('Subtype')).toString() === '/FreeText')
+    expect(kids).toHaveLength(3)
+    const seq = (d: any) => d.lookup(PDFName.of('Sequence'))
+    const k1 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === `${d1.id}-tag`)!
+    const k2 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === `${d2.id}-tag`)!
+    const k3 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === `${d3.id}-tag`)!
+    expect(k1.get(PDFName.of('RT')).toString()).toBe('/Group')
+    expect(k1.lookup(PDFName.of('Contents')).decodeText()).toBe('CAM-01')
+    expect(k1.lookup(PDFName.of('RC')).decodeText()).toContain('<p>CAM-01</p>')
+    expect(k1.has(PDFName.of('AP'))).toBe(true)
+    const s1 = seq(k1), s2 = seq(k2)
+    expect(s1.lookup(PDFName.of('Index')).asNumber()).toBe(0)
+    expect(s2.lookup(PDFName.of('Index')).asNumber()).toBe(1)
+    expect(s1.lookup(PDFName.of('IID')).decodeText()).toMatch(/^[A-Z]{16}$/)
+    expect(s1.lookup(PDFName.of('IID')).decodeText()).toBe(s2.lookup(PDFName.of('IID')).decodeText())
+    expect(k3.has(PDFName.of('Sequence'))).toBe(false)
+    // the stamp is the group head and no longer draws the tag
+    const head = dicts.find(d => d.has(PDFName.of('GroupNesting')) && d.lookup(PDFName.of('NM')).decodeText() === d1.id)!
+    const nest = head.lookup(PDFName.of('GroupNesting'))
+    expect([nest.lookup(0).decodeText(), nest.get(1).decodeText(), nest.get(2).decodeText()]).toEqual(['Cameras', d1.id, `${d1.id}-tag`])
+    const apOf = (d: any) => (doc.context.lookup((doc.context.lookup(d.get(PDFName.of('AP'))) as any).get(PDFName.of('N'))) as any)
+    expect(apOf(k1).contents.length).toBeGreaterThan(0)
+    expect(apOf(head).dict.lookup(PDFName.of('Resources')).has(PDFName.of('Font'))).toBe(false)
+    // flattened export is unchanged: the tag is drawn inside the page, no annotations
+    expect(doc.getPages()[0].node.Annots()!.size()).toBeGreaterThan(3)
+    // import: the child is not a markup; its text is the tag (preferred over /Label)
+    const raw = readAnnotations(doc)[0].annots
+    const stampRaw = raw.find(a => a.label === 'CAM-01')!
+    expect(stampRaw.label).toBe('CAM-01')
+    const tweaked = await PDFDocument.load(out)
+    const tl = tweaked.getPages()[0].node.Annots()!.asArray().map(r => tweaked.context.lookup(r) as any)
+    const kid = tl.find(d => d.get(PDFName.of('Subtype')).toString() === '/FreeText')!
+    kid.set(PDFName.of('Contents'), PDFString.of('CAM-77'))
+    const plan = await planImport(await tweaked.save(), { documentId: DOC, existing: new Map([[d1.id, d1], [d2.id, d2], [d3.id, d3]]), known })
+    expect(plan.skipped).toBe(0)
+    expect(plan.mapped).toBe(0)
+    expect(plan.changes.map(c => c.after!.tag)).toEqual(['CAM-77'])
+    expect((await planImport(out, { documentId: DOC, existing: new Map([[d1.id, d1], [d2.id, d2], [d3.id, d3]]), known })).unchanged).toBe(3)
+    const flat = await PDFDocument.load(await exportFlattened(input(await blankPdf(0), [d1])))
+    expect(flat.getPages()[0].node.Annots()?.size() ?? 0).toBe(0)
+  })
 })

@@ -52,7 +52,7 @@ export async function stripImportedAnnotations(bytes: ArrayBuffer | Uint8Array):
       // a popup window of a removed annotation goes with it
       const d = doc.context.lookupMaybe(item, PDFDict)
       const irt = d?.get(PDFName.of('IRT'))
-      if (d && irt instanceof PDFRef && gone.has(irt.toString()) && d.has(PDFName.of('State'))) { list.remove(k); continue }
+      if (d && irt instanceof PDFRef && gone.has(irt.toString()) && (d.has(PDFName.of('State')) || d.get(PDFName.of('RT')) === PDFName.of('Group'))) { list.remove(k); continue }
       const parent = d?.get(PDFName.of('Parent'))
       if (d && parent instanceof PDFRef && gone.has(parent.toString())) list.remove(k)
     }

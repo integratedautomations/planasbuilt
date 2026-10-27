@@ -11,6 +11,19 @@ import { STATUSES } from '../markups/types'
 /** A Revu status reply: a Text annotation with /IRT and /State. */
 export const isStatusReply = (a: RawAnnot) => a.subtype === 'Text' && !!a.irt && !!a.state
 
+/** Tag text of grouped FreeText children (/RT /Group) by parent reference; only children of our own device stamps. */
+export function tagChildrenOf(annots: RawAnnot[]): { texts: Map<string, string>; children: Set<RawAnnot> } {
+  const heads = new Set(annots.filter(a => a.ref && a.payload && a.payload.includes('"device"')).map(a => a.ref!))
+  const texts = new Map<string, string>(), children = new Set<RawAnnot>()
+  for (const a of annots) {
+    if (a.subtype !== 'FreeText' || a.rt !== 'Group' || !a.irt || !heads.has(a.irt)) continue
+    children.add(a)
+    const t = a.contents.replace(/[\r\n]+/g, ' ').trim()
+    if (t && !texts.has(a.irt)) texts.set(a.irt, t)
+  }
+  return { texts, children }
+}
+
 /** Latest status reply (by /M) per parent reference. */
 export function statusRepliesOf(annots: RawAnnot[]): Map<string, string> {
   const best = new Map<string, { state: string; m: string }>()
@@ -71,8 +84,9 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
 
   for (const { box, annots } of readAnnotations(doc)) {
     const replies = statusRepliesOf(annots)
+    const tagKids = tagChildrenOf(annots)
     for (const a of annots) {
-      if (isStatusReply(a)) continue
+      if (isStatusReply(a) || tagKids.children.has(a)) continue
       if (a.measurePpf && !plan.scales.has(a.page)) plan.scales.set(a.page, a.measurePpf)
       const payload = parsePayload(a.payload, ctx.known)
       if (payload) {
@@ -90,6 +104,8 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
           const sid = a.layer ? ctx.setIdByName?.get(a.layer.toLowerCase()) : undefined
           if (sid) clean.symbol_set_id = sid
           if (a.label !== undefined) clean.tag = a.label
+          const kidTag = a.ref ? tagKids.texts.get(a.ref) : undefined
+          if (kidTag) clean.tag = kidTag
           const stateLabel = a.ref ? replies.get(a.ref) : undefined
           if (stateLabel) {
             const key = stateLabel.trim().toLowerCase()

@@ -10,6 +10,7 @@ import { legendAlign, legendCell, legendLayout, legendSettings } from '../markup
 import type { LegendRow } from '../markups/legend'
 import { feetOf, formatArea, formatFeetInches, formatRadius, pathMidpoint, polygonCentroid, polygonPerimeter, sqftOf } from '../markups/measure'
 import { HARDWARE_FIELDS, STATUSES } from '../markups/types'
+import { tagNumber } from '../markups/tagPreview'
 import type { BoxGeometry, Markup, PathGeometry, SymbolSet } from '../markups/types'
 import { applyMatrix, boundsOf, localMatrix, localToDisplay, relativeMatrix } from './coords'
 import type { Matrix, PageBox } from './coords'
@@ -60,6 +61,8 @@ export interface AnnotSpec {
   layerName?: string
   /** Status label of a device: written as a Revu status reply annotation (/StateModel Review). */
   statusLabel?: string
+  /** Device tag as a grouped FreeText child. */
+  tagChild?: TagChild
   /** Revu custom columns (/BSIColumnData), e.g. Location. */
   columns?: Record<string, string>
   /** Full markup JSON (custom /PlanAsBuilt key). */
@@ -94,7 +97,22 @@ export function authorOptions(company: { pdf_author_mode?: string; pdf_author_te
   }
 }
 
+/** A device tag exported as a Revu grouped /FreeText child of the stamp (with a numbering /Sequence). */
+export interface TagChild {
+  text: string
+  /** User-space rect of the text. */
+  rect: Rect4
+  size: number
+  color: RGB
+  /** Tag prefix (series name) and 0-based index of the tag's number; index is undefined when the tag has no number. */
+  prefix: string
+  index?: number
+  ap: AnnotSpec['ap']
+}
+
 export interface BuildCtx {
+  /** Annotated export: the device tag becomes a grouped FreeText child instead of being drawn in the stamp. */
+  separateTag?: boolean
   box: PageBox
   /** Points per foot for this page, or null. */
   ppf: number | null
@@ -226,6 +244,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
   let pad = sw / 2 + 1
   let measureText = ''
   let areaValue = ''
+  let tagChild: TagChild | undefined
 
   const gsMain: ExtGState = { CA: opacity, ca: opacity }
   if (m.type === 'highlight') gsMain.BM = 'Multiply'
@@ -388,10 +407,25 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         // The tag stays level with the plan (never rotated / upside down) and below the symbol: drawn in the page-oriented frame at the centre
         const base = r + r * 0.12 + fs * 0.85
         const LM = localMatrix(box, localToDisplay(b.x, b.y, b.rotation || 0)(cx, cy).x, localToDisplay(b.x, b.y, b.rotation || 0)(cx, cy).y, 0)
-        ops.save().cm(relativeMatrix(M, LM))
-        ops.text(label, -tw / 2, base, fs, color, true, fs * 0.18)
-        ops.restore()
-        for (const [px, py] of [[-tw / 2, base - fs], [tw / 2, base - fs], [-tw / 2, base + fs * 0.3], [tw / 2, base + fs * 0.3]]) extra.push(applyMatrix(LM, px, py))
+        const corners = ([[-tw / 2, base - fs], [tw / 2, base - fs], [-tw / 2, base + fs * 0.3], [tw / 2, base + fs * 0.3]] as P[]).map(([px, py]) => applyMatrix(LM, px, py))
+        if (ctx.separateTag && m.tag) {
+          const tops = new Ops()
+          tops.cm(LM).text(label, -tw / 2, base, fs, color, true, fs * 0.18)
+          const [tx0, ty0, tx1, ty1] = boundsOf(corners)
+          const prefix0 = set?.tag_prefix ?? ''
+          let prefix = prefix0, index: number | undefined
+          const n0 = prefix0 ? tagNumber(m.tag, prefix0) : null
+          if (n0 !== null) index = n0 - 1
+          else { const mm = /^(.*?)-?(\d{1,9})$/.exec(m.tag); if (mm) { prefix = mm[1]; index = Number(mm[2]) - 1 } }
+          if (index !== undefined && index < 0) index = undefined
+          tagChild = { text: m.tag, rect: r4([tx0 - 1, ty0 - 1, tx1 + 1, ty1 + 1]), size: fs, color, prefix, index,
+            ap: { stream: tops.toString(), gstates: tops.gstates, fonts: [...tops.fonts], images: [] } }
+        } else {
+          ops.save().cm(relativeMatrix(M, LM))
+          ops.text(label, -tw / 2, base, fs, color, true, fs * 0.18)
+          ops.restore()
+          extra.push(...corners)
+        }
         pad = r * 0.1 + 1
         spec.subtype = 'Stamp'; spec.stampName = set?.name ?? 'Device'; spec.borderWidth = 0
         spec.label = m.tag || ''
@@ -604,6 +638,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
       Math.min(spec.inner[2], spec.rect[2]), Math.min(spec.inner[3], spec.rect[3])])
   }
   if (m.type !== 'legend') spec.contents = m.type === 'text' ? m.text : areaValue || contentsOf(m, ctx.set, measureText)
+  if (tagChild) spec.tagChild = tagChild
   spec.ap = { stream: ops.toString(), gstates: ops.gstates, fonts: [...ops.fonts], images: [...ops.images] }
   return spec
 }
