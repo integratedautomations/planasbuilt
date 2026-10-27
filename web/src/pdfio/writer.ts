@@ -53,6 +53,29 @@ function numberFormat(doc: PDFDocument, unit: string, c: number) {
   return doc.context.obj({ Type: 'NumberFormat', U: PDFString.of(unit), C: c, F: 'D', D: 100, FD: false })
 }
 
+/** One optional content group per name, registered in /OCProperties (/OCGs, /D /Order, /D /ON). */
+export function ocgFor(doc: PDFDocument, name: string): PDFRef {
+  const ctx = doc.context
+  const cat = doc.catalog
+  let props = ctx.lookupMaybe(cat.get(PDFName.of('OCProperties')), PDFDict)
+  if (!props) { props = ctx.obj({ OCGs: [], D: {} }) as PDFDict; cat.set(PDFName.of('OCProperties'), props) }
+  let ocgs = ctx.lookupMaybe(props.get(PDFName.of('OCGs')), PDFArray)
+  if (!ocgs) { ocgs = ctx.obj([]) as PDFArray; props.set(PDFName.of('OCGs'), ocgs) }
+  for (let i = 0; i < ocgs.size(); i++) {
+    const g = ctx.lookupMaybe(ocgs.get(i), PDFDict)
+    const n = g && ctx.lookup(g.get(PDFName.of('Name')))
+    if (g && n && 'decodeText' in n && (n as PDFString).decodeText() === name) return ocgs.get(i) as PDFRef
+  }
+  const ref = ctx.register(ctx.obj({ Type: 'OCG', Name: text(name) }))
+  ocgs.push(ref)
+  let d = ctx.lookupMaybe(props.get(PDFName.of('D')), PDFDict)
+  if (!d) { d = ctx.obj({}) as PDFDict; props.set(PDFName.of('D'), d) }
+  let order = ctx.lookupMaybe(d.get(PDFName.of('Order')), PDFArray)
+  if (!order) { order = ctx.obj([]) as PDFArray; d.set(PDFName.of('Order'), order) }
+  order.push(ref)
+  return ref
+}
+
 /** Builds the annotation dictionary (with /AP) and appends it to the page. Returns its ref. */
 export function addAnnotation(doc: PDFDocument, page: PDFPage, spec: AnnotSpec, res: Resources, iconKey?: string): PDFRef {
   const ctx = doc.context
@@ -90,6 +113,11 @@ export function addAnnotation(doc: PDFDocument, page: PDFPage, spec: AnnotSpec, 
       X: [numberFormat(doc, 'ft', ft)], D: [numberFormat(doc, 'ft', 1)], A: [numberFormat(doc, 'sq ft', 1)],
     }))
   }
+  if (spec.label) d.set(PDFName.of('Label'), text(spec.label))
+  const ocg = spec.layerName ? ocgFor(doc, spec.layerName) : undefined
+  if (ocg) d.set(PDFName.of('OC'), ocg)
+  const cols = Object.entries(spec.columns ?? {})
+  if (cols.length) d.set(PDFName.of('BSIColumnData'), ctx.obj(Object.fromEntries(cols.map(([k, v]) => [k, text(v)]))))
   d.set(PDFName.of('AP'), ctx.obj({ N: buildAppearance(doc, spec, res, iconKey) }))
   const ref = ctx.register(d)
   page.node.addAnnot(ref)

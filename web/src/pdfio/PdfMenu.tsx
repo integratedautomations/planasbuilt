@@ -64,6 +64,9 @@ export function PdfMenu({ deviceScale = 1, documentId, documentName, markups, sy
       const plan = await planImportFile(f, documentId, markups, {
         layers: new Set(layers.map(l => l.id)), symbolSets: new Set(symbolSets.keys()),
         deviceTypes: new Set(catalog.types.keys()), products: new Set(catalog.products.keys()),
+      }, {
+        typeIdByName: new Map([...catalog.types.values()].map(t => [t.name.toLowerCase(), t.id])),
+        setIdByName: new Map([...symbolSets.values()].map(s => [s.name.toLowerCase(), s.id])),
       })
       if (!plan.changes.length) setNote(plan.skipped ? `Nothing to import (${plural(plan.skipped, 'unsupported annotation')} skipped).` : 'No new markups found in that PDF.')
       else setPreview(plan)

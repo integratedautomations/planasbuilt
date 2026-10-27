@@ -87,9 +87,13 @@ export class Ops {
   text(s: string, x: number, y: number, size: number, color: RGB, bold = false, halo = 0) {
     const f = bold ? 'HelvB' : 'Helv'
     this.fonts.add(f)
-    this.add('q').add('BT').add(`/${f} ${num(size)} Tf`).fill(color)
-    if (halo > 0) this.stroke([1, 1, 1]).width(halo).add('2 Tr')
-    this.add(`1 0 0 -1 ${num(x)} ${num(y)} Tm`).add(`${hexText(s)} Tj`).add('ET').add('Q')
+    const tm = `1 0 0 -1 ${num(x)} ${num(y)} Tm`
+    const show = `${hexText(s)} Tj`
+    // Halo first (stroke-only, white, round joins), then the coloured fill on top: explicit modes, never 2 Tr.
+    if (halo > 0) {
+      this.add('q').add('BT').add(`/${f} ${num(size)} Tf`).stroke([1, 1, 1]).width(halo).add('1 j 1 J').add('1 Tr').add(tm).add(show).add('ET').add('Q')
+    }
+    this.add('q').add('BT').add(`/${f} ${num(size)} Tf`).fill(color).add('0 Tr').add(tm).add(show).add('ET').add('Q')
     return this
   }
   image(name: string, x: number, y: number, w: number, h: number) {

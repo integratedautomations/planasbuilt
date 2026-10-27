@@ -39,6 +39,10 @@ export interface RawAnnot {
   rt?: string
   /** Optional-content layer name (/OC), e.g. a Revu layer. */
   layer?: string
+  /** Revu "Label" column (/Label). */
+  label?: string
+  /** Custom columns (/BSIColumnData). */
+  columns?: Record<string, string>
   /** Has an /Image key (Revu embeds an image inside the annotation). */
   hasImage?: boolean
 }
@@ -80,6 +84,14 @@ function layerNameOf(doc: PDFDocument, d: Dict): string | undefined {
   const groups = oc.get(PDFName.of('OCGs'))
   const first = groups instanceof PDFArray ? doc.context.lookupMaybe(groups.get(0), PDFDict) : doc.context.lookupMaybe(groups, PDFDict)
   return first ? str(doc, first, 'Name') || undefined : undefined
+}
+
+function columnsOf(doc: PDFDocument, d: Dict): Record<string, string> | undefined {
+  const c = doc.context.lookupMaybe(d.get(PDFName.of('BSIColumnData')), PDFDict)
+  if (!c) return undefined
+  const out: Record<string, string> = {}
+  for (const [k] of c.entries()) { const v = str(doc, c, k.decodeText()); if (v) out[k.decodeText()] = v }
+  return Object.keys(out).length ? out : undefined
 }
 
 /** Reads every markup-type annotation of the document (links, widgets and popups are skipped). */
@@ -137,6 +149,8 @@ export function readAnnotations(doc: PDFDocument): { page: number; box: PageBox;
         irt: refKey(d.get(PDFName.of('IRT'))),
         rt: nameOf(doc, d.get(PDFName.of('RT'))) || undefined,
         layer: layerNameOf(doc, d),
+        label: str(doc, d, 'Label') || undefined,
+        columns: columnsOf(doc, d),
         hasImage: d.has(PDFName.of('Image')) || undefined,
       })
     }

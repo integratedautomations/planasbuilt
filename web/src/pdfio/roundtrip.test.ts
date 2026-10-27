@@ -210,3 +210,64 @@ describe('flattened export', () => {
     expect(readAnnotations(doc)[0].annots).toHaveLength(0)
   })
 })
+
+describe('Revu compatibility', () => {
+  const pbox = { llx: 0, lly: 0, width: 612, height: 792, rotation: 0 }
+  const squares = (a: number[][]) => a.flat()
+  const room = (id: string, name: string, pts: number[]): Markup =>
+    ({ ...mk('area', path(0, 0, pts), { text: name }), id })
+
+  it('draws the text halo as a stroke-only pass before the coloured fill pass', () => {
+    const dev = mk('device', box(200, 200, 28, 28), { symbol_set_id: camSet.id, tag: 'CAM-01' })
+    const stream = buildAnnot(dev, { box: pbox, ppf: null, set: camSet, textWidth: approxTextWidth })!.ap.stream
+    expect(stream).not.toMatch(/\b2 Tr\b/)
+    const haloAt = stream.indexOf('1 Tr'), fillAt = stream.indexOf('0 Tr')
+    expect(haloAt).toBeGreaterThan(-1)
+    expect(fillAt).toBeGreaterThan(haloAt)
+    expect(stream.slice(stream.lastIndexOf('BT', haloAt), haloAt)).toMatch(/1 1 1 RG\n[\d.]+ w\n1 j 1 J\n$/)
+    expect(stream.slice(haloAt, fillAt)).toContain('Tj')
+    expect(stream.slice(haloAt - 80, fillAt)).not.toMatch(/ rg\n1 Tr/)
+  })
+
+  it('exports calibrated areas as Revu area measurements and imports them back', async () => {
+    const a = room('a1', 'Kitchen', [0, 0, 144, 0, 144, 72, 0, 72])
+    const spec = buildAnnot(a, { box: pbox, ppf: 9, textWidth: approxTextWidth })!
+    expect(spec).toMatchObject({ subtype: 'Polygon', intent: 'PolygonDimension', subject: 'Area', label: 'Kitchen' })
+    expect(spec.measure?.ratio).toBe('1 in = 8 ft')
+    expect(spec.contents).toMatch(/sq ?ft|SF/i)
+    expect(buildAnnot(a, { box: pbox, ppf: null, textWidth: approxTextWidth })!.intent).toBeUndefined()
+    const out = await exportAnnotated(input(await blankPdf(0), [a]))
+    const d = (await PDFDocument.load(out)).getPages()[0].node.Annots()!
+    const doc2 = await PDFDocument.load(out)
+    const dict = doc2.context.lookup(doc2.getPages()[0].node.Annots()!.get(0)) as any
+    expect(String(dict.get(PDFName.of('IT')))).toBe('/PolygonDimension')
+    expect(dict.get(PDFName.of('Label')).decodeText()).toBe('Kitchen')
+    expect(d.size()).toBe(1)
+    const plan = await planImport(out, { documentId: DOC, existing: new Map() })
+    expect(plan.changes[0].after).toEqual(a)
+    const raw = readAnnotations(doc2)[0].annots[0]
+    expect(mapAnnotation({ ...raw, payload: undefined }, pbox)[0].type).toBe('measure-area')
+    void squares
+  })
+
+  it('maps device columns: Subject = type, Layer = set, Label = tag, Status and Location custom columns', async () => {
+    const dev = mk('device', box(60, 60, 20, 20), { symbol_set_id: camSet.id, tag: 'CAM-02', status: 'tested', created_by_name: 'Ann' })
+    const kitchen = room('a2', 'Kitchen', [0, 0, 200, 0, 200, 200, 0, 200])
+    const spec = buildAnnot(dev, { box: pbox, ppf: null, set: camSet, typeName: 'Dome Camera', location: 'Kitchen', textWidth: approxTextWidth })!
+    expect(spec).toMatchObject({ subject: 'Dome Camera', label: 'CAM-02', layerName: 'Cameras', author: 'Ann', columns: { Status: 'Tested', Location: 'Kitchen' } })
+    expect(spec.contents).toContain('Tag: CAM-02')
+    const out = await exportAnnotated(input(await blankPdf(0), [kitchen, dev]))
+    const doc = await PDFDocument.load(out)
+    const props = doc.context.lookup(doc.catalog.get(PDFName.of('OCProperties'))) as any
+    expect(props.lookup(PDFName.of('OCGs')).size()).toBe(1)
+    const pages = readAnnotations(doc)
+    const raw = pages[0].annots.find(x => x.label === 'CAM-02')!
+    expect(raw).toMatchObject({ layer: 'Cameras', label: 'CAM-02', columns: { Status: 'Tested', Location: 'Kitchen' } })
+    // Revu edits come back: Label -> tag, Subject -> device type
+    const tweaked = await planImport(out, { documentId: DOC, existing: new Map([[dev.id, dev], [kitchen.id, kitchen]]), known })
+    expect(tweaked.unchanged).toBe(2)
+    const imp = await planImport(out, { documentId: 'doc-9', existing: new Map(), newId: () => 'n' + ++n, known,
+      typeIdByName: new Map(), setIdByName: new Map([['cameras', 's1']]) })
+    expect(imp.changes.find(c => c.after!.type === 'device')!.after!.symbol_set_id).toBe('s1')
+  })
+})

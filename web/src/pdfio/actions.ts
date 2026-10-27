@@ -41,8 +41,9 @@ export async function exportDocumentPdf(kind: 'annotated' | 'flattened', a: DocE
 }
 
 /** Reads an annotated PDF picked by the user and works out what importing it would change. */
-export async function planImportFile(file: File, documentId: string, existing: Map<string, Markup>, known?: KnownIds): Promise<ImportPlan> {
-  return planImport(await file.arrayBuffer(), { documentId, existing, known })
+export async function planImportFile(file: File, documentId: string, existing: Map<string, Markup>, known?: KnownIds,
+  names?: { typeIdByName?: ReadonlyMap<string, string>; setIdByName?: ReadonlyMap<string, string> }): Promise<ImportPlan> {
+  return planImport(await file.arrayBuffer(), { documentId, existing, known, ...names })
 }
 
 interface ProjectScaleRow { document_id: string; page: number; points_per_foot: number }

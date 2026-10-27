@@ -54,6 +54,12 @@ export interface AnnotSpec {
   /** FreeText default appearance. */
   da?: { size: number; color: RGB }
   stampName?: string
+  /** Revu "Label" column (/Label): device tag, area name. */
+  label?: string
+  /** Optional-content group name (Revu "Layer" column): the symbol set of a device. */
+  layerName?: string
+  /** Revu custom columns (/BSIColumnData), e.g. Status and Location. */
+  columns?: Record<string, string>
   /** Full markup JSON (custom /PlanAsBuilt key). */
   payload: string
   ap: {
@@ -78,6 +84,10 @@ export interface BuildCtx {
   /** Width of text in the label fonts. */
   textWidth: (s: string, size: number, bold?: boolean) => number
   areaPath?: string[]
+  /** Device type name (Revu Subject for a device). */
+  typeName?: string
+  /** Room / area the device sits in. */
+  location?: string
   countNumber?: number
   showCones?: boolean
   /** Cable only: ends linked to a device (ring round the symbol, line stops at its edge), in page space. */
@@ -117,7 +127,8 @@ export function contentsOf(m: Markup, set: SymbolSet | undefined, measureText = 
   return m.text ?? ''
 }
 
-export const subjectOf = (m: Markup, set?: SymbolSet) => (m.type === 'device' && set ? set.name : TYPE_LABEL[m.type] ?? m.type)
+export const subjectOf = (m: Markup, set?: SymbolSet, typeName?: string) =>
+  (m.type === 'device' ? typeName || set?.name || TYPE_LABEL.device : TYPE_LABEL[m.type] ?? m.type)
 
 export function scaleRatio(ppf: number): string {
   const ft = 72 / ppf
@@ -180,7 +191,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
 
   const spec: AnnotSpec = {
     markupId: m.id, subtype: 'Square', rect: [0, 0, 0, 0],
-    subject: subjectOf(m, ctx.set), contents: '', author: m.created_by_name ?? m.updated_by_name ?? '',
+    subject: subjectOf(m, ctx.set, ctx.typeName), contents: '', author: m.created_by_name ?? m.updated_by_name ?? '',
     flags: 4, color: stroke, interior: fillC, opacity, borderWidth: sw, dash,
     payload: JSON.stringify(m),
     ap: { stream: '', gstates: {}, fonts: [], images: [] },
@@ -188,6 +199,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
   }
   let pad = sw / 2 + 1
   let measureText = ''
+  let areaValue = ''
 
   const gsMain: ExtGState = { CA: opacity, ca: opacity }
   if (m.type === 'highlight') gsMain.BM = 'Multiply'
@@ -356,6 +368,12 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         for (const [px, py] of [[-tw / 2, base - fs], [tw / 2, base - fs], [-tw / 2, base + fs * 0.3], [tw / 2, base + fs * 0.3]]) extra.push(applyMatrix(LM, px, py))
         pad = r * 0.1 + 1
         spec.subtype = 'Stamp'; spec.stampName = set?.name ?? 'Device'; spec.borderWidth = 0
+        spec.label = m.tag || ''
+        if (set?.name) spec.layerName = set.name
+        const stLabel = STATUSES.find(s2 => s2.value === m.status)?.label
+        spec.columns = {}
+        if (stLabel) spec.columns.Status = stLabel
+        if (ctx.location) spec.columns.Location = ctx.location
         break
       }
       default:
@@ -534,6 +552,14 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         ext.text(ax + 5 + tw / 2, ay + 5 + fs * 0.9, tw, fs)
         spec.subtype = 'Polygon'; spec.vertices = vertsPdf(); spec.interior = null
         measureText = ctx.areaPath?.join(' > ') || name
+        spec.label = name
+        if (ctx.ppf && !sheet) {
+          // Revu area measurement: Polygon + /IT /PolygonDimension + /Measure, value text in /Contents
+          spec.measure = { ratio: scaleRatio(ctx.ppf), pointsPerFoot: ctx.ppf }
+          spec.intent = 'PolygonDimension'
+          spec.subject = 'Area'
+          areaValue = formatArea(sqftOf(pts, ctx.ppf))
+        }
         if (sheet) spec.flags = 4 | 2
         break
       }
@@ -551,7 +577,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
     spec.inner = r4([Math.max(spec.inner[0], spec.rect[0]), Math.max(spec.inner[1], spec.rect[1]),
       Math.min(spec.inner[2], spec.rect[2]), Math.min(spec.inner[3], spec.rect[3])])
   }
-  if (m.type !== 'legend') spec.contents = m.type === 'text' ? m.text : contentsOf(m, ctx.set, measureText)
+  if (m.type !== 'legend') spec.contents = m.type === 'text' ? m.text : areaValue || contentsOf(m, ctx.set, measureText)
   spec.ap = { stream: ops.toString(), gstates: ops.gstates, fonts: [...ops.fonts], images: [...ops.images] }
   return spec
 }

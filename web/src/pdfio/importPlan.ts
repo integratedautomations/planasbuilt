@@ -13,6 +13,9 @@ export interface ImportContext {
   newId?: () => string
   /** Ids that exist locally (layers, symbol sets, catalog). Payload references to anything else are dropped. */
   known?: KnownIds
+  /** Lower-case device type / symbol set names to ids, so Revu edits of Subject / Layer map back (optional). */
+  typeIdByName?: ReadonlyMap<string, string>
+  setIdByName?: ReadonlyMap<string, string>
 }
 
 export interface ImportPlan {
@@ -55,6 +58,14 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
         const existing = sameDoc ? ctx.existing.get(id) : undefined
         const clean: Markup = { ...payload, id, document_id: ctx.documentId, page: a.page }
         for (const k of SERVER_FIELDS) delete clean[k]
+        if (clean.type === 'device') {
+          // Revu columns win over the payload when edited there: Subject = device type, Layer (OC) = symbol set, Label = tag
+          const t = a.subject ? ctx.typeIdByName?.get(a.subject.toLowerCase()) : undefined
+          if (t) clean.device_type_id = t
+          const sid = a.layer ? ctx.setIdByName?.get(a.layer.toLowerCase()) : undefined
+          if (sid) clean.symbol_set_id = sid
+          if (a.label !== undefined) clean.tag = a.label
+        }
         if (!sameDoc) { clean.layer_id = null; if (clean.type === 'device') clean.tag = '' } // the server numbers new devices
         if (existing) {
           const after: Markup = { ...existing, ...clean, layer_id: clean.layer_id ?? existing.layer_id }
