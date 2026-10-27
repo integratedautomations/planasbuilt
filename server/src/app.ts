@@ -416,7 +416,7 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
   async function projectAccess(userId: string, projectId: string): Promise<Access | null> {
     const rows = await db.query<any>(
       `SELECT p.company_id, m.role, m.scope, p.editors_see_costs, (p.settings->>'locked') = 'true' AS locked,
-              cm.role AS company_role, u.is_admin AS platform, c.archived
+              cm.role AS company_role, u.is_admin AS platform, c.archived, p.archived AS project_archived
        FROM projects p
        JOIN companies c ON c.id = p.company_id
        JOIN users u ON u.id = $2
@@ -426,12 +426,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const r = rows[0]
     // The project's company decides: someone who is not in it (or left it) has no access whatever their project role says.
     if (!r || (!r.company_role && !r.platform) || (r.archived && !r.platform)) return null
-    const base = { editorsSeeCosts: r.editors_see_costs !== false, locked: !!r.locked, companyId: r.company_id as string }
+    const base = { editorsSeeCosts: r.editors_see_costs !== false, locked: !!r.locked, archived: !!r.project_archived, companyId: r.company_id as string }
     if (r.role) return { role: r.role, scope: normalizeScope(r.scope), ...base }
     // Owners and admins of the company (and platform admins) work in every project of it without being added to each.
     if (r.platform || r.company_role === 'owner' || r.company_role === 'admin') return { role: 'admin', scope: normalizeScope(null), implicit: true, ...base }
     return null
   }
+
+  const READ_CAPS: ReadonlySet<Cap> = new Set<Cap>(['view', 'costs.view', 'internal.view'])
 
   /** What requireCap resolved for a request, for handlers that need the role or scope afterwards. */
   const accessByReq = new WeakMap<FastifyRequest, Access>()
@@ -451,6 +453,8 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
       // A member of an archived company is told so (an offline client marks its queued items failed with this message).
       if (p.archived && !req.user.isAdmin) { reply.code(423).send({ error: 'company archived' }); return null }
     }
+    // An archived project can be opened but not changed by anyone, admins included, until it is restored.
+    if (access?.archived && !READ_CAPS.has(cap)) { reply.code(423).send({ error: 'This project is archived. Restore it to make changes.' }); return null }
     if (!accessCan(access, cap)) {
       reply.code(403).send({ error: access?.locked && can(access.role, cap, { editorsSeeCosts: access.editorsSeeCosts }) ? 'This project is locked. Only admins can make changes.' : 'Not allowed' })
       return null
@@ -704,14 +708,18 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
 
   // ---- Projects ----
   // The active company's projects the user is a member of; owners and admins of the company see all of them (role 'admin', is_member false).
+  // Archived projects are left out; ?include_archived=1 adds them for owners and admins.
   app.get('/api/projects', { preHandler: auth }, async (req, reply) => {
     const company = await requireCompany(req, reply)
     if (!company) return
+    const q = req.query as any
+    const archived = company.isAdmin && (q.include_archived === '1' || q.include_archived === 'true')
     return db.query(
-      `SELECT p.id, p.company_id, p.name, p.created_at, p.status, p.completed_at, coalesce(m.role, 'admin') AS role, (m.user_id IS NOT NULL) AS is_member,
+      `SELECT p.id, p.company_id, p.name, p.created_at, p.status, p.completed_at, p.archived, p.archived_at, coalesce(m.role, 'admin') AS role, (m.user_id IS NOT NULL) AS is_member,
          (SELECT count(*)::int FROM documents d WHERE d.project_id = p.id) AS document_count
        FROM projects p LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = $1
-       WHERE p.company_id = $2 AND (m.user_id IS NOT NULL OR $3::boolean) ORDER BY p.created_at DESC`, [req.user.id, company.id, company.isAdmin])
+       WHERE p.company_id = $2 AND (m.user_id IS NOT NULL OR $3::boolean) AND ($4::boolean OR NOT p.archived) ORDER BY p.created_at DESC`,
+      [req.user.id, company.id, company.isAdmin, archived])
   })
 
   // Creating a project makes you its admin (members, invites, uploads), so it is limited to company owners/admins and to
@@ -744,6 +752,16 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     return { ...shapeProject(project), role: access.role, scope: access.scope, can_see_costs: !guest && accessCan(access, 'costs.view') }
   })
 
+  /** Owners and admins of the project's company (and platform admins): the project row, or null after answering 404 / 403. */
+  async function requireProjectAdmin(req: FastifyRequest, reply: FastifyReply, projectId: string) {
+    const [p] = UUID_RE.test(String(projectId)) ? await db.query<{ id: string; name: string; company_id: string }>('SELECT id, name, company_id FROM projects WHERE id = $1', [projectId]) : []
+    const ctx = p ? await companyCtx(req.user, p.company_id) : null
+    if (!p || !ctx) { reply.code(404).send({ error: 'Not found' }); return null }
+    if (!ctx.isAdmin) { reply.code(403).send({ error: 'Admins only' }); return null }
+    return p
+  }
+
+  // Archive or restore a project (company owners/admins). Archived projects are hidden from the list and read-only for everyone.
   // Mark a project Complete or reopen it (anyone who can edit plans), and/or switch the "editors see costs" setting (project admins).
   // Completed projects stay fully usable.
   app.patch('/api/projects/:id', { preHandler: auth }, async (req, reply) => {
@@ -752,6 +770,14 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
     const hasStatus = b.status !== undefined, hasCosts = b.editors_see_costs !== undefined
     const hasCable = b.cable_slack_pct !== undefined || b.cable_drop_ft !== undefined
     const hasName = b.name !== undefined
+    if (b.archived !== undefined) {
+      if (typeof b.archived !== 'boolean') return reply.code(400).send({ error: 'archived must be true or false' })
+      const p = await requireProjectAdmin(req, reply, id)
+      if (!p) return
+      const [project] = await db.query('UPDATE projects SET archived = $2, archived_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id = $1 RETURNING *', [id, b.archived])
+      realtime.projectsChanged(req.user.id, cid(req), p.company_id, id)
+      return { ...shapeProject(project), role: 'admin' }
+    }
     if (!hasStatus && !hasCosts && !hasCable && !hasName) return reply.code(400).send({ error: "status must be 'open' or 'completed'" })
     const access = await requireCap(req, reply, id, hasCosts || hasName ? 'members.manage' : 'plans.edit')
     if (!access) return
@@ -777,6 +803,35 @@ export async function buildApp({ db, jwtSecret, filesDir, webDir, s3Factory, rat
         'UPDATE projects SET cable_slack_pct = coalesce($1, cable_slack_pct), cable_drop_ft = coalesce($2, cable_drop_ft) WHERE id = $3 RETURNING *',
         [b.cable_slack_pct ?? null, b.cable_drop_ft ?? null, id])
     return { ...shapeProject(project), role: access.role, scope: access.scope }
+  })
+
+  // Delete a project for good (company owners/admins). The exact project name must come with the request. All its rows go in one
+  // transaction; its files move to the trash (and are purged by retention) unless another row still points at them.
+  app.delete('/api/projects/:id', { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as any
+    const p = await requireProjectAdmin(req, reply, id)
+    if (!p) return
+    const given = String(((req.body ?? {}) as any).name ?? (req.query as any)?.name ?? '').trim()
+    if (given !== p.name.trim()) return reply.code(400).send({ error: 'Type the exact project name to confirm' })
+    const keys = await db.query<{ k: string | null }>(
+      `SELECT r.file_key AS k FROM document_revisions r JOIN documents d ON d.id = r.document_id WHERE d.project_id = $1
+       UNION SELECT a.file_key FROM attachments a JOIN markups m ON m.id = a.markup_id JOIN documents d ON d.id = m.document_id WHERE d.project_id = $1
+       UNION SELECT a.annotated_key FROM attachments a JOIN markups m ON m.id = a.markup_id JOIN documents d ON d.id = m.document_id WHERE d.project_id = $1
+       UNION SELECT e->>'file_key' FROM document_revisions r JOIN documents d ON d.id = r.document_id
+         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.attachments_snapshot) = 'array' THEN r.attachments_snapshot ELSE '[]'::jsonb END) e WHERE d.project_id = $1
+       UNION SELECT e->>'annotated_key' FROM document_revisions r JOIN documents d ON d.id = r.document_id
+         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.attachments_snapshot) = 'array' THEN r.attachments_snapshot ELSE '[]'::jsonb END) e WHERE d.project_id = $1
+       UNION SELECT settings->'report'->>'logo_key' FROM projects WHERE id = $1`, [id])
+    const docs = await db.query<{ id: string }>('SELECT id FROM documents WHERE project_id = $1', [id])
+    // Members, plans, revisions, pages, markups, photos, scales and layers go with the project (ON DELETE CASCADE).
+    await db.transaction(async q => {
+      await q("DELETE FROM relayout_jobs WHERE (scope = 'project' AND scope_id = $1) OR (scope = 'document' AND scope_id = ANY($2::text[]))", [id, docs.map(d => d.id)])
+      await q('DELETE FROM projects WHERE id = $1', [id])
+    })
+    realtime.dropDocs(docs.map(d => d.id))
+    realtime.projectsChanged(req.user.id, cid(req), p.company_id, id, true)
+    await releaseFiles(keys.map(r => r.k), p.company_id)
+    return { ok: true }
   })
 
   app.get('/api/projects/:id/members', { preHandler: auth }, async (req, reply) => {

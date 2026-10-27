@@ -683,3 +683,11 @@ input.invalid { border-color: var(--danger); }
   .catalog-grid > section.catalog-detail:not(.sheet-open) { display: none; }
   .catalog-detail.sheet-open .catalog-detail-bar { display: flex; position: sticky; top: 0; z-index: 1; margin: 0 -16px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
 }
+
+/* Archived projects and the project Danger zone */
+.list > li.archived-item { display: flex; align-items: center; gap: 8px; }
+.list > li.archived-item .list-item { flex: 1; min-width: 0; opacity: 0.6; }
+.archived-badge { margin-left: 8px; padding: 1px 6px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); font-size: 11px; font-weight: 500; color: var(--muted); }
+.danger-zone { border-color: var(--danger); }
+.danger-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border); }
+.danger-row p { margin: 2px 0 0; }

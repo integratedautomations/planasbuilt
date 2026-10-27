@@ -69,13 +69,36 @@ async function foreignTargets(): Promise<Set<string>> {
 
 const nonEmpty = <T>(rows: T[]) => (rows.length ? rows : undefined)
 
-export const loadProjects = () => readThrough(
-  () => api<Project[]>('/projects'),
-  async (rows, company) => { await db.transaction('rw', db.projects, () => replaceScoped(db.projects, rows, company)) },
-  async company => (await readScoped(db.projects, company)),
+/** The project list. Archived projects (asked for with `includeArchived`, admins) are never kept offline: the cached list is always the normal one. */
+export const loadProjects = (includeArchived = false) => readThrough(
+  () => api<Project[]>(includeArchived ? '/projects?include_archived=1' : '/projects'),
+  async (rows, company) => { await db.transaction('rw', db.projects, () => replaceScoped(db.projects, rows.filter(p => !p.archived), company)) },
+  async company => (await readScoped(db.projects, company)).filter(p => !p.archived),
   'Your project list',
   true,
 )
+
+/**
+ * A project was archived or deleted: drop it from the cached list. Deleting also removes its plans, markups, photos, scales,
+ * layers and any offline copy (listOnly keeps those: an archived project can still be opened).
+ */
+export async function forgetProjectLocal(projectId: string, listOnly = false) {
+  if (listOnly) { await db.projects.delete(projectId); return }
+  const docs = await db.documents.where('project_id').equals(projectId).primaryKeys()
+  const markups = docs.length ? await db.markups.where('document_id').anyOf(docs).primaryKeys() : []
+  const atts = markups.length ? await db.attachments.where('markup_id').anyOf(markups).primaryKeys() : []
+  await db.transaction('rw', [db.projects, db.documents, db.pdfs, db.markups, db.layers, db.scales, db.attachments, db.photoBlobs, db.kv], async () => {
+    await db.projects.delete(projectId)
+    await db.documents.bulkDelete(docs)
+    await db.pdfs.bulkDelete(docs)
+    await db.markups.bulkDelete(markups)
+    await db.layers.where('project_id').equals(projectId).delete()
+    await db.scales.where('document_id').anyOf(docs).delete()
+    await db.attachments.bulkDelete(atts)
+    if (atts.length) await db.photoBlobs.where('attachment_id').anyOf(atts).delete()
+    await db.kv.bulkDelete(docs.flatMap(id => [`cache:${id}`, `docmeta:${id}`]))
+  })
+}
 
 export const loadProject = (id: string) => {
   const startedIn = getActiveCompanyId()

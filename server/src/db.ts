@@ -279,6 +279,9 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS cable_slack_pct double precision N
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS cable_drop_ft double precision NOT NULL DEFAULT 0;
 -- Project settings (Phase 8c): statuses, required fields, tag rules, report sections, photo quality, lock. See projectSettings.ts.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS settings jsonb NOT NULL DEFAULT '{}';
+-- Archived projects drop out of the list and are read-only until restored (company owners/admins archive and restore them).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at timestamptz;
 CREATE TABLE IF NOT EXISTS settings (
   key text PRIMARY KEY,
   value jsonb NOT NULL DEFAULT '{}'

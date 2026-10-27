@@ -9,6 +9,8 @@ export type { Role, Scope }
 export interface ActiveCompany { id: string; name: string; role: CompanyRole | null; archived: boolean }
 export interface User { id: string; email: string; name: string; /** Admin of the active company, or a platform admin. */ is_admin: boolean; /** Can create and see every company. */ platform_admin?: boolean; company?: ActiveCompany | null; /** Admins always can; other people only when an admin granted it. */ can_create_projects?: boolean; avatar?: number | null; /** Chosen background of the initials avatar (#rrggbb). */ avatar_color?: string | null }
 export interface Project { id: string; name: string; company_id?: string; /** False when an owner or admin sees a project they are not a member of. */ is_member?: boolean; created_at: string; role: Role; document_count?: number; status?: 'open' | 'completed'; completed_at?: string | null
+  /** Archived projects are read-only for everyone; only admins ever see them listed. */
+  archived?: boolean; archived_at?: string | null
   /** Sub only: the symbol sets and layers they work on. */
   scope?: Scope
   /** Whether this person sees unit costs and labor hours in the project. */

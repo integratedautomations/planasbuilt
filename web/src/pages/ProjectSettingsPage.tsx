@@ -8,7 +8,7 @@ import type { ProjectSection } from '../settings/ProjectSettingsTab'
 import { ProjectBody, useProject } from '../shell/ProjectShell'
 import { useActiveTabIntoView } from '../ui/useActiveTabIntoView'
 
-/** Settings tab of a project: General, Rules, Tags, Cable defaults, Report, and (platform admins) Move to another company. */
+/** Settings tab of a project: General, Rules, Tags, Cable defaults, Report, Danger zone (company admins) and (platform admins) Move to another company. */
 export function ProjectSettingsPage({ user }: { user: User }) {
   const { project, setProject } = useProject()
   const [params] = useSearchParams()
@@ -17,7 +17,7 @@ export function ProjectSettingsPage({ user }: { user: User }) {
   if (!project) return <p className="muted">Loading…</p>
   const manage = can(project.role, 'members.manage')
   if (!manage && !user.platform_admin) return <ProjectBody><p className="muted">Only project admins can change settings.</p></ProjectBody>
-  const sections = PROJECT_SECTIONS.filter(s => !s.platform || user.platform_admin)
+  const sections = PROJECT_SECTIONS.filter(s => (!s.platform || user.platform_admin) && (!s.companyAdmin || user.is_admin))
   const visible = manage ? sections : sections.filter(s => s.platform)
   const section = (visible.find(s => s.id === params.get('section'))?.id ?? visible[0].id) as ProjectSection
   return (

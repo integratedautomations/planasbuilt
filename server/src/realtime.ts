@@ -239,6 +239,15 @@ export class Realtime {
   layersChanged(documentIds: string[], by: string, clientId?: string | null) {
     for (const id of documentIds) this.toRoom(id, { type: 'layers', by }, clientId)
   }
+  /** A company's project list changed (archived, restored or deleted): its sockets reload the list; `removed` marks a deleted project. */
+  projectsChanged(by: string, clientId: string | null | undefined, companyId: string, projectId: string, removed = false) {
+    for (const c of this.conns) if (c.companyId === companyId && !(clientId && c.clientId === clientId)) this.send(c, { type: 'projects', by, companyId, projectId, removed })
+  }
+  /** Takes everyone out of the given documents' rooms (their project was deleted). */
+  dropDocs(documentIds: string[]) {
+    const ids = new Set(documentIds)
+    for (const c of [...this.conns]) if (c.documentId && ids.has(c.documentId)) this.leave(c)
+  }
   /** The catalog of a company changed: only that company's sockets hear about it. */
   symbolSetsChanged(by: string, clientId: string | null | undefined, companyId: string) {
     for (const c of this.conns) if (c.companyId === companyId && !(clientId && c.clientId === clientId)) this.send(c, { type: 'symbol_sets', by, companyId })

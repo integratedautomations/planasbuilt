@@ -6,6 +6,7 @@ import { COMPANY_ROLES, COMPANY_ROLE_INFO } from '../roles'
 import type { CompanyRole } from '../roles'
 import { CopyLink } from './CopyLink'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { useTypedConfirm } from '../ui/TypedConfirm'
 
 const roleLabel = (u: ManagedUser) => u.company_role ? COMPANY_ROLE_INFO[u.company_role].label : u.is_admin ? 'Admin' : 'Member'
 const STATUS_LABEL: Record<UserStatus, string> = { active: 'Active', invited: 'Invited', deactivated: 'Deactivated' }
@@ -113,6 +114,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
   }, [onClose])
 
   const { ask, dialog } = useConfirm()
+  const typed = useTypedConfirm()
   async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setError(''); setMsg('')
     try { return await fn() } catch (e) { setError((e as Error).message) }
@@ -134,7 +136,7 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer" role="dialog" aria-label="User details" onClick={e => e.stopPropagation()}>
-        {dialog}
+        {dialog}{typed.dialog}
         <div className="row"><h3>{u?.name ?? 'User'}</h3><span className="spacer" /><button onClick={onClose}>Close</button></div>
         {!u ? <p className="muted">{error || 'Loading…'}</p> : (
           <>
@@ -205,6 +207,15 @@ function UserDrawer({ id, me, projects, onClose, onChanged }: {
                     }}>Deactivate</button>
                   )}
                   {u.status === 'deactivated' && <button onClick={() => patch({ status: 'active' })}>Reactivate</button>}
+                  {u.status === 'deactivated' && !self && (
+                    <button className="danger" onClick={async () => {
+                      const ok = await typed.ask({
+                        title: 'Delete user permanently', expected: [u.email, u.name], confirmLabel: 'Delete user',
+                        message: `This deletes the account of ${u.name} and removes them from every project. What they created (markups, photos, revisions) stays, without an author. This cannot be undone.`,
+                      })
+                      if (ok) void run(async () => { await api(`/users/${id}`, { method: 'DELETE' }); onChanged(); onClose() })
+                    }}>Delete user</button>
+                  )}
                 </>
               )}
             </div>

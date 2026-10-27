@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import type { Project, User } from '../api'
 import { loadProject } from '../offline/cache'
+import { on as onSocket } from '../realtime/socket'
 import { Icon } from '../ui/Icon'
 import { lockedFor } from '../projectSettings'
 import { can } from '../roles'
@@ -38,8 +39,13 @@ export function ProjectShell({ user }: { user: User }) {
     loadProject(projectId!).then(r => setProject(r.data)).catch(e => setError(e.message))
   }, [projectId])
 
+  const navigate = useNavigate()
+  // This project was deleted by someone else: leave it.
+  useEffect(() => onSocket('projects', (m: { removed?: boolean; projectId?: string }) => { if (m.removed && m.projectId === projectId) navigate('/') }), [projectId, navigate])
+
+  const archived = !!project?.archived
   const locked = lockedFor(project?.role, { locked: project?.settings?.locked === true })
-  const canEdit = can(project?.role, 'plans.edit') && !locked
+  const canEdit = can(project?.role, 'plans.edit') && !locked && !archived
   const canManage = can(project?.role, 'members.manage')
   const ctx = useMemo(() => ({ project, setProject: (p: Project) => setProject(p), user, error }), [project, user, error])
 
@@ -68,6 +74,7 @@ export function ProjectShell({ user }: { user: User }) {
     <Ctx.Provider value={ctx}>
       <PageShell crumbs={[{ label: 'Projects', to: '/' }, { label: project?.name ?? '…' }]} actions={actions} width="full" className="project-content"
         below={<div className="project-tabs-bar"><ProjectTabs projectId={projectId!} canManage={canManage} platformAdmin={user.platform_admin} canSeeCosts={project?.can_see_costs} /></div>}>
+        {archived && <div className="lock-banner" role="status">This project is archived and read-only. An admin can restore it in Settings, Danger zone.</div>}
         {locked && <div className="lock-banner" role="status">This project is locked. Only admins can make changes.</div>}
         {error && !project && <div className="error">{error}</div>}
         <Outlet />

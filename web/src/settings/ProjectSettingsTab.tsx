@@ -9,18 +9,20 @@ import { applyProjectSettings, normalizeSettings } from '../projectSettings'
 import type { ProjectRules } from '../projectSettings'
 import { useAuthedUrl } from '../useAuthedUrl'
 import { CableDefaults } from './CableDefaults'
+import { DangerZonePanel } from './DangerZonePanel'
 import { MoveProjectPanel } from './MoveProjectPanel'
 import { ProjectRulesForm } from './ProjectRulesForm'
 import type { RulesPart } from './ProjectRulesForm'
 
-export type ProjectSection = 'general' | 'rules' | 'tags' | 'cables' | 'report' | 'move'
-export const PROJECT_SECTIONS: { id: ProjectSection; label: string; icon: IconName; platform?: boolean }[] = [
+export type ProjectSection = 'general' | 'rules' | 'tags' | 'cables' | 'report' | 'move' | 'danger'
+export const PROJECT_SECTIONS: { id: ProjectSection; label: string; icon: IconName; platform?: boolean; companyAdmin?: boolean }[] = [
   { id: 'general', icon: 'settings', label: 'General' },
   { id: 'rules', icon: 'rules', label: 'Rules' },
   { id: 'tags', icon: 'tag', label: 'Tags' },
   { id: 'cables', icon: 'cable', label: 'Cable defaults' },
   { id: 'report', icon: 'file', label: 'Report' },
   { id: 'move', icon: 'move', label: 'Move to another company', platform: true },
+  { id: 'danger', icon: 'trash', label: 'Danger zone', companyAdmin: true },
 ]
 
 const rulesOf = (p: Project): ProjectRules => {
@@ -136,6 +138,8 @@ export function ProjectSettingsTab({ project, onProject, section = 'general', pl
       {parts && <ProjectRulesForm value={rules} onChange={r => { setRules(r); setMsg('') }} sets={sets} inUse={inUse} disabled={busy} parts={parts} />}
 
       {section === 'move' && platformAdmin && <MoveProjectPanel project={project} />}
+
+      {section === 'danger' && <DangerZonePanel project={project} onProject={onProject} />}
 
       {parts && (
         <div className="save-bar">

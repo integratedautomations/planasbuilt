@@ -547,6 +547,42 @@ export async function registerAdmin(ctx: AdminContext) {
     return userDetail(company.id, id)
   })
 
+  // Delete a deactivated account for good. Accounts are global, so the safe rule is: a company admin may delete a person who belongs
+  // to no other company; someone who is also in other companies can only be removed from this one (members route), and only a
+  // platform admin can delete that account everywhere. What the person wrote stays (markups, revisions, photos, history) with no author.
+  app.delete('/api/users/:id', { preHandler: auth }, async (req, reply) => {
+    const company = await requireCompany(req, reply, 'admin')
+    if (!company) return
+    const { id } = req.params as any
+    const [u] = UUID_RE.test(id)
+      ? await db.query('SELECT u.id, u.status, u.is_admin, u.avatar_key FROM users u JOIN company_members m ON m.user_id = u.id AND m.company_id = $2 WHERE u.id = $1', [id, company.id])
+      : []
+    if (!u) return reply.code(404).send({ error: 'Not found' })
+    if (id === req.user.id) return reply.code(400).send({ error: 'You cannot delete yourself' })
+    if (u.status !== 'deactivated') return reply.code(400).send({ error: 'Deactivate this person before deleting them' })
+    if (!req.user.isAdmin && (await inOtherCompanies(id, company.id)))
+      return reply.code(403).send({ error: 'This person belongs to other companies. Remove them from this company instead; only a platform admin can delete the account.' })
+    const soleOwner = await db.query(
+      `SELECT 1 FROM company_members m WHERE m.user_id = $1 AND m.role = 'owner'
+       AND NOT EXISTS (SELECT 1 FROM company_members o WHERE o.company_id = m.company_id AND o.role = 'owner' AND o.user_id <> $1) LIMIT 1`, [id])
+    if (soleOwner.length) return reply.code(400).send({ error: 'A company needs at least one owner' })
+    if (u.is_admin && (await db.query("SELECT 1 FROM users WHERE is_admin AND id <> $1", [id])).length === 0)
+      return reply.code(400).send({ error: 'There must be at least one platform admin' })
+    await db.transaction(async q => {
+      // Authorship columns have no ON DELETE rule: clear them so the history stays but nothing blocks (or cascades with) the delete.
+      for (const [t, c] of [['projects', 'created_by'], ['document_revisions', 'uploaded_by'], ['markups', 'created_by'], ['markups', 'updated_by'],
+        ['attachments', 'created_by'], ['page_scales', 'updated_by'], ['markup_events', 'user_id']])
+        await q(`UPDATE ${t} SET ${c} = NULL WHERE ${c} = $1`, [id])
+      // Memberships, prefs, tokens and invitations go by ON DELETE CASCADE; invited_by / created_by references are set to null.
+      await q('DELETE FROM users WHERE id = $1', [id])
+    })
+    forgetUser(id)
+    realtime.kickUser(id)
+    await companyMemberRemoved(id, company.id)
+    if (u.avatar_key) await storage.remove(u.avatar_key, { companyId: company.id }).catch(() => {})
+    return { ok: true }
+  })
+
   app.put('/api/users/:id/projects', { preHandler: auth }, async (req, reply) => {
     const company = await requireCompany(req, reply, 'admin')
     if (!company) return

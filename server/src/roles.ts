@@ -63,6 +63,8 @@ export interface Access {
   role: Role; scope: Scope; editorsSeeCosts: boolean
   /** The project is locked: only admins may change anything. */
   locked?: boolean
+  /** The project is archived: nobody may change anything until it is restored. */
+  archived?: boolean
   /** The company that owns the project. */
   companyId?: string
   /** Not a project member: admin access granted by being an owner/admin of the project's company (or a platform admin). */
