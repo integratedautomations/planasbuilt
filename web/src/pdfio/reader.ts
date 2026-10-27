@@ -37,6 +37,10 @@ export interface RawAnnot {
   /** /IRT target reference and /RT relation (Revu groups use /RT /Group). */
   irt?: string
   rt?: string
+  /** Review state of a status reply (/StateModel Review, /State) and its modification date (/M). */
+  state?: string
+  stateModel?: string
+  modified?: string
   /** Optional-content layer name (/OC), e.g. a Revu layer. */
   layer?: string
   /** Revu "Label" column (/Label). */
@@ -158,6 +162,7 @@ export function readAnnotations(doc: PDFDocument): { page: number; box: PageBox;
         ref: refKey(list.get(k)),
         irt: refKey(d.get(PDFName.of('IRT'))),
         rt: nameOf(doc, d.get(PDFName.of('RT'))) || undefined,
+        state: str(doc, d, 'State') || undefined, stateModel: str(doc, d, 'StateModel') || undefined, modified: str(doc, d, 'M') || undefined,
         layer: layerNameOf(doc, d),
         label: str(doc, d, 'Label') || undefined,
         columns: columnsOf(doc, d),

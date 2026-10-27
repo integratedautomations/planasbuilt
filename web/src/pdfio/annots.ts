@@ -58,7 +58,9 @@ export interface AnnotSpec {
   label?: string
   /** Optional-content group name (Revu "Layer" column): the symbol set of a device. */
   layerName?: string
-  /** Revu custom columns (/BSIColumnData), e.g. Status and Location. */
+  /** Status label of a device: written as a Revu status reply annotation (/StateModel Review). */
+  statusLabel?: string
+  /** Revu custom columns (/BSIColumnData), e.g. Location. */
   columns?: Record<string, string>
   /** Full markup JSON (custom /PlanAsBuilt key). */
   payload: string
@@ -396,7 +398,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
         if (set?.name) spec.layerName = set.name
         const stLabel = STATUSES.find(s2 => s2.value === m.status)?.label
         spec.columns = {}
-        if (stLabel) spec.columns.Status = stLabel
+        if (stLabel) spec.statusLabel = stLabel
         if (ctx.location) spec.columns.Location = ctx.location
         break
       }

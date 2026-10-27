@@ -5,6 +5,22 @@ import { uuid } from '../uuid'
 import { mapAnnotation, mapSpace, parsePayload } from './importMap'
 import type { KnownIds } from './importMap'
 import { readAnnotations, readSpaces } from './reader'
+import type { RawAnnot } from './reader'
+import { STATUSES } from '../markups/types'
+
+/** A Revu status reply: a Text annotation with /IRT and /State. */
+export const isStatusReply = (a: RawAnnot) => a.subtype === 'Text' && !!a.irt && !!a.state
+
+/** Latest status reply (by /M) per parent reference. */
+export function statusRepliesOf(annots: RawAnnot[]): Map<string, string> {
+  const best = new Map<string, { state: string; m: string }>()
+  for (const a of annots) {
+    if (!isStatusReply(a)) continue
+    const cur = best.get(a.irt!)
+    if (!cur || (a.modified ?? '') >= cur.m) best.set(a.irt!, { state: a.state!, m: a.modified ?? '' })
+  }
+  return new Map([...best].map(([k, v]) => [k, v.state]))
+}
 
 export interface ImportContext {
   documentId: string
@@ -18,6 +34,8 @@ export interface ImportContext {
   setIdByName?: ReadonlyMap<string, string>
   /** Keep payload tags on devices from another document; the server renumbers any that collide. */
   keepTags?: boolean
+  /** Lower-case status names to status ids; defaults to the active project's statuses. */
+  statusIdByName?: ReadonlyMap<string, string>
 }
 
 export interface ImportPlan {
@@ -52,7 +70,9 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
   const count = (type: string) => { plan.byType[type] = (plan.byType[type] ?? 0) + 1 }
 
   for (const { box, annots } of readAnnotations(doc)) {
+    const replies = statusRepliesOf(annots)
     for (const a of annots) {
+      if (isStatusReply(a)) continue
       if (a.measurePpf && !plan.scales.has(a.page)) plan.scales.set(a.page, a.measurePpf)
       const payload = parsePayload(a.payload, ctx.known)
       if (payload) {
@@ -70,6 +90,12 @@ export async function planImport(bytes: ArrayBuffer | Uint8Array, ctx: ImportCon
           const sid = a.layer ? ctx.setIdByName?.get(a.layer.toLowerCase()) : undefined
           if (sid) clean.symbol_set_id = sid
           if (a.label !== undefined) clean.tag = a.label
+          const stateLabel = a.ref ? replies.get(a.ref) : undefined
+          if (stateLabel) {
+            const key = stateLabel.trim().toLowerCase()
+            const sid = ctx.statusIdByName ? ctx.statusIdByName.get(key) : STATUSES.find(s => s.label.toLowerCase() === key)?.value
+            if (sid) clean.status = sid
+          }
         }
         if (!sameDoc) { clean.layer_id = null; if (clean.type === 'device' && !ctx.keepTags) clean.tag = '' } // the server numbers new devices
         if (existing) {

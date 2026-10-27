@@ -124,6 +124,23 @@ export function addAnnotation(doc: PDFDocument, page: PDFPage, spec: AnnotSpec, 
   return ref
 }
 
+/** A Revu "Status" column entry: a Text reply (/IRT parent) with /StateModel Review and the status label as /State. */
+export function addStatusReply(doc: PDFDocument, page: PDFPage, parent: PDFRef, spec: AnnotSpec): PDFRef | null {
+  if (!spec.statusLabel) return null
+  const ctx = doc.context
+  const [x, y] = [Math.min(spec.rect[0], spec.rect[2]), Math.min(spec.rect[1], spec.rect[3])]
+  const date = PDFString.of(pdfDate(spec.modified))
+  const d = ctx.obj({
+    Type: 'Annot', Subtype: 'Text', Name: 'Note', F: 30, C: [1, 1, 0],
+    Subj: text(`Set to ${spec.statusLabel}`), T: text(spec.author), NM: text(`${spec.markupId}-status`),
+    CreationDate: date, M: date, StateModel: text('Review'), State: text(spec.statusLabel),
+    IRT: parent, Rect: [x, y, x + 18, y + 20],
+  }) as PDFDict
+  const ref = ctx.register(d)
+  page.node.addAnnot(ref)
+  return ref
+}
+
 let flattenSeq = 0
 
 /** Draws the appearance into the page content (no annotation). */

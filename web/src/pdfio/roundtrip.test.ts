@@ -1,4 +1,4 @@
-import { PDFDocument, degrees, PDFName } from 'pdf-lib'
+import { PDFDocument, degrees, PDFName, PDFRef, PDFString } from 'pdf-lib'
 import { describe, expect, it } from 'vitest'
 import { absolutePoints } from '../markups/areas'
 import { DEFAULT_STYLE } from '../markups/types'
@@ -317,7 +317,7 @@ describe('Revu compatibility', () => {
     const dev = mk('device', box(60, 60, 20, 20), { symbol_set_id: camSet.id, tag: 'CAM-02', status: 'tested', created_by_name: 'Ann' })
     const kitchen = room('a2', 'Kitchen', [0, 0, 200, 0, 200, 200, 0, 200])
     const spec = buildAnnot(dev, { box: pbox, ppf: null, set: camSet, typeName: 'Dome Camera', location: 'Kitchen', textWidth: approxTextWidth })!
-    expect(spec).toMatchObject({ subject: 'Dome Camera', label: 'CAM-02', layerName: 'Cameras', author: 'PlanAsBuilt', columns: { Status: 'Tested', Location: 'Kitchen' } })
+    expect(spec).toMatchObject({ subject: 'Dome Camera', label: 'CAM-02', layerName: 'Cameras', author: 'PlanAsBuilt', statusLabel: 'Tested', columns: { Location: 'Kitchen' } })
     expect(spec.contents).toContain('Tag: CAM-02')
     const out = await exportAnnotated(input(await blankPdf(0), [kitchen, dev]))
     const doc = await PDFDocument.load(out)
@@ -325,12 +325,39 @@ describe('Revu compatibility', () => {
     expect(props.lookup(PDFName.of('OCGs')).size()).toBe(1)
     const pages = readAnnotations(doc)
     const raw = pages[0].annots.find(x => x.label === 'CAM-02')!
-    expect(raw).toMatchObject({ layer: 'Cameras', label: 'CAM-02', columns: { Status: 'Tested', Location: 'Kitchen' } })
+    expect(raw).toMatchObject({ layer: 'Cameras', label: 'CAM-02', columns: { Location: 'Kitchen' } })
     // Revu edits come back: Label -> tag, Subject -> device type
     const tweaked = await planImport(out, { documentId: DOC, existing: new Map([[dev.id, dev], [kitchen.id, kitchen]]), known })
     expect(tweaked.unchanged).toBe(2)
     const imp = await planImport(out, { documentId: 'doc-9', existing: new Map(), newId: () => 'n' + ++n, known,
       typeIdByName: new Map(), setIdByName: new Map([['cameras', 's1']]) })
     expect(imp.changes.find(c => c.after!.type === 'device')!.after!.symbol_set_id).toBe('s1')
+  })
+
+  it('writes a Revu status reply per device and reads it back as the status', async () => {
+    const dev = mk('device', box(60, 60, 20, 20), { symbol_set_id: camSet.id, tag: 'CAM-03', status: 'tested', created_by_name: 'Ann' })
+    const out = await exportAnnotated(input(await blankPdf(0), [dev]))
+    const doc = await PDFDocument.load(out)
+    const annots = readAnnotations(doc)[0].annots
+    const parent = annots.find(x => x.label === 'CAM-03')!
+    const reply = annots.find(x => x.subtype === 'Text')!
+    expect(reply).toMatchObject({ irt: parent.ref, state: 'Tested', stateModel: 'Review', subject: 'Set to Tested', author: parent.author, flags: 30 })
+    expect(reply.name).not.toBe(parent.name)
+    expect(parent.columns?.Status).toBeUndefined()
+    // unchanged on re-import; a Revu edit (newer reply, case-insensitive name) changes the status; unknown states are ignored
+    const ctx = { documentId: DOC, existing: new Map([[dev.id, dev]]), known }
+    expect((await planImport(out, ctx)).unchanged).toBe(1)
+    const edit = async (state: string, m: string) => {
+      const d2 = await PDFDocument.load(out)
+      const page = d2.getPages()[0]
+      const ref = d2.context.register(d2.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [0, 0, 18, 20], State: PDFString.of(state), StateModel: PDFString.of('Review'), M: PDFString.of(m), IRT: PDFRef.of(Number(parent.ref!.split(' ')[0]), 0) }))
+      page.node.addAnnot(ref)
+      return planImport(await d2.save(), ctx)
+    }
+    const p1 = await edit('installed', 'D:20990101000000Z')
+    expect(p1.changes[0].after!.status).toBe('installed')
+    expect(p1.skipped).toBe(0)
+    const p2 = await edit('Accepted', 'D:20990101000000Z')
+    expect(p2.unchanged).toBe(1)
   })
 })

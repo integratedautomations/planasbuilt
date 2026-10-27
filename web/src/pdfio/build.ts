@@ -11,7 +11,7 @@ import type { Markup, SymbolSet } from '../markups/types'
 import { approxTextWidth, buildAnnot, countNumbers } from './annots'
 import type { AnnotSpec } from './annots'
 import { sanitizeText } from './stream'
-import { addAnnotation, addSpaces, flattenAnnotation, pageBoxOf } from './writer'
+import { addAnnotation, addSpaces, addStatusReply, flattenAnnotation, pageBoxOf } from './writer'
 import type { SpaceSpec } from './writer'
 import { hexToRgb } from './stream'
 import type { Resources } from './writer'
@@ -131,7 +131,7 @@ export function applyMarkups(doc: PDFDocument, mode: Mode, input: ExportInput, r
         }
         continue
       }
-      if (mode === 'annotate') addAnnotation(doc, page, spec, res, iconKey)
+      if (mode === 'annotate') { const pr = addAnnotation(doc, page, spec, res, iconKey); addStatusReply(doc, page, pr, spec) }
       else if (!(spec.flags & 2)) flattenAnnotation(doc, page, spec, res, iconKey)
       n++
     }
