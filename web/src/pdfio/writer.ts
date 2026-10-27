@@ -24,7 +24,8 @@ export function pdfDate(iso?: string): string {
   return `D:${p(t.getUTCFullYear(), 4)}${p(t.getUTCMonth() + 1)}${p(t.getUTCDate())}${p(t.getUTCHours())}${p(t.getUTCMinutes())}${p(t.getUTCSeconds())}Z`
 }
 
-const text = (s: string) => PDFHexString.fromText(s)
+/** Literal string for plain printable ASCII (as Revu writes), UTF-16 hex otherwise. */
+const text = (s: string) => /^[ -~]*$/.test(s) ? PDFString.of(s) : PDFHexString.fromText(s)
 const nums = (doc: PDFDocument, a: number[]) => doc.context.obj(a) as PDFArray
 
 /** The /AP form XObject for a spec; BBox = Rect, content already in user space. */
@@ -81,7 +82,7 @@ export function addAnnotation(doc: PDFDocument, page: PDFPage, spec: AnnotSpec, 
   const ctx = doc.context
   const d = ctx.obj({
     Type: 'Annot', Subtype: spec.subtype, Rect: spec.rect, F: spec.flags,
-    NM: text(spec.markupId), T: text(spec.author), Subj: text(spec.subject), Contents: text(spec.contents),
+    NM: text(annotNm(spec.markupId, 'stamp')), T: text(spec.author), Subj: text(spec.subject), Contents: text(spec.contents),
     M: PDFString.of(pdfDate(spec.modified)), CA: spec.opacity,
     PlanAsBuilt: text(spec.payload),
   }) as PDFDict
@@ -135,6 +136,11 @@ export function sequenceId(seed: string): string {
   return out
 }
 
+/** Deterministic Revu-style /NM (16 uppercase letters) per markup and role. */
+export function annotNm(markupId: string, role: 'stamp' | 'tag' | 'status'): string {
+  return sequenceId(`${markupId}|nm|${role}`)
+}
+
 const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const hex2 = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')
 
@@ -146,7 +152,7 @@ export function addTagChild(doc: PDFDocument, page: PDFPage, parent: PDFRef, spe
   const t = spec.tagChild
   if (!t) return null
   const ctx = doc.context
-  const nm = `${spec.markupId}-tag`
+  const nm = annotNm(spec.markupId, 'tag')
   const date = PDFString.of(pdfDate(spec.modified))
   const size = Math.round(t.size * 1000) / 1000
   const rgb = t.color.map(v => Math.round(v * 1000) / 1000)
@@ -167,7 +173,7 @@ export function addTagChild(doc: PDFDocument, page: PDFPage, parent: PDFRef, spe
   const ref = ctx.register(d)
   page.node.addAnnot(ref)
   const head = ctx.lookupMaybe(parent, PDFDict)
-  if (head) head.set(PDFName.of('GroupNesting'), ctx.obj([text(spec.subject), PDFName.of(spec.markupId), PDFName.of(nm)]))
+  if (head) head.set(PDFName.of('GroupNesting'), ctx.obj([text(spec.subject), PDFName.of(annotNm(spec.markupId, 'stamp')), PDFName.of(nm)]))
   return ref
 }
 
@@ -179,7 +185,7 @@ export function addStatusReply(doc: PDFDocument, page: PDFPage, parent: PDFRef, 
   const date = PDFString.of(pdfDate(spec.modified))
   const d = ctx.obj({
     Type: 'Annot', Subtype: 'Text', Name: 'Note', F: 30, C: [1, 1, 0],
-    Subj: text(`Set to ${spec.statusLabel}`), T: text(spec.author), NM: text(`${spec.markupId}-status`),
+    Subj: text(`Set to ${spec.statusLabel}`), T: text(spec.author), NM: text(annotNm(spec.markupId, 'status')),
     CreationDate: date, M: date, StateModel: text('Review'), State: text(spec.statusLabel),
     IRT: parent, Rect: [x, y, x + 18, y + 20],
   }) as PDFDict

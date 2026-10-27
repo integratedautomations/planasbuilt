@@ -1,4 +1,5 @@
 import { PDFDocument, degrees, PDFName, PDFRef, PDFString } from 'pdf-lib'
+import { annotNm } from './writer'
 import { describe, expect, it } from 'vitest'
 import { absolutePoints } from '../markups/areas'
 import { DEFAULT_STYLE } from '../markups/types'
@@ -151,7 +152,8 @@ describe('annotated export and import', () => {
     const key = (d: any, k: string) => d.get(PDFName.of(k))
     expect(String(key(get(0), 'Subtype'))).toBe('/Square')
     expect(key(get(0), 'T').decodeText()).toBe('PlanAsBuilt')
-    expect(key(get(0), 'NM').decodeText()).toBe(rect.id)
+    expect(key(get(0), 'NM').decodeText()).toMatch(/^[A-Z]{16}$/)
+    expect(key(get(0), 'NM').constructor.name).toBe('PDFString')
     expect(key(get(0), 'AP')).toBeDefined()
     expect(key(get(0), 'PlanAsBuilt')).toBeDefined()
     expect(String(key(get(1), 'Subtype'))).toBe('/Line')
@@ -371,9 +373,9 @@ describe('Revu compatibility', () => {
     const kids = dicts.filter(d => d.get(PDFName.of('Subtype')).toString() === '/FreeText')
     expect(kids).toHaveLength(3)
     const seq = (d: any) => d.lookup(PDFName.of('Sequence'))
-    const k1 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === `${d1.id}-tag`)!
-    const k2 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === `${d2.id}-tag`)!
-    const k3 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === `${d3.id}-tag`)!
+    const k1 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === annotNm(d1.id, 'tag'))!
+    const k2 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === annotNm(d2.id, 'tag'))!
+    const k3 = kids.find(k => k.lookup(PDFName.of('NM')).decodeText() === annotNm(d3.id, 'tag'))!
     expect(k1.get(PDFName.of('RT')).toString()).toBe('/Group')
     expect(k1.lookup(PDFName.of('Contents')).decodeText()).toBe('CAM-01')
     expect(k1.lookup(PDFName.of('RC')).decodeText()).toContain('<p>CAM-01</p>')
@@ -385,9 +387,12 @@ describe('Revu compatibility', () => {
     expect(s1.lookup(PDFName.of('IID')).decodeText()).toBe(s2.lookup(PDFName.of('IID')).decodeText())
     expect(k3.has(PDFName.of('Sequence'))).toBe(false)
     // the stamp is the group head and no longer draws the tag
-    const head = dicts.find(d => d.has(PDFName.of('GroupNesting')) && d.lookup(PDFName.of('NM')).decodeText() === d1.id)!
+    const head = dicts.find(d => d.has(PDFName.of('GroupNesting')) && d.lookup(PDFName.of('NM')).decodeText() === annotNm(d1.id, 'stamp'))!
     const nest = head.lookup(PDFName.of('GroupNesting'))
-    expect([nest.lookup(0).decodeText(), nest.get(1).decodeText(), nest.get(2).decodeText()]).toEqual(['Cameras', d1.id, `${d1.id}-tag`])
+    expect([nest.lookup(0).decodeText(), nest.get(1).asString(), nest.get(2).asString()]).toEqual(['Cameras', '/' + annotNm(d1.id, 'stamp'), '/' + annotNm(d1.id, 'tag')])
+    expect(nest.lookup(0).constructor.name).toBe('PDFString')
+    expect(nest.get(1).decodeText()).toBe(head.lookup(PDFName.of('NM')).decodeText())
+    expect(nest.get(2).decodeText()).toBe(k1.lookup(PDFName.of('NM')).decodeText())
     const apOf = (d: any) => (doc.context.lookup((doc.context.lookup(d.get(PDFName.of('AP'))) as any).get(PDFName.of('N'))) as any)
     expect(apOf(k1).contents.length).toBeGreaterThan(0)
     expect(apOf(head).dict.lookup(PDFName.of('Resources')).has(PDFName.of('Font'))).toBe(false)
