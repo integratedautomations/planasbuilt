@@ -41,6 +41,9 @@ export async function stripImportedAnnotations(bytes: ArrayBuffer | Uint8Array):
   // Spaces become areas on import, so they are removed too
   const hasSpaces = readSpaces(doc).length > 0
   if (hasSpaces) for (const page of doc.getPages()) page.node.delete(PDFName.of('BSISpaces'))
+  // the numbering series belong to the tags that are removed
+  const hasSeq = gone.size > 0 && doc.catalog.has(PDFName.of('BSISequences'))
+  if (hasSeq) doc.catalog.delete(PDFName.of('BSISequences'))
   if (!gone.size && !hasSpaces) return new Uint8Array(bytes instanceof ArrayBuffer ? bytes : bytes.slice().buffer)
   for (const page of doc.getPages()) {
     const list = page.node.Annots()

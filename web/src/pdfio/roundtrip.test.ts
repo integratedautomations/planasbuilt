@@ -386,6 +386,16 @@ describe('Revu compatibility', () => {
     expect(s1.lookup(PDFName.of('IID')).decodeText()).toMatch(/^[A-Z]{16}$/)
     expect(s1.lookup(PDFName.of('IID')).decodeText()).toBe(s2.lookup(PDFName.of('IID')).decodeText())
     expect(k3.has(PDFName.of('Sequence'))).toBe(false)
+    // the catalog lists the series once (two CAM tags share one entry)
+    const seqs = doc.catalog.lookup(PDFName.of('BSISequences')) as any
+    expect(seqs.size()).toBe(1)
+    const e = seqs.lookup(0) as any
+    expect(e.lookup(PDFName.of('IID')).decodeText()).toBe(s1.lookup(PDFName.of('IID')).decodeText())
+    expect(e.lookup(PDFName.of('P')).decodeText()).toBe('CAM-')
+    expect(e.get(PDFName.of('S')).toString()).toBe('/D')
+    expect(e.lookup(PDFName.of('R')).toString()).toBe('true')
+    expect(e.lookup(PDFName.of('SID')).decodeText()).toMatch(/^[A-Z]{16}$/)
+    expect(e.lookup(PDFName.of('ModDate')).decodeText()).toMatch(/^D:\d{14}Z$/)
     // the stamp is the group head and no longer draws the tag
     const head = dicts.find(d => d.has(PDFName.of('GroupNesting')) && d.lookup(PDFName.of('NM')).decodeText() === annotNm(d1.id, 'stamp'))!
     const nest = head.lookup(PDFName.of('GroupNesting'))

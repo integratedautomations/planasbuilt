@@ -144,6 +144,20 @@ export function annotNm(markupId: string, role: 'stamp' | 'tag' | 'status'): str
 const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const hex2 = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')
 
+/** Lists a numbering series in the catalog's /BSISequences (Revu needs it to show the Sequence column); one entry per /IID. */
+function ensureSequence(doc: PDFDocument, iid: string, sid: string, prefix: string, modified?: string) {
+  const ctx = doc.context
+  const cat = doc.catalog
+  let list = ctx.lookupMaybe(cat.get(PDFName.of('BSISequences')), PDFArray)
+  if (!list) { list = ctx.obj([]) as PDFArray; cat.set(PDFName.of('BSISequences'), ctx.register(list)) }
+  for (let i = 0; i < list.size(); i++) {
+    const e = ctx.lookupMaybe(list.get(i), PDFDict)
+    const v = e && ctx.lookup(e.get(PDFName.of('IID')))
+    if (v && 'decodeText' in v && (v as PDFString).decodeText() === iid) return
+  }
+  list.push(ctx.obj({ S: 'D', P: text(prefix), SID: PDFString.of(sid), IID: PDFString.of(iid), R: true, ModDate: PDFString.of(pdfDate(modified)) }))
+}
+
 /**
  * Writes a device's tag as a Revu grouped /FreeText child of the stamp (/RT /Group, /IRT stamp, /Sequence) and
  * records the group on the stamp (/GroupNesting [name stampNM childNM]).
@@ -166,7 +180,11 @@ export function addTagChild(doc: PDFDocument, page: PDFPage, parent: PDFRef, spe
     RT: 'Group', IRT: parent, Contents: text(t.text),
     BS: { W: 0, S: 'S', Type: 'Border' },
   }) as PDFDict
-  if (t.index !== undefined) d.set(PDFName.of('Sequence'), ctx.obj({ IID: PDFString.of(sequenceId(`${seqSeed}|${t.prefix}`)), Index: t.index }))
+  if (t.index !== undefined) {
+    const iid = sequenceId(`${seqSeed}|${t.prefix}`)
+    d.set(PDFName.of('Sequence'), ctx.obj({ IID: PDFString.of(iid), Index: t.index }))
+    ensureSequence(doc, iid, sequenceId(`${seqSeed}|${t.prefix}|sid`), t.text.replace(/\d+$/, ''), spec.modified)
+  }
   const ocg = spec.layerName ? ocgFor(doc, spec.layerName) : undefined
   if (ocg) d.set(PDFName.of('OC'), ocg)
   d.set(PDFName.of('AP'), ctx.obj({ N: buildAppearance(doc, t, res) }))
