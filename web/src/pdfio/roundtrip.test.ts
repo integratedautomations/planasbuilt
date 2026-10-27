@@ -4,6 +4,7 @@ import { absolutePoints } from '../markups/areas'
 import { DEFAULT_STYLE } from '../markups/types'
 import type { BoxGeometry, Markup, PathGeometry, SymbolSet } from '../markups/types'
 import { approxTextWidth, buildAnnot, contentsOf, scaleRatio } from './annots'
+import { authorOptions } from './annots'
 import { exportAnnotated, exportFlattened } from './build'
 import { fromPdf } from './coords'
 import { mapAnnotation } from './importMap'
@@ -125,6 +126,22 @@ describe('annotated export and import', () => {
     expect((plan.changes[0].after!.geometry as BoxGeometry).x).toBe(70)
   })
 
+  it('author follows the company setting, PlanAsBuilt by default', async () => {
+    const [rect, ellipse, cloud] = samples()
+    const ms = [{ ...rect, created_by_name: 'Pat', updated_by_name: 'Sam' }, { ...ellipse, created_by_name: null, updated_by_name: 'Sam' }, { ...cloud, created_by_name: '', updated_by_name: null }]
+    const authors = async (opts: object) => {
+      const doc = await PDFDocument.load(await exportAnnotated({ ...input(await blankPdf(0), ms), ...opts }))
+      const an = doc.getPages()[0].node.Annots()!
+      return [0, 1, 2].map(i => (doc.context.lookup(an.get(i)) as any).get(PDFName.of('T')).decodeText())
+    }
+    expect(await authors({})).toEqual(['PlanAsBuilt', 'PlanAsBuilt', 'PlanAsBuilt'])
+    expect(await authors(authorOptions({ pdf_author_mode: 'placer' }, 'Exporter'))).toEqual(['Pat', 'Sam', 'Exporter'])
+    expect(await authors(authorOptions({ pdf_author_mode: 'exporter' }, 'Exporter'))).toEqual(['Exporter', 'Exporter', 'Exporter'])
+    expect(await authors(authorOptions({ pdf_author_mode: 'custom', pdf_author_text: ' Acme ' }))).toEqual(['Acme', 'Acme', 'Acme'])
+    expect(authorOptions({ pdf_author_mode: 'custom', pdf_author_text: ' ' })).toEqual({ authorMode: 'fixed', author: 'PlanAsBuilt' })
+    expect(authorOptions({ pdf_author_mode: 'placer' }).author).toBe('')
+  })
+
   it('writes the standard keys Revu and Acrobat read', async () => {
     const [rect, , , , , , arrow, , , , len, , area] = samples()
     const out = await exportAnnotated(input(await blankPdf(0), [{ ...rect, created_by_name: 'Tzvi' }, arrow, len, area]))
@@ -133,7 +150,7 @@ describe('annotated export and import', () => {
     const get = (i: number) => doc.context.lookup(annots.get(i)) as any
     const key = (d: any, k: string) => d.get(PDFName.of(k))
     expect(String(key(get(0), 'Subtype'))).toBe('/Square')
-    expect(key(get(0), 'T').decodeText()).toBe('Tzvi')
+    expect(key(get(0), 'T').decodeText()).toBe('PlanAsBuilt')
     expect(key(get(0), 'NM').decodeText()).toBe(rect.id)
     expect(key(get(0), 'AP')).toBeDefined()
     expect(key(get(0), 'PlanAsBuilt')).toBeDefined()
@@ -254,7 +271,7 @@ describe('Revu compatibility', () => {
     const dev = mk('device', box(60, 60, 20, 20), { symbol_set_id: camSet.id, tag: 'CAM-02', status: 'tested', created_by_name: 'Ann' })
     const kitchen = room('a2', 'Kitchen', [0, 0, 200, 0, 200, 200, 0, 200])
     const spec = buildAnnot(dev, { box: pbox, ppf: null, set: camSet, typeName: 'Dome Camera', location: 'Kitchen', textWidth: approxTextWidth })!
-    expect(spec).toMatchObject({ subject: 'Dome Camera', label: 'CAM-02', layerName: 'Cameras', author: 'Ann', columns: { Status: 'Tested', Location: 'Kitchen' } })
+    expect(spec).toMatchObject({ subject: 'Dome Camera', label: 'CAM-02', layerName: 'Cameras', author: 'PlanAsBuilt', columns: { Status: 'Tested', Location: 'Kitchen' } })
     expect(spec.contents).toContain('Tag: CAM-02')
     const out = await exportAnnotated(input(await blankPdf(0), [kitchen, dev]))
     const doc = await PDFDocument.load(out)

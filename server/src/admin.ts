@@ -94,6 +94,7 @@ export async function registerAdmin(ctx: AdminContext) {
       getSection(db, co.id, 'company'), getSection(db, co.id, 'tags'), getSection(db, co.id, 'photos'), getSection(db, co.id, 'smtp')])
     return {
       id: co.id, name: c.name || co.name, address: c.address, phone: c.phone, prepared_by: c.prepared_by,
+      pdf_author_mode: c.pdf_author_mode ?? 'plan', pdf_author_text: c.pdf_author_text ?? '',
       has_logo: !!c.logo_key, logo_type: c.logo_type,
       tag_padding: tags.padding, photo_max_dimension: photos.max_dimension,
       email_enabled: !!mailerFor(smtp),

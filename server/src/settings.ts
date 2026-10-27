@@ -5,7 +5,11 @@ import type { S3Config, StorageConfig } from './storage.js'
 import type { SmtpConfig } from './mail.js'
 import { DEFAULT_PROJECT_SETTINGS, defaultsPart, mergeProjectSettings, readProjectSettings } from './projectSettings.js'
 
-export interface CompanySettings { name: string; address: string; phone: string; prepared_by: string; logo_key: string; logo_type: string }
+export interface CompanySettings { name: string; address: string; phone: string; prepared_by: string; logo_key: string; logo_type: string
+  /** Who the exported PDF markups name as Author: the literal PlanAsBuilt, whoever placed them, whoever exports, or custom text. */
+  pdf_author_mode: PdfAuthorMode; pdf_author_text: string }
+export type PdfAuthorMode = 'plan' | 'placer' | 'exporter' | 'custom'
+const PDF_AUTHOR_MODES: readonly string[] = ['plan', 'placer', 'exporter', 'custom']
 export interface TagSettings { padding: 2 | 3 | 4 }
 export interface PhotoSettings { max_dimension: number }
 export interface RetentionSettings { mode: 'all' | 'keep'; keep_latest: number; /** Days removed files wait in the _trash folder before they are deleted for good (0 = delete at once). */ trash_days: number }
@@ -24,7 +28,7 @@ export const DEFAULT_INVITE: InviteSettings = {
 }
 
 export const DEFAULTS = {
-  company: { name: '', address: '', phone: '', prepared_by: '', logo_key: '', logo_type: '' } as CompanySettings,
+  company: { name: '', address: '', phone: '', prepared_by: '', logo_key: '', logo_type: '', pdf_author_mode: 'plan', pdf_author_text: '' } as CompanySettings,
   tags: { padding: 2 } as TagSettings,
   photos: { max_dimension: 2000 } as PhotoSettings,
   retention: { mode: 'all', keep_latest: 5, trash_days: 30 } as RetentionSettings,
@@ -88,6 +92,11 @@ export function mergeSection(key: SectionName, current: any, patch: any): { valu
       const c = { ...current }
       for (const k of ['name', 'phone', 'prepared_by'] as const) if (k in patch) c[k] = str(patch[k], 200)
       if ('address' in patch) c.address = str(patch.address, 1000)
+      if ('pdf_author_mode' in patch) {
+        if (!PDF_AUTHOR_MODES.includes(patch.pdf_author_mode)) return { error: 'PDF author must be plan, placer, exporter or custom' }
+        c.pdf_author_mode = patch.pdf_author_mode
+      }
+      if ('pdf_author_text' in patch) c.pdf_author_text = str(patch.pdf_author_text, 100)
       return { value: c }
     }
     case 'tags': {

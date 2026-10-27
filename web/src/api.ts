@@ -130,6 +130,7 @@ export const attachmentFileUrl = (id: string, variant?: 'original' | 'annotated'
 // ---- Settings, users and invites ----
 export interface CompanyInfo {
   name: string; address: string; phone: string; prepared_by: string
+  pdf_author_mode?: 'plan' | 'placer' | 'exporter' | 'custom'; pdf_author_text?: string
   has_logo: boolean; logo_type: string
   tag_padding: 2 | 3 | 4; photo_max_dimension: number; email_enabled: boolean
 }

@@ -45,7 +45,7 @@ export function CompanyTab() {
     e.preventDefault(); setMsg(''); setErr('')
     try {
       await save({
-        company: { name: s.company.name, address: s.company.address, phone: s.company.phone, prepared_by: s.company.prepared_by },
+        company: { name: s.company.name, address: s.company.address, phone: s.company.phone, prepared_by: s.company.prepared_by, pdf_author_mode: s.company.pdf_author_mode ?? 'plan', pdf_author_text: s.company.pdf_author_text ?? '' },
         tags: { padding: s.tags.padding },
         photos: { max_dimension: s.photos.max_dimension },
         invite: s.invite,
@@ -106,6 +106,17 @@ export function CompanyTab() {
         <p className="muted small">Filled into the as-built report title page. People can still change them for each report.</p>
         <label className="field">Prepared by<input value={s.company.prepared_by} onChange={e => patch({ prepared_by: e.target.value })} placeholder="e.g. Field Services Team" /></label>
         <p className="muted small">The report also uses the company name and address above.</p>
+        <label className="field">Author on exported PDF markups
+          <select value={s.company.pdf_author_mode ?? 'plan'} onChange={e => patch({ pdf_author_mode: e.target.value as 'plan' | 'placer' | 'exporter' | 'custom' })}>
+            <option value="plan">PlanAsBuilt</option>
+            <option value="placer">Person who placed the markup</option>
+            <option value="exporter">Person exporting</option>
+            <option value="custom">Custom text</option>
+          </select>
+        </label>
+        {s.company.pdf_author_mode === 'custom' && (
+          <label className="field">Custom author<input value={s.company.pdf_author_text ?? ''} maxLength={100} onChange={e => patch({ pdf_author_text: e.target.value })} placeholder="PlanAsBuilt" /></label>
+        )}
       </section>
 
       <section className="card settings-card">

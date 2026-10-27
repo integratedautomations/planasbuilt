@@ -72,6 +72,26 @@ export interface AnnotSpec {
   modified?: string
 }
 
+export const DEFAULT_AUTHOR = 'PlanAsBuilt'
+
+/** Annotation author (/T) for a markup under the company's PDF author setting. */
+export function resolveAuthor(m: Markup, mode: 'plan' | 'placer' | 'fixed' = 'plan', author?: string): string {
+  if (mode === 'placer') return m.created_by_name || m.updated_by_name || author || DEFAULT_AUTHOR
+  if (mode === 'fixed') return author || DEFAULT_AUTHOR
+  return DEFAULT_AUTHOR
+}
+
+/** Maps the company setting and the exporting user's name to the export options. */
+export function authorOptions(company: { pdf_author_mode?: string; pdf_author_text?: string } | null | undefined, exporter?: string):
+  { authorMode: 'plan' | 'placer' | 'fixed'; author: string } {
+  switch (company?.pdf_author_mode) {
+    case 'placer': return { authorMode: 'placer', author: exporter?.trim() || '' }
+    case 'exporter': return { authorMode: 'fixed', author: exporter?.trim() || DEFAULT_AUTHOR }
+    case 'custom': return { authorMode: 'fixed', author: company.pdf_author_text?.trim() || DEFAULT_AUTHOR }
+    default: return { authorMode: 'plan', author: DEFAULT_AUTHOR }
+  }
+}
+
 export interface BuildCtx {
   box: PageBox
   /** Points per foot for this page, or null. */
@@ -84,6 +104,10 @@ export interface BuildCtx {
   /** Width of text in the label fonts. */
   textWidth: (s: string, size: number, bold?: boolean) => number
   areaPath?: string[]
+  /** Author setting: 'plan' (default), 'placer', or a fixed name (exporter / custom text) in `author`. */
+  authorMode?: 'plan' | 'placer' | 'fixed'
+  /** The exporting user's name ('placer' fallback) or the fixed name. */
+  author?: string
   /** Device type name (Revu Subject for a device). */
   typeName?: string
   /** Room / area the device sits in. */
@@ -191,7 +215,7 @@ export function buildAnnot(m: Markup, ctx: BuildCtx): AnnotSpec | null {
 
   const spec: AnnotSpec = {
     markupId: m.id, subtype: 'Square', rect: [0, 0, 0, 0],
-    subject: subjectOf(m, ctx.set, ctx.typeName), contents: '', author: m.created_by_name ?? m.updated_by_name ?? '',
+    subject: subjectOf(m, ctx.set, ctx.typeName), contents: '', author: resolveAuthor(m, ctx.authorMode, ctx.author),
     flags: 4, color: stroke, interior: fillC, opacity, borderWidth: sw, dash,
     payload: JSON.stringify(m),
     ap: { stream: '', gstates: {}, fonts: [], images: [] },

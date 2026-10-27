@@ -5,6 +5,7 @@ import { buildCatalog } from '../catalog/catalog'
 import type { Catalog } from '../catalog/catalog'
 import type { Markup, SymbolSet } from '../markups/types'
 import { loadPdfBytes } from '../offline/cache'
+import { authorOptions } from './annots'
 import { exportAnnotated, exportFileName, exportFlattened } from './build'
 import { downloadBytes } from './download'
 import { loadIcons } from './icons'
@@ -30,12 +31,14 @@ export interface DocExportArgs {
   /** Points per foot by page. */
   scales: Map<number, number>
   catalog?: Catalog
+  /** Name of the exporting user (for the company's PDF author setting). */
+  exporter?: string
 }
 
 /** Downloads `<name>-markups.pdf` (editable annotations) or `<name>-flattened.pdf`. */
 export async function exportDocumentPdf(kind: 'annotated' | 'flattened', a: DocExportArgs) {
   const [pdfBytes, icons] = await Promise.all([loadPdfBytes(a.documentId), loadIcons(a.symbolSets.values(), a.deviceTypes)])
-  const input = { pdfBytes, markups: [...a.markups], symbolSets: a.symbolSets, scales: a.scales, icons, catalog: a.catalog }
+  const input = { pdfBytes, markups: [...a.markups], symbolSets: a.symbolSets, scales: a.scales, icons, catalog: a.catalog, ...authorOptions(await loadCompany().catch(() => null), a.exporter) }
   const bytes = kind === 'annotated' ? await exportAnnotated(input) : await exportFlattened(input)
   downloadBytes(bytes, exportFileName(a.name, kind === 'annotated' ? 'markups' : 'flattened'))
 }

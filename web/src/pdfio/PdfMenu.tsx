@@ -8,6 +8,7 @@ import type { Change } from '../markups/useMarkups'
 import { exportDocumentPdf, planImportFile } from './actions'
 import type { ImportPlan } from './importPlan'
 import { RevuConvert } from './RevuConvert'
+import { useSession } from '../settings/session'
 import { scaleDevices } from '../markups/deviceScale'
 
 interface Props {
@@ -38,6 +39,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 /** Viewer toolbar menu: annotated / flattened PDF export and import from an annotated PDF. */
 export function PdfMenu({ deviceScale = 1, documentId, documentName, markups, symbolSets, scales, readOnly, commit, onPrint, printHint, projectId, layers, onLayersAdded, showOriginal, onShowOriginal, onClose }: Props) {
   const catalog = useCatalogContext()
+  const exporter = useSession()?.user.name
   const file = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState('')
   const [note, setNote] = useState('')
@@ -51,7 +53,7 @@ export function PdfMenu({ deviceScale = 1, documentId, documentName, markups, sy
     try {
       await exportDocumentPdf(kind, {
         documentId, name: documentName, markups: scaleDevices(markups.values(), deviceScale), symbolSets, deviceTypes: catalog.types.values(),
-        scales: new Map([...scales].map(([p, s]) => [p, s.pointsPerFoot])), catalog,
+        scales: new Map([...scales].map(([p, s]) => [p, s.pointsPerFoot])), catalog, exporter,
       })
     } catch (e) { setNote(`Export failed: ${(e as Error).message}`) } finally { setBusy('') }
   }

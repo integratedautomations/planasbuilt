@@ -28,6 +28,9 @@ export interface ExportInput {
   catalog?: Catalog
   /** Rows of each legend by markup id; computed from `markups` when omitted (pass it when `markups` is only part of the document). */
   legendRows?: Map<string, LegendRow[]>
+  /** Annotation author (/T) options; see `authorOptions`. Default: the literal PlanAsBuilt. */
+  authorMode?: 'plan' | 'placer' | 'fixed'
+  author?: string
 }
 
 export type Mode = 'annotate' | 'flatten'
@@ -77,7 +80,7 @@ export function specsForPage(page: PDFPage, markups: Markup[], input: ExportInpu
     const spec = buildAnnot(m, {
       box, ppf: input.scales.get(pageNumber) ?? null, set, hasIcon: !!iconKey, textWidth: tw,
       typeMount: m.device_type_id ? input.catalog?.types.get(m.device_type_id)?.mount : undefined,
-      areaPath: areaPaths.get(m.id), location: locations?.get(m.id),
+      areaPath: areaPaths.get(m.id), authorMode: input.authorMode, author: input.author, location: locations?.get(m.id),
       typeName: m.device_type_id ? input.catalog?.types.get(m.device_type_id)?.name : undefined, countNumber: counts.get(m.id), showCones: input.showCones, legendRows: legend?.get(m.id),
       cableRings: m.type === 'cable' ? cableRingsOf(m, byId) : undefined,
     })

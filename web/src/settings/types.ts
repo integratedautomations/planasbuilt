@@ -1,5 +1,5 @@
 export interface CompanySettings {
-  name: string; address: string; phone: string; prepared_by: string; has_logo: boolean; logo_type: string
+  name: string; address: string; phone: string; prepared_by: string; pdf_author_mode?: 'plan' | 'placer' | 'exporter' | 'custom'; pdf_author_text?: string; has_logo: boolean; logo_type: string
 }
 export interface S3Settings {
   endpoint: string; bucket: string; region: string; accessKeyId: string; pathStyle: boolean; prefix: string
